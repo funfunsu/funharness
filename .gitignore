@@ -10,3 +10,4 @@ vsc-extension-quickstart.md
 .github/**
 node_modules/**
 dist/**
+*.vsix
