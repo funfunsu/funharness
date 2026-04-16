@@ -11,3 +11,5 @@ vsc-extension-quickstart.md
 node_modules/**
 dist/**
 *.vsix
+.vscodeignore
+package-lock.json
