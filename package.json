@@ -1,0 +1,105 @@
+{
+  "name": "fun-harness",
+  "displayName": "Fun Harness AI 研发流程",
+  "description": "AI 驱动的研发流程管理工具",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Other"],
+  "icon": "media/fun-harness.png",
+  "publisher": "guaguasu",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "fun-harness-sidebar",
+          "title": "Fun Harness",
+          "icon": "media/fun-harness.svg"
+        }
+      ]
+    },
+    "views": {
+      "fun-harness-sidebar": [
+        {
+          "type": "webview",
+          "id": "fun-harness.sidebar",
+          "name": "AI 研发流程"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "fun-harness.open",
+        "title": "Fun Harness AI 研发流程"
+      },
+      {
+        "command": "fun-harness.runAgent",
+        "title": "Run Fun Harness Agent"
+      }
+    ],
+    "chatAgents": {
+      "fun-harness-des": {
+        "description": "Fun harness 设计生成 Agent",
+        "slashCommands": [
+          {
+            "command": "fun-harness-design",
+            "description": "使用设计 Agent"
+          }
+        ]
+      },
+      "fun-harness-req": {
+        "description": "Fun harness 需求生成 Agent",
+        "slashCommands": [
+          {
+            "command": "fun-harness-requirement",
+            "description": "使用需求 Agent"
+          }
+        ]
+      },
+      "fun-harness-tsk": {
+        "description": "Fun harness 任务拆解 Agent",
+        "slashCommands": [
+          {
+            "command": "fun-harness-task",
+            "description": "使用任务拆解 Agent"
+          }
+        ]
+      },
+      "fun-harness-tcs": {
+        "description": "Fun harness 测试用例 Agent",
+        "slashCommands": [
+          {
+            "command": "fun-harness-testcase",
+            "description": "使用测试用例 Agent"
+          }
+        ]
+      },
+      "fun-harness-dev": {
+        "description": "Fun harness 代码生成 Agent",
+        "slashCommands": [
+          {
+            "command": "fun-harness-dev",
+            "description": "使用代码生成 Agent"
+          }
+        ]
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test test",
+    "prepackage": "npm run compile",
+    "package": "vsce package --allow-missing-repository --allow-star-activation"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.0"
+  }
+}
