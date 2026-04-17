@@ -2,16 +2,20 @@
   "name": "fun-harness",
   "displayName": "Fun Harness AI 研发流程",
   "description": "AI 驱动的研发流程管理工具",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "engines": {
     "vscode": "^1.80.0"
   },
   "categories": ["Other"],
   "icon": "media/fun-harness.png",
-  "publisher": "guaguasu",
+  "publisher": "funfunsu",
   "activationEvents": [
     "onStartupFinished"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/funfunsu/funharness.git"
+  },
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
