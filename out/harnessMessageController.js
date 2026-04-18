@@ -90,7 +90,7 @@ class HarnessMessageController {
                 this.deps.restoreSelectedAgentPrompt();
                 return;
             case 'saveGit':
-                this.deps.saveGit(msg.fg, msg.bg, msg.mb, msg.sb, msg.dr);
+                await this.deps.saveGit(msg.fg, msg.bg, msg.mb, msg.sb, msg.dr);
                 return;
             case 'saveDevConfig':
                 this.deps.saveDevConfig(msg);

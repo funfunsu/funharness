@@ -526,7 +526,7 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <span>合并前 dry-run 冲突检查</span>
 <input id="dr" type="checkbox" ${config.mergeDryRunEnabled ? 'checked' : ''} ${disabled}>
 </div>
-<button onclick="saveGit()" style="background:#007aff" ${disabled}>💾 保存 Git 配置</button>
+<button onclick="saveGit()" style="background:#007aff" ${disabled}>💾 保存 Git 配置并初始化代码</button>
 </div>
 
 <div class="section">

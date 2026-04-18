@@ -110,6 +110,9 @@ class TaskStoreService {
             return { origin: 'unknown', readOnly: false };
         }
     }
+    configFileExists() {
+        return fs.existsSync(this.getConfigFile());
+    }
     loadConfig() {
         const file = this.getConfigFile();
         if (!fs.existsSync(file)) {

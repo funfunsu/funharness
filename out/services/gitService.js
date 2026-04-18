@@ -49,6 +49,30 @@ class GitService {
     setWorkspaceRoot(workspaceRoot) {
         this.workspaceRoot = workspaceRoot;
     }
+    async initializeRepos() {
+        this.lastExecError = '';
+        if (!this.config.frontendGit && !this.config.backendGit) {
+            return { success: false, message: '请至少填写一个 Git 地址（前端或后端）' };
+        }
+        const explicitBaseBranch = (this.config.baseSyncBranch || '').trim();
+        const baseBranch = (explicitBaseBranch || this.config.mergeTargetBranch || 'main').trim();
+        const requireExact = Boolean(explicitBaseBranch);
+        if (this.config.frontendGit) {
+            const frontendMainDir = this.getMainRepoDir('frontend');
+            const result = await this.ensureMainRepo(this.config.frontendGit, frontendMainDir, baseBranch, requireExact);
+            if (!result.success) {
+                return { success: false, message: this.withExecError('前端仓库初始化失败') };
+            }
+        }
+        if (this.config.backendGit) {
+            const backendMainDir = this.getMainRepoDir('backend');
+            const result = await this.ensureMainRepo(this.config.backendGit, backendMainDir, baseBranch, requireExact);
+            if (!result.success) {
+                return { success: false, message: this.withExecError('后端仓库初始化失败') };
+            }
+        }
+        return { success: true, message: '✅ Git 配置已保存，代码初始化完成' };
+    }
     async createIterationBranches(task, iterationDir) {
         this.lastExecError = '';
         const branchName = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -416,10 +440,36 @@ class GitService {
                 return { success: true, baseBranch: candidate };
             }
         }
+        // If the specified base branch doesn't exist, create it from master/main
         if (requireExactBaseBranch) {
+            const fallbackBranch = await this.findDefaultBranch(repoDir);
+            if (fallbackBranch) {
+                const switched = await this.switchToBranch(repoDir, fallbackBranch);
+                if (switched) {
+                    await this.execCmd(`git pull origin ${fallbackBranch}`, repoDir);
+                    const created = await this.execCmd(`git checkout -b ${baseBranch}`, repoDir);
+                    if (created) {
+                        await this.execCmd(`git push -u origin ${baseBranch}`, repoDir);
+                        return { success: true, baseBranch };
+                    }
+                }
+            }
             this.lastExecError = this.withExecError(`指定基线分支不可用: ${baseBranch}`);
         }
         return { success: false };
+    }
+    async findDefaultBranch(repoDir) {
+        const remoteDefault = await this.resolveRemoteDefaultBranch(repoDir);
+        if (remoteDefault) {
+            return remoteDefault;
+        }
+        for (const candidate of ['master', 'main']) {
+            const switched = await this.switchToBranch(repoDir, candidate);
+            if (switched) {
+                return candidate;
+            }
+        }
+        return null;
     }
     async buildBaseBranchCandidates(repoDir, preferred) {
         const list = [];

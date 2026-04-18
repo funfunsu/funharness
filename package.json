@@ -2,7 +2,7 @@
   "name": "fun-harness",
   "displayName": "Fun Harness AI 研发流程",
   "description": "AI 驱动的研发流程管理工具",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "engines": {
     "vscode": "^1.80.0"
   },

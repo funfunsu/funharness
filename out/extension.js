@@ -155,13 +155,15 @@ class Harness {
                 pushAndNextStage: async (taskId) => this.actionsService.pushAndNextStage(taskId),
             });
             this.promptService.ensureProjectPrompts();
-            this.promptService.createAgentDefinitions();
             (0, masterArtifactWatcher_1.startMasterArtifactWatcher)(this.context, {
                 workspaceRoot,
                 baseDirName: models_1.BASE,
             });
             this.loadTasks();
             this.loadConfig();
+            if (!this.taskStore.configFileExists()) {
+                this.currentPage = 'settings';
+            }
             this.gitService.setConfig(this.config);
             setInterval(async () => {
                 if (this.currentPage !== 'main' || this.autoAdvanceRunning) {
@@ -373,9 +375,13 @@ class Harness {
         this.promptService.restoreAgentPrompt(this.selectedPromptKey);
         vscode.window.showInformationMessage('✅ Agent Prompt 已恢复出厂设置');
     }
-    handleSaveGit(frontendGit, backendGit, mergeTargetBranch, baseSyncBranch, dryRun) {
+    async handleSaveGit(frontendGit, backendGit, mergeTargetBranch, baseSyncBranch, dryRun) {
         if (this.configMeta.readOnly) {
             vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改设置');
+            return;
+        }
+        if (!frontendGit && !backendGit) {
+            vscode.window.showWarningMessage('请至少填写一个 Git 地址（前端或后端）');
             return;
         }
         this.config.frontendGit = frontendGit;
@@ -384,7 +390,15 @@ class Harness {
         this.config.baseSyncBranch = baseSyncBranch;
         this.config.mergeDryRunEnabled = dryRun;
         this.saveConfig();
-        vscode.window.showInformationMessage('✅ Git 配置已保存');
+        this.gitService.setConfig(this.config);
+        vscode.window.showInformationMessage('⏳ 正在初始化代码仓库...');
+        const result = await this.gitService.initializeRepos();
+        if (result.success) {
+            vscode.window.showInformationMessage(result.message);
+        }
+        else {
+            vscode.window.showErrorMessage(result.message);
+        }
     }
     handleSaveDevConfig(msg) {
         if (this.configMeta.readOnly) {
