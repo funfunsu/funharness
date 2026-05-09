@@ -5,11 +5,11 @@ vsc-extension-quickstart.md
 **/tsconfig.json
 **/eslint.config.mjs
 **/*.map
-**/*.ts
 **/.vscode-test.*
 .github/**
 node_modules/**
 dist/**
+out/**
 *.vsix
 .vscodeignore
 package-lock.json
