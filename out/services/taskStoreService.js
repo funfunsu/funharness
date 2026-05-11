@@ -59,12 +59,21 @@ class TaskStoreService {
         if (meta.origin === 'worktreeSnapshot') {
             return this.loadLocalTasks();
         }
+        const localTasks = this.loadLocalTasks();
+        const localIds = new Set(localTasks.map(t => t.id));
         const worktreeTasks = this.loadTasksFromWorktrees();
-        if (worktreeTasks.length > 0) {
-            return worktreeTasks;
+        if (worktreeTasks.length === 0) {
+            return localTasks;
         }
-        // Backward compatibility with legacy root-level task file.
-        return this.loadLocalTasks();
+        // Root file is the authoritative task list.
+        // Worktree snapshots carry richer per-task state (e.g. substage progress),
+        // so prefer their version, but only for tasks that still exist in the root file.
+        if (localIds.size > 0) {
+            const worktreeMap = new Map(worktreeTasks.map(t => [t.id, t]));
+            return localTasks.map(t => worktreeMap.get(t.id) || t);
+        }
+        // No root file yet (fresh workspace) — trust worktree scan as-is.
+        return worktreeTasks;
     }
     saveTasks(tasks) {
         const meta = this.getConfigMeta();
@@ -83,7 +92,22 @@ class TaskStoreService {
             const harnessDir = path.join(iterDir, models_1.BASE);
             fs.mkdirSync(harnessDir, { recursive: true });
             const file = path.join(harnessDir, models_1.HARNESS_STATE_FILE);
-            fs.writeFileSync(file, JSON.stringify([task], null, 2), 'utf8');
+            // Preserve per-task fields that may have been set from the worktree subview,
+            // which has its own in-memory copy the master panel doesn't see in real time.
+            const taskToSave = { ...task };
+            if (fs.existsSync(file)) {
+                try {
+                    const existing = JSON.parse(fs.readFileSync(file, 'utf8'));
+                    const existingTask = existing.find(t => t.id === task.id);
+                    if (existingTask?.aiProvider && !task.aiProvider) {
+                        taskToSave.aiProvider = existingTask.aiProvider;
+                    }
+                }
+                catch {
+                    // ignore malformed files
+                }
+            }
+            fs.writeFileSync(file, JSON.stringify([taskToSave], null, 2), 'utf8');
             const legacy = path.join(harnessDir, models_1.HARNESS_STATE_FILE_LEGACY);
             if (fs.existsSync(legacy)) {
                 fs.rmSync(legacy, { force: true });
@@ -120,6 +144,20 @@ class TaskStoreService {
         }
         try {
             const loaded = JSON.parse(fs.readFileSync(file, 'utf8'));
+            // Migrate legacy provider id
+            if (loaded.aiProvider === 'claude-cli') {
+                loaded.aiProvider = 'claude-code-cli';
+            }
+            // Migrate legacy field name
+            if (!loaded.cliCommandTemplate && loaded.claudeCliCommandTemplate) {
+                loaded.cliCommandTemplate = loaded.claudeCliCommandTemplate;
+            }
+            // Migrate two-field branch config into unified baseBranch
+            if (!loaded.baseBranch) {
+                const legacyBase = (loaded.baseSyncBranch || '').trim();
+                const legacyMerge = (loaded.mergeTargetBranch || '').trim();
+                loaded.baseBranch = legacyBase || legacyMerge || '';
+            }
             return { ...models_1.DEFAULT_CONFIG, ...loaded };
         }
         catch {

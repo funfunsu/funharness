@@ -1,6 +1,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { AGENT_DIR, BASE, PROMPT_CONFIGS, PROMPTS_DIR } from '../models';
+import { AGENT_DIR, BASE, Config, PROMPT_CONFIGS, PROMPTS_DIR } from '../models';
+
+type PromptSource = 'task-override' | 'master-override' | 'workspace-override' | 'bundled-default';
+
+export interface RenderedPrompt {
+    content: string;
+    source: PromptSource;
+    path: string;
+}
 
 export class PromptService {
     constructor(
@@ -45,16 +53,101 @@ export class PromptService {
         fs.writeFileSync(agentFile, this.buildAgentDefinition(promptKey, cfg.name, promptContent), 'utf8');
     }
 
-    getRenderedPrompt(step: string, taskName: string, taskDesc: string, currentWorkSpace: string): string {
-        const file = this.getPromptFile(step);
-        if (!fs.existsSync(file)) {
-            return '';
+    getRenderedPrompt(step: string, taskName: string, taskDesc: string, currentWorkSpace: string, config?: Partial<Config>): string {
+        const rendered = this.getRenderedPromptWithSource(step, taskName, taskDesc, currentWorkSpace, config);
+        return rendered.content;
+    }
+
+    getRenderedPromptWithSource(step: string, taskName: string, taskDesc: string, currentWorkSpace: string, config?: Partial<Config>): RenderedPrompt {
+        const resolved = this.resolvePromptFile(step, currentWorkSpace);
+        if (!resolved.path || !fs.existsSync(resolved.path)) {
+            return { content: '', source: resolved.source, path: resolved.path };
         }
-        const content = fs.readFileSync(file, 'utf8');
-        return content
+        const content = fs.readFileSync(resolved.path, 'utf8');
+        const techStack = (config?.techStack || '').trim();
+        const codingStandards = (config?.codingStandards || '').trim();
+        const projectConventions = (config?.projectConventions || '').trim();
+        let renderedContent = content
             .replace(/{{taskName}}/g, taskName)
             .replace(/{{taskDesc}}/g, taskDesc)
-            .replace(/{{currentWorkSpace}}/g, currentWorkSpace);
+            .replace(/{{currentWorkSpace}}/g, currentWorkSpace)
+            .replace(/{{techStack}}/g, techStack)
+            .replace(/{{codingStandards}}/g, codingStandards)
+            .replace(/{{projectConventions}}/g, projectConventions);
+
+        if (projectConventions && !/{{projectConventions}}/g.test(content)) {
+            renderedContent += `\n\n## 项目自定义约定\n${projectConventions}\n`;
+        }
+
+        return {
+            content: renderedContent,
+            source: resolved.source,
+            path: resolved.path,
+        };
+    }
+
+    private resolvePromptFile(step: string, currentWorkSpace: string): { source: PromptSource; path: string } {
+        const item = PROMPT_CONFIGS.find(i => i.key === step);
+        if (!item) {
+            return { source: 'bundled-default', path: '' };
+        }
+
+        const taskOverride = path.join(currentWorkSpace, BASE, PROMPTS_DIR, item.file);
+        if (fs.existsSync(taskOverride)) {
+            return { source: 'task-override', path: taskOverride };
+        }
+
+        const masterRoot = this.resolveMasterRoot(currentWorkSpace);
+        if (masterRoot) {
+            const masterOverride = path.join(masterRoot, BASE, PROMPTS_DIR, item.file);
+            if (fs.existsSync(masterOverride)) {
+                return { source: 'master-override', path: masterOverride };
+            }
+        }
+
+        const workspaceOverride = this.getPromptFile(step);
+        if (workspaceOverride && fs.existsSync(workspaceOverride)) {
+            return { source: 'workspace-override', path: workspaceOverride };
+        }
+
+        return { source: 'bundled-default', path: this.getBundledPromptFile(step) };
+    }
+
+    private resolveMasterRoot(currentWorkSpace: string): string {
+        const configCandidates = [
+            path.join(currentWorkSpace, BASE, 'config.json'),
+            path.join(this.workspaceRoot, BASE, 'config.json'),
+        ];
+
+        for (const file of configCandidates) {
+            if (!fs.existsSync(file)) {
+                continue;
+            }
+            try {
+                const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+                const masterRoot = typeof raw.__harnessMasterRoot === 'string' ? raw.__harnessMasterRoot : '';
+                if (!masterRoot) {
+                    continue;
+                }
+                const resolvedMasterRoot = path.resolve(masterRoot);
+                if (!this.isWithinWorkspaceRoot(resolvedMasterRoot)) {
+                    continue;
+                }
+                if (fs.existsSync(resolvedMasterRoot)) {
+                    return resolvedMasterRoot;
+                }
+            } catch {
+                // Ignore malformed config and continue.
+            }
+        }
+
+        return '';
+    }
+
+    private isWithinWorkspaceRoot(targetPath: string): boolean {
+        const root = path.resolve(this.workspaceRoot);
+        const target = path.resolve(targetPath);
+        return target === root || target.startsWith(`${root}${path.sep}`);
     }
 
     private getProjectPromptsDir(): string {

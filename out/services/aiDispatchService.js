@@ -43,27 +43,29 @@ class AiDispatchService {
     constructor(getConfig) {
         this.getConfig = getConfig;
     }
-    async dispatch(query, iterDir, source) {
+    async dispatch(query, iterDir, source, providerOverride) {
         const cfg = this.getConfig();
-        const provider = cfg.aiProvider || 'copilot-chat';
-        if (provider === 'copilot-chat') {
-            await vscode.commands.executeCommand('workbench.action.chat.open', {
-                query,
-                isPartial: false,
-            });
-            return;
-        }
-        if (provider === 'manual') {
+        const provider = (0, models_1.getAiProvider)(providerOverride || cfg.aiProvider || 'copilot-chat');
+        if (provider.kind === 'manual') {
             await this.dispatchManual(query, source);
             return;
         }
+        if (provider.kind === 'vscode-chat') {
+            await this.dispatchVscodeChat(query, provider);
+            return;
+        }
+        if (provider.kind === 'panel') {
+            await this.dispatchPanel(query, provider, source);
+            return;
+        }
+        // provider.kind === 'cli'
         try {
-            await this.dispatchClaudeCli(query, iterDir, cfg, source);
+            await this.dispatchCli(query, iterDir, cfg, provider, source);
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             if (cfg.aiFallbackToManual !== false) {
-                vscode.window.showWarningMessage(`Claude CLI 派发失败，已自动降级到手工模式：${message}`);
+                vscode.window.showWarningMessage(`${provider.label} 派发失败，已自动降级到手工模式：${message}`);
                 await this.dispatchManual(query, source);
                 return;
             }
@@ -72,42 +74,106 @@ class AiDispatchService {
     }
     async testConnection() {
         const cfg = this.getConfig();
-        const provider = cfg.aiProvider || 'copilot-chat';
-        if (provider === 'manual') {
+        const provider = (0, models_1.getAiProvider)(cfg.aiProvider || 'copilot-chat');
+        if (provider.kind === 'manual') {
             vscode.window.showInformationMessage('手工模式无需连通性检测：提示词将复制到剪贴板并打开文档。');
             return;
         }
-        if (provider === 'copilot-chat') {
-            const commands = await vscode.commands.getCommands(true);
-            if (commands.includes('workbench.action.chat.open')) {
-                vscode.window.showInformationMessage('Copilot Chat 可用：已检测到 workbench.action.chat.open。');
-            }
-            else {
-                vscode.window.showWarningMessage('未检测到 Copilot Chat 命令 workbench.action.chat.open，请确认 Copilot Chat 已安装并启用。');
-            }
+        if (provider.kind === 'vscode-chat') {
+            await this.testVscodeChat(provider);
             return;
         }
+        if (provider.kind === 'panel') {
+            await this.testPanel(provider);
+            return;
+        }
+        // provider.kind === 'cli'
+        await this.testCli(cfg, provider);
+    }
+    // ── VS Code Chat dispatch ──────────────────────────────────────
+    async dispatchVscodeChat(query, provider) {
+        const command = provider.chatCommand || 'workbench.action.chat.open';
+        await vscode.commands.executeCommand(command, {
+            query,
+            isPartial: false,
+        });
+    }
+    async testVscodeChat(provider) {
+        const command = provider.chatCommand || 'workbench.action.chat.open';
+        const commands = await vscode.commands.getCommands(true);
+        if (commands.includes(command)) {
+            vscode.window.showInformationMessage(`${provider.label} 可用：已检测到命令 ${command}。`);
+        }
+        else {
+            vscode.window.showWarningMessage(`未检测到 ${provider.label} 命令 ${command}，请确认对应扩展已安装并启用。`);
+        }
+    }
+    // ── CLI dispatch ───────────────────────────────────────────────
+    async dispatchCli(query, iterDir, cfg, provider, source) {
+        const promptFile = this.writePromptFile(query, iterDir, source);
+        const template = this.resolveCliTemplate(cfg, provider);
+        const command = this.buildCliCommand(template, promptFile);
+        const terminal = vscode.window.createTerminal({
+            name: `Fun Harness ${provider.label}`,
+            cwd: iterDir,
+        });
+        terminal.show(true);
+        terminal.sendText(command, true);
+        vscode.window.showInformationMessage(`已通过 ${provider.label} 派发任务（source=${source}）`);
+    }
+    async testCli(cfg, provider) {
+        const detectCmd = provider.detectHint || 'echo ok';
         try {
-            const output = (0, child_process_1.execSync)('claude --version', {
+            const output = (0, child_process_1.execSync)(detectCmd, {
                 encoding: 'utf8',
                 stdio: ['ignore', 'pipe', 'pipe'],
             }).trim();
             const version = output.split(/\r?\n/)[0] || output;
             const samplePromptFile = path.join(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '.', models_1.BASE, 'dispatch-prompts', 'sample.md');
-            const commandPreview = this.buildClaudeCliCommand(cfg.claudeCliCommandTemplate || '', samplePromptFile);
-            const hasCustomTemplate = Boolean((cfg.claudeCliCommandTemplate || '').trim());
-            const hasPromptPlaceholder = (cfg.claudeCliCommandTemplate || '').includes('{promptFile}');
-            vscode.window.showInformationMessage(`Claude CLI 可用：${version}`);
+            const template = this.resolveCliTemplate(cfg, provider);
+            const commandPreview = this.buildCliCommand(template, samplePromptFile);
+            const hasCustomTemplate = Boolean(this.getEffectiveCliTemplate(cfg).trim());
+            const hasPromptPlaceholder = template.includes('{promptFile}');
+            vscode.window.showInformationMessage(`${provider.label} 可用：${version}`);
             vscode.window.showInformationMessage(`命令模板预览：${commandPreview}`);
             if (hasCustomTemplate && !hasPromptPlaceholder) {
-                vscode.window.showWarningMessage('当前 Claude CLI 命令模板未包含 {promptFile} 占位符，派发时将无法自动注入提示词文件路径。');
+                vscode.window.showWarningMessage(`当前 CLI 命令模板未包含 {promptFile} 占位符，派发时将无法自动注入提示词文件路径。`);
             }
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            vscode.window.showWarningMessage(`Claude CLI 检测失败：${message}`);
+            vscode.window.showWarningMessage(`${provider.label} 检测失败：${message}`);
         }
     }
+    // ── Panel dispatch (open provider's own panel + clipboard) ───
+    async dispatchPanel(query, provider, source) {
+        await vscode.env.clipboard.writeText(query);
+        const command = provider.panelCommand;
+        if (command) {
+            try {
+                await vscode.commands.executeCommand(command);
+            }
+            catch {
+                // Panel command failed — still copied to clipboard, user can open manually.
+            }
+        }
+        vscode.window.showInformationMessage(`已复制提示词到剪贴板并打开 ${provider.label}，请粘贴执行（source=${source}）`);
+    }
+    async testPanel(provider) {
+        const command = provider.panelCommand;
+        if (!command) {
+            vscode.window.showWarningMessage(`${provider.label} 未配置面板命令。`);
+            return;
+        }
+        const commands = await vscode.commands.getCommands(true);
+        if (commands.includes(command)) {
+            vscode.window.showInformationMessage(`${provider.label} 可用：已检测到命令 ${command}。`);
+        }
+        else {
+            vscode.window.showWarningMessage(`未检测到 ${provider.label} 命令 ${command}，请确认对应扩展已安装并启用。`);
+        }
+    }
+    // ── Manual dispatch ────────────────────────────────────────────
     async dispatchManual(query, source) {
         await vscode.env.clipboard.writeText(query);
         const title = source === 'stage-agent' ? '阶段 Agent 手工提示词' : '开发子任务手工提示词';
@@ -125,17 +191,7 @@ class AiDispatchService {
         });
         await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
     }
-    async dispatchClaudeCli(query, iterDir, cfg, source) {
-        const promptFile = this.writePromptFile(query, iterDir, source);
-        const command = this.buildClaudeCliCommand(cfg.claudeCliCommandTemplate || '', promptFile);
-        const terminal = vscode.window.createTerminal({
-            name: 'Fun Harness Claude CLI',
-            cwd: iterDir,
-        });
-        terminal.show(true);
-        terminal.sendText(command, true);
-        vscode.window.showInformationMessage(`已通过 Claude CLI 派发任务（source=${source}）`);
-    }
+    // ── Shared helpers ─────────────────────────────────────────────
     writePromptFile(query, iterDir, source) {
         const folder = path.join(iterDir, models_1.BASE, 'dispatch-prompts');
         fs.mkdirSync(folder, { recursive: true });
@@ -143,13 +199,26 @@ class AiDispatchService {
         fs.writeFileSync(file, query, 'utf8');
         return file;
     }
-    buildClaudeCliCommand(template, promptFile) {
-        const normalizedFile = promptFile.replace(/\\/g, '/');
-        const defaultTemplate = process.platform === 'win32'
+    getEffectiveCliTemplate(cfg) {
+        // Support legacy field name for backward compatibility
+        return (cfg.cliCommandTemplate || cfg.claudeCliCommandTemplate || '').trim();
+    }
+    resolveCliTemplate(cfg, provider) {
+        const userTemplate = this.getEffectiveCliTemplate(cfg);
+        if (userTemplate) {
+            return userTemplate;
+        }
+        if (provider.defaultCliTemplate) {
+            return provider.defaultCliTemplate;
+        }
+        // Fallback default for CLI providers
+        return process.platform === 'win32'
             ? 'Get-Content -Raw "{promptFile}" | claude'
             : 'cat "{promptFile}" | claude';
-        const effectiveTemplate = (template || defaultTemplate).trim();
-        return effectiveTemplate.replace(/\{promptFile\}/g, normalizedFile);
+    }
+    buildCliCommand(template, promptFile) {
+        const normalizedFile = promptFile.replace(/\\/g, '/');
+        return template.replace(/\{promptFile\}/g, normalizedFile);
     }
 }
 exports.AiDispatchService = AiDispatchService;

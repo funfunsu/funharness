@@ -15,6 +15,21 @@ import {
 import { TaskScheduler } from '../taskScheduler';
 import { GitService } from './gitService';
 
+interface ArtifactIndexItem {
+    taskId: string;
+    taskName: string;
+    updatedAt: string;
+    trigger: 'manualPush' | 'taskDone';
+    requirementsPath?: string;
+    designPath?: string;
+}
+
+interface ArtifactIndexFile {
+    version: 1;
+    updatedAt: string;
+    items: ArtifactIndexItem[];
+}
+
 interface HarnessActionsDeps {
     getTasks: () => Task[];
     getConfig: () => Config;
@@ -26,7 +41,9 @@ interface HarnessActionsDeps {
     stopScheduler: (taskId: string) => void;
     onPass: (task: Task) => void;
     isWorktreeSubview: () => boolean;
-    dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask') => Promise<void>;
+    dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string) => Promise<void>;
+    copyProjectStructureToIteration: (iterDir: string) => void;
+    renderAgentPrompt: (step: HarnessStep, taskName: string, taskDesc: string, iterDir: string) => { content: string; source: string; path: string };
 }
 
 export class HarnessActionsService {
@@ -34,6 +51,7 @@ export class HarnessActionsService {
     private readonly lastAutoRepairAt: Map<string, number> = new Map();
     private readonly lastAutoRepairSignature: Map<string, string> = new Map();
     private readonly repairingKeys: Set<string> = new Set();
+    private readonly artifactRepairTimers: Map<string, NodeJS.Timeout> = new Map();
 
     private readonly stageArtifacts = {
         req: 'requirements',
@@ -57,6 +75,7 @@ export class HarnessActionsService {
         };
         this.deps.getTasks().push(newTask);
         this.deps.ensureIterationDir(newTask);
+        this.deps.copyProjectStructureToIteration(this.deps.getIterationDir(newTask));
         this.deps.saveAndRender();
         await this.initializeTaskGit(newTask);
         vscode.window.showInformationMessage(`任务拆分模式已自动判定：${inferredSplitMode === 'compact' ? '急速模式' : '标准模式'}`);
@@ -81,11 +100,11 @@ export class HarnessActionsService {
             }
 
             task.iterationBranch = undefined;
-            task.mergeTargetBranchUsed = undefined;
-            task.baseSyncBranchUsed = undefined;
+            task.baseBranchUsed = undefined;
             task.stage = STAGE.INITIALIZING;
 
             this.deps.ensureIterationDir(task);
+            this.deps.copyProjectStructureToIteration(this.deps.getIterationDir(task));
             this.deps.saveAndRender();
             await this.initializeTaskGit(task);
             vscode.window.showInformationMessage(`任务已重置：${task.name}`);
@@ -144,26 +163,46 @@ export class HarnessActionsService {
         if (!result.success) {
             vscode.window.showErrorMessage(result.message, { modal: true });
         } else {
+            this.syncTaskDocsToMaster(task, iterDir, 'manualPush');
             vscode.window.showInformationMessage(result.message);
         }
+    }
+
+    async commitToBaselineByTaskId(taskId: string): Promise<void> {
+        const task = this.getTaskById(taskId);
+        if (!task) return;
+        const iterDir = this.deps.getIterationDir(task);
+        vscode.window.showInformationMessage('正在提交并合并到基线...');
+        const result = await this.deps.gitService.mergeIterationToTarget(task, iterDir, { cleanup: false });
+        if (!result.success) {
+            const lines = (result.message || '未知错误').split('\n');
+            const brief = lines[0];
+            const extra = lines.slice(1).join('\n');
+            vscode.window.showErrorMessage(brief, { detail: extra || undefined, modal: true });
+            return;
+        }
+        this.syncTaskDocsToMaster(task, iterDir, 'manualPush');
+        vscode.window.showInformationMessage(result.message);
     }
 
     async runAgentByTaskId(taskId: string, step: HarnessStep): Promise<void> {
         const task = this.getTaskById(taskId);
         if (!task) return;
 
-        const slashCommands: Record<HarnessStep, string> = {
-            req: 'fun-harness-requirement',
-            des: 'fun-harness-design',
-            tcs: 'fun-harness-testcase',
-            tsk: 'fun-harness-task',
-            dev: 'fun-harness-dev',
-        };
-
         const iterDir = this.deps.getIterationDir(task);
+        this.reconcileStageArtifactPath(task, step);
+
+        const rendered = this.deps.renderAgentPrompt(step, task.name, task.desc, iterDir);
+        if (!rendered.content.trim()) {
+            vscode.window.showErrorMessage(`未找到可用的 ${step} Prompt，请检查 .harness/prompts 或扩展内置 prompts。`);
+            return;
+        }
+
         const splitMode = this.resolveTaskSplitMode(task);
-        const query = `/${slashCommands[step]} taskName=${task.name} taskDesc='${task.desc}' currentWorkSpace=${iterDir} taskSplitMode=${splitMode}`;
-        await this.deps.dispatchAi(query, iterDir, 'stage-agent');
+        const query = `${rendered.content}\n\n---\n运行参数：taskSplitMode=${splitMode}`;
+        await this.deps.dispatchAi(query, iterDir, 'stage-agent', task.aiProvider);
+        vscode.window.showInformationMessage(`已派发 ${step.toUpperCase()} Agent（Prompt来源: ${rendered.source}）`);
+        this.startArtifactRepairWatch(task, step);
 
         if (step === 'tcs') {
             await this.openArtifactByTaskId(taskId, 'testcase');
@@ -177,6 +216,13 @@ export class HarnessActionsService {
         if (!task) return;
 
         const iterDir = this.deps.getIterationDir(task);
+        if (artifact === 'requirements') {
+            this.reconcileStageArtifactPath(task, 'req');
+        } else if (artifact === 'design') {
+            this.reconcileStageArtifactPath(task, 'des');
+        } else if (artifact === 'testcase') {
+            this.reconcileStageArtifactPath(task, 'tcs');
+        }
         const testScriptName = process.platform === 'win32' ? 'test-api.ps1' : 'test-api.sh';
         const fileMap = {
             requirements: path.join('docs', 'requirements.md'),
@@ -360,12 +406,11 @@ export class HarnessActionsService {
         }
 
         if (result.baseBranch) {
-            task.baseSyncBranchUsed = result.baseBranch;
+            task.baseBranchUsed = result.baseBranch;
         }
         if (result.iterationBranch) {
             task.iterationBranch = result.iterationBranch;
         }
-        task.mergeTargetBranchUsed = result.mergeTargetBranchUsed || task.mergeTargetBranchUsed;
         this.deps.saveAndRender();
         vscode.window.showInformationMessage(`代码补偿完成：${task.name}`);
         return true;
@@ -446,11 +491,20 @@ export class HarnessActionsService {
             if (targetStage === 'tsk') task.stage = STAGE.WRITING_TASKS;
             if (targetStage === 'dev') task.stage = STAGE.DEVELOPING;
 
+            // Save first to persist stage, then run agent, then render.
+            // Calling saveAndRender() before dispatch replaces the webview HTML
+            // which can interfere with the subsequent command execution.
             this.deps.saveAndRender();
 
             // 运行targetStage对应的agent
-            await this.runAgentByTaskId(taskId, targetStage);
-            vscode.window.showInformationMessage(`已推进到下一阶段，并自动打开 ${targetStage.toUpperCase()} Agent`);
+            try {
+                await this.runAgentByTaskId(taskId, targetStage);
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                vscode.window.showErrorMessage(`跳转到 ${targetStage.toUpperCase()} 后自动派发 Agent 失败：${message}`);
+            }
+
+            this.deps.saveAndRender();
             return;
         }
 
@@ -526,6 +580,7 @@ export class HarnessActionsService {
         task.stage = STAGE.DONE;
         this.deps.onPass(task);
         this.deps.saveAndRender();
+        this.syncTaskDocsToMaster(task, iterDir, 'taskDone');
         if (mergeResult.message) {
             vscode.window.showInformationMessage(mergeResult.message);
         }
@@ -594,6 +649,7 @@ export class HarnessActionsService {
             vscode.window.showErrorMessage(result.message, { modal: true });
             return;
         }
+        this.syncTaskDocsToMaster(task, iterDir, 'manualPush');
 
         // Then: Mark as complete development (change to READY_FOR_REVIEW)
         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -613,6 +669,7 @@ export class HarnessActionsService {
             vscode.window.showErrorMessage(result.message, { modal: true });
             return;
         }
+        this.syncTaskDocsToMaster(task, iterDir, 'manualPush');
 
         // Then: Change to READY_FOR_REVIEW stage
         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -631,12 +688,11 @@ export class HarnessActionsService {
         }
 
         if (result.baseBranch) {
-            task.baseSyncBranchUsed = result.baseBranch;
+            task.baseBranchUsed = result.baseBranch;
         }
         if (result.iterationBranch) {
             task.iterationBranch = result.iterationBranch;
         }
-        task.mergeTargetBranchUsed = result.mergeTargetBranchUsed || '';
 
         task.stage = STAGE.WRITING_REQUIREMENT;
         this.deps.saveAndRender();
@@ -656,6 +712,7 @@ export class HarnessActionsService {
     }
 
     private validateStageArtifact(task: Task, step: Exclude<HarnessStep, 'dev'>): { valid: boolean; errors: string[] } {
+        this.reconcileStageArtifactPath(task, step);
         const iterDir = this.deps.getIterationDir(task);
         const fileMap = {
             req: path.join('docs', 'requirements.md'),
@@ -939,6 +996,200 @@ export class HarnessActionsService {
             return legacy;
         }
         return preferred;
+    }
+
+    private stageArtifactRelativePath(step: Exclude<HarnessStep, 'dev'>): string {
+        const fileMap = {
+            req: path.join('docs', 'requirements.md'),
+            des: path.join('docs', 'design.md'),
+            tcs: path.join('docs', 'testcase.md'),
+            tsk: TASK_PLAN_PRIMARY_REL_PATH,
+        } as const;
+        return fileMap[step];
+    }
+
+    private reconcileStageArtifactPath(task: Task, step: HarnessStep): boolean {
+        if (step === 'dev') {
+            return false;
+        }
+
+        const iterDir = this.deps.getIterationDir(task);
+        const canonicalRel = this.stageArtifactRelativePath(step);
+        const canonicalAbs = path.join(iterDir, ...canonicalRel.split('/'));
+        fs.mkdirSync(path.dirname(canonicalAbs), { recursive: true });
+        const canonicalReady = fs.existsSync(canonicalAbs) && fs.readFileSync(canonicalAbs, 'utf8').trim().length > 0;
+        if (canonicalReady) {
+            return true;
+        }
+
+        const fileName = path.basename(canonicalAbs);
+        const candidates = [
+            path.join(iterDir, fileName),
+            path.join(iterDir, 'doc', fileName),
+            path.join(iterDir, '.harness', 'staging', fileName),
+            path.join(iterDir, '.harness', 'artifacts', fileName),
+        ];
+
+        for (const candidate of candidates) {
+            if (!fs.existsSync(candidate) || this.normalize(candidate) === this.normalize(canonicalAbs)) {
+                continue;
+            }
+            const content = fs.readFileSync(candidate, 'utf8');
+            if (!content.trim()) {
+                continue;
+            }
+            fs.writeFileSync(canonicalAbs, content, 'utf8');
+            try {
+                fs.rmSync(candidate, { force: true });
+            } catch {
+                // ignore delete errors and keep canonical copy.
+            }
+            vscode.window.showInformationMessage(`已自动修复 ${fileName} 路径到 ${canonicalRel}`);
+            return true;
+        }
+
+        return false;
+    }
+
+    private startArtifactRepairWatch(task: Task, step: HarnessStep): void {
+        if (step === 'dev' || step === 'tsk') {
+            return;
+        }
+        const key = `${task.id}:${step}`;
+        const existing = this.artifactRepairTimers.get(key);
+        if (existing) {
+            clearInterval(existing);
+        }
+
+        const startedAt = Date.now();
+        const timer = setInterval(() => {
+            const fixed = this.reconcileStageArtifactPath(task, step);
+            if (fixed || Date.now() - startedAt > 180000) {
+                clearInterval(timer);
+                this.artifactRepairTimers.delete(key);
+            }
+        }, 2000);
+        this.artifactRepairTimers.set(key, timer);
+    }
+
+    private normalize(inputPath: string): string {
+        return inputPath.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
+    }
+
+    private syncTaskDocsToMaster(task: Task, iterDir: string, trigger: 'manualPush' | 'taskDone'): void {
+        try {
+            const sourceRequirements = path.join(iterDir, 'docs', 'requirements.md');
+            const sourceDesign = path.join(iterDir, 'docs', 'design.md');
+            const masterRoot = this.resolveMasterWorkspaceRoot();
+            if (!masterRoot) {
+                return;
+            }
+
+            const targetRequirements = path.join(masterRoot, 'docs', 'requirements', `requirements-${task.id}.md`);
+            const targetDesign = path.join(masterRoot, 'docs', 'designs', `designs-${task.id}.md`);
+
+            const copied: string[] = [];
+            let requirementsSynced = false;
+            let designSynced = false;
+            if (this.copyNonEmptyFile(sourceRequirements, targetRequirements)) {
+                copied.push('requirements');
+                requirementsSynced = true;
+            }
+            if (this.copyNonEmptyFile(sourceDesign, targetDesign)) {
+                copied.push('design');
+                designSynced = true;
+            }
+
+            this.updateArtifactIndex(masterRoot, task, trigger, {
+                requirementsPath: requirementsSynced ? targetRequirements : undefined,
+                designPath: designSynced ? targetDesign : undefined,
+            });
+
+            if (copied.length > 0) {
+                const tip = trigger === 'taskDone' ? '任务完成后已归档文档' : '提交代码后已归档文档';
+                vscode.window.showInformationMessage(`${tip}：${copied.join('、')}（taskId=${task.id}）`);
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showWarningMessage(`归档需求/设计文档失败：${message}`);
+        }
+    }
+
+    private copyNonEmptyFile(sourcePath: string, targetPath: string): boolean {
+        if (!fs.existsSync(sourcePath)) {
+            return false;
+        }
+        const content = fs.readFileSync(sourcePath, 'utf8');
+        if (!content.trim()) {
+            return false;
+        }
+        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        fs.writeFileSync(targetPath, content, 'utf8');
+        return true;
+    }
+
+    private updateArtifactIndex(
+        masterRoot: string,
+        task: Task,
+        trigger: 'manualPush' | 'taskDone',
+        paths: { requirementsPath?: string; designPath?: string }
+    ): void {
+        const indexPath = path.join(masterRoot, 'docs', 'artifacts-index.json');
+        const now = new Date().toISOString();
+
+        let data: ArtifactIndexFile = {
+            version: 1,
+            updatedAt: now,
+            items: [],
+        };
+
+        if (fs.existsSync(indexPath)) {
+            try {
+                const raw = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as Partial<ArtifactIndexFile>;
+                if (Array.isArray(raw.items)) {
+                    data = {
+                        version: 1,
+                        updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : now,
+                        items: raw.items.filter((item): item is ArtifactIndexItem => Boolean(item && typeof item.taskId === 'string')),
+                    };
+                }
+            } catch {
+                // Keep default empty index when existing file is malformed.
+            }
+        }
+
+        const existing = data.items.find(item => item.taskId === task.id);
+        if (existing) {
+            existing.taskName = task.name;
+            existing.updatedAt = now;
+            existing.trigger = trigger;
+            if (paths.requirementsPath) {
+                existing.requirementsPath = this.toWorkspaceLikePath(masterRoot, paths.requirementsPath);
+            }
+            if (paths.designPath) {
+                existing.designPath = this.toWorkspaceLikePath(masterRoot, paths.designPath);
+            }
+        } else {
+            data.items.push({
+                taskId: task.id,
+                taskName: task.name,
+                updatedAt: now,
+                trigger,
+                ...(paths.requirementsPath ? { requirementsPath: this.toWorkspaceLikePath(masterRoot, paths.requirementsPath) } : {}),
+                ...(paths.designPath ? { designPath: this.toWorkspaceLikePath(masterRoot, paths.designPath) } : {}),
+            });
+        }
+
+        data.updatedAt = now;
+        data.items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+        fs.mkdirSync(path.dirname(indexPath), { recursive: true });
+        fs.writeFileSync(indexPath, JSON.stringify(data, null, 2), 'utf8');
+    }
+
+    private toWorkspaceLikePath(masterRoot: string, absPath: string): string {
+        const rel = path.relative(masterRoot, absPath).replace(/\\/g, '/');
+        return rel || absPath;
     }
 
     private toRelativeIterationPath(iterDir: string, absPath: string): string {

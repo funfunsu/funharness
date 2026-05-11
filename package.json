@@ -2,7 +2,7 @@
   "name": "fun-harness",
   "displayName": "Fun Harness AI 研发流程",
   "description": "AI 驱动的研发流程管理工具",
-  "version": "0.0.4",
+  "version": "0.0.6",
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -99,7 +99,10 @@
     "watch": "tsc -watch -p ./",
     "test": "npm run compile && node --test test",
     "prepackage": "npm run compile",
-    "package": "vsce package --allow-missing-repository --allow-star-activation"
+    "package": "vsce package --allow-missing-repository --allow-star-activation",
+    "clean:vsix": "find . -maxdepth 1 -name \"*.vsix\" -type f -delete",
+    "package:local": "npm run clean:vsix && npm run compile && vsce package --allow-missing-repository --allow-star-activation -o \"fun-harness-$(node -p \"require('./package.json').version\")-$(date +%Y%m%d-%H%M%S).vsix\"",
+    "publish:remote": "npm run compile && vsce publish"
   },
   "devDependencies": {
     "@types/node": "^18.0.0",

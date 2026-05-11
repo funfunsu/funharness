@@ -27,9 +27,8 @@ export class GitService {
             return { success: false, message: '请至少填写一个 Git 地址（前端或后端）' };
         }
 
-        const explicitBaseBranch = (this.config.baseSyncBranch || '').trim();
-        const baseBranch = (explicitBaseBranch || this.config.mergeTargetBranch || 'main').trim();
-        const requireExact = Boolean(explicitBaseBranch);
+        const baseBranch = (this.config.baseBranch || 'main').trim();
+        const requireExact = Boolean(this.config.baseBranch?.trim());
 
         if (this.config.frontendGit) {
             const frontendMainDir = this.getMainRepoDir('frontend');
@@ -50,13 +49,11 @@ export class GitService {
         return { success: true, message: '✅ Git 配置已保存，代码初始化完成' };
     }
 
-    async createIterationBranches(task: Task, iterationDir: string): Promise<{ success: boolean; message?: string; baseBranch?: string; iterationBranch?: string; mergeTargetBranchUsed?: string }> {
+    async createIterationBranches(task: Task, iterationDir: string): Promise<{ success: boolean; message?: string; baseBranch?: string; iterationBranch?: string }> {
         this.lastExecError = '';
         const branchName = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
-        const explicitBaseBranch = (this.config.baseSyncBranch || '').trim();
-        const baseBranch = (explicitBaseBranch || this.config.mergeTargetBranch || 'main').trim();
-        const requireExactBaseBranch = Boolean(explicitBaseBranch);
-        const mergeTargetBranchUsed = (this.config.mergeTargetBranch || '').trim();
+        const baseBranch = (this.config.baseBranch || 'main').trim();
+        const requireExactBaseBranch = Boolean(this.config.baseBranch?.trim());
         let resolvedBaseBranch = baseBranch;
         if (!branchName || branchName.length < 2) {
             return { success: false, message: '迭代名称必须使用英文' };
@@ -123,7 +120,6 @@ export class GitService {
             message: `✅ 迭代初始化完成，基线分支：${resolvedBaseBranch}，迭代分支：${branchName}`,
             baseBranch: resolvedBaseBranch,
             iterationBranch: branchName,
-            mergeTargetBranchUsed,
         };
     }
 
@@ -195,20 +191,31 @@ export class GitService {
     async pushAll(task: Task, iterationDir: string): Promise<{ success: boolean; message: string }> {
         const failures: Array<{ repo: string; reason: string }> = [];
         const commitMessage = this.buildCommitMessage(task);
+        const expectedBranch = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
 
         if (this.config.frontendGit) {
             const frontendDir = path.join(iterationDir, 'frontend');
-            const frontendError = await this.pushRepoChanges('frontend', frontendDir, commitMessage);
-            if (frontendError) {
-                failures.push({ repo: 'frontend', reason: frontendError });
+            const branchErr = await this.assertExpectedBranch(frontendDir, expectedBranch);
+            if (branchErr) {
+                failures.push({ repo: 'frontend', reason: branchErr });
+            } else {
+                const frontendError = await this.pushRepoChanges('frontend', frontendDir, commitMessage);
+                if (frontendError) {
+                    failures.push({ repo: 'frontend', reason: frontendError });
+                }
             }
         }
 
         if (this.config.backendGit) {
             const backendDir = path.join(iterationDir, 'backend');
-            const backendError = await this.pushRepoChanges('backend', backendDir, commitMessage);
-            if (backendError) {
-                failures.push({ repo: 'backend', reason: backendError });
+            const branchErr = await this.assertExpectedBranch(backendDir, expectedBranch);
+            if (branchErr) {
+                failures.push({ repo: 'backend', reason: branchErr });
+            } else {
+                const backendError = await this.pushRepoChanges('backend', backendDir, commitMessage);
+                if (backendError) {
+                    failures.push({ repo: 'backend', reason: backendError });
+                }
             }
         }
 
@@ -256,20 +263,21 @@ export class GitService {
     }
 
     async syncMainCode(task: Task, iterationDir: string): Promise<{ success: boolean; message: string }> {
-        const baseBranch = (task.baseSyncBranchUsed || this.config.baseSyncBranch || this.config.mergeTargetBranch || 'main').trim();
+        const baseBranch = (task.baseBranchUsed || task.baseSyncBranchUsed || this.config.baseBranch || 'main').trim();
+        const expectedBranch = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
         const failures: Array<{ repo: string; reason: string }> = [];
 
         if (this.config.frontendGit) {
             const mainDir = this.getMainRepoDir('frontend');
             const worktreeDir = path.join(iterationDir, 'frontend');
-            const result = await this.syncRepoToWorktree(mainDir, worktreeDir, baseBranch);
+            const result = await this.syncRepoToWorktree(mainDir, worktreeDir, baseBranch, expectedBranch);
             if (!result.ok) { failures.push({ repo: 'frontend', reason: result.reason || '未知' }); }
         }
 
         if (this.config.backendGit) {
             const mainDir = this.getMainRepoDir('backend');
             const worktreeDir = path.join(iterationDir, 'backend');
-            const result = await this.syncRepoToWorktree(mainDir, worktreeDir, baseBranch);
+            const result = await this.syncRepoToWorktree(mainDir, worktreeDir, baseBranch, expectedBranch);
             if (!result.ok) { failures.push({ repo: 'backend', reason: result.reason || '未知' }); }
         }
 
@@ -280,18 +288,33 @@ export class GitService {
         return { success: true, message: `✅ 已同步主仓库最新代码（${baseBranch}）到当前 worktree` };
     }
 
-    private async syncRepoToWorktree(mainRepoDir: string, worktreeDir: string, baseBranch: string): Promise<{ ok: boolean; reason?: string }> {
+    private async syncRepoToWorktree(mainRepoDir: string, worktreeDir: string, baseBranch: string, expectedBranch?: string): Promise<{ ok: boolean; reason?: string }> {
         if (!fs.existsSync(mainRepoDir)) {
             return { ok: false, reason: `主仓库目录不存在：${mainRepoDir}` };
         }
         if (!fs.existsSync(worktreeDir)) {
             return { ok: false, reason: `worktree 目录不存在：${worktreeDir}` };
         }
+
+        // Guard: verify the worktree is on the expected iteration branch before merging.
+        // This catches the scenario where a worktree was accidentally checked out on the
+        // wrong branch (e.g. another iteration's branch), which would silently merge
+        // baseBranch into the wrong branch and potentially discard iteration-specific commits.
+        if (expectedBranch) {
+            const branchErr = await this.assertExpectedBranch(worktreeDir, expectedBranch);
+            if (branchErr) {
+                return { ok: false, reason: branchErr };
+            }
+        }
+
         const fetched = await this.execCmd('git fetch origin', mainRepoDir);
         if (!fetched) {
             return { ok: false, reason: `fetch 失败：${this.lastExecError}` };
         }
-        await this.execCmd(`git pull origin ${baseBranch}`, mainRepoDir);
+        // Note: do NOT run `git pull origin ${baseBranch}` in mainRepoDir here.
+        // The main repo may not be on baseBranch, and pulling would merge baseBranch
+        // into whatever branch it is currently on, which could corrupt iteration branches.
+        // git fetch origin (above) is sufficient to update origin/${baseBranch} tracking ref.
         const merged = await this.execCmd(`git merge origin/${baseBranch} --no-edit`, worktreeDir);
         if (!merged) {
             return { ok: false, reason: `合并主分支代码失败（可能有冲突）：${this.lastExecError}` };
@@ -299,10 +322,11 @@ export class GitService {
         return { ok: true };
     }
 
-    async mergeIterationToTarget(task: Task, iterationDir: string): Promise<{ success: boolean; message: string }> {
-        const target = (this.config.mergeTargetBranch || '').trim();
+    async mergeIterationToTarget(task: Task, iterationDir: string, options: { cleanup?: boolean } = {}): Promise<{ success: boolean; message: string }> {
+        const cleanup = options.cleanup !== false;
+        const target = (this.config.baseBranch || '').trim();
         if (!target) {
-            return { success: true, message: '未配置个人合并分支，跳过自动合并' };
+            return { success: true, message: '未配置基线分支，跳过自动合并' };
         }
 
         const sourceBranch = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -310,67 +334,164 @@ export class GitService {
             return { success: false, message: '无法识别迭代分支名' };
         }
 
-        const failures: Array<{ repo: string; reason: string }> = [];
-
+        type RepoCtx = { kind: 'frontend' | 'backend'; mainDir: string; worktreeDir: string };
+        const repos: RepoCtx[] = [];
         if (this.config.frontendGit) {
-            // Merge must happen in the main repo, not the worktree dir.
-            // A worktree is locked to its iteration branch; switching branches there is rejected by git.
-            const frontendMainDir = this.getMainRepoDir('frontend');
-            const result = await this.mergeRepoBranch(frontendMainDir, sourceBranch, target);
-            if (!result.ok) {
-                failures.push({ repo: 'frontend', reason: result.reason || '未知错误' });
-            }
+            repos.push({
+                kind: 'frontend',
+                mainDir: this.getMainRepoDir('frontend'),
+                worktreeDir: path.join(iterationDir, 'frontend'),
+            });
         }
-
         if (this.config.backendGit) {
-            const backendMainDir = this.getMainRepoDir('backend');
-            const result = await this.mergeRepoBranch(backendMainDir, sourceBranch, target);
-            if (!result.ok) {
-                failures.push({ repo: 'backend', reason: result.reason || '未知错误' });
+            repos.push({
+                kind: 'backend',
+                mainDir: this.getMainRepoDir('backend'),
+                worktreeDir: path.join(iterationDir, 'backend'),
+            });
+        }
+
+        // Phase 1 — Backup: ensure each worktree is fully committed and its iteration branch
+        // is pushed to the remote. After this phase, even if merge/push to target fails,
+        // the user's work is preserved on origin/<sourceBranch>.
+        const sourceShas: Record<string, string> = {};
+        for (const repo of repos) {
+            const prep = await this.prepareIterationForMerge(repo.worktreeDir, sourceBranch, task);
+            if (!prep.ok) {
+                return {
+                    success: false,
+                    message: `[${repo.kind}] 迭代分支同步到远程失败：${prep.reason}\n\n` +
+                        `本地 worktree 和迭代分支均未变更，请处理后重试。`,
+                };
+            }
+            sourceShas[repo.kind] = prep.sha || '';
+        }
+
+        // Phase 2 — Merge into target & push, verify remote actually advanced and contains source.
+        for (const repo of repos) {
+            const merged = await this.mergeRepoBranch(repo.mainDir, sourceBranch, target, sourceShas[repo.kind]);
+            if (!merged.ok) {
+                return {
+                    success: false,
+                    message: `[${repo.kind}] 合并/推送到远程基线 ${target} 失败：${merged.reason}\n\n` +
+                        `⚠️ 代码已安全保存在远程 origin/${sourceBranch}，本地 worktree 与迭代分支均已保留，未执行任何清理。\n` +
+                        `请手动处理冲突或确认远程状态后重试。`,
+                };
             }
         }
 
-        if (failures.length > 0) {
-            const detail = failures
-                .map(f => `[${f.repo}] ${f.reason}`)
-                .join('\n');
-            return { success: false, message: `自动合并失败：\n${detail}` };
+        // Phase 3 — Cleanup only after confirming remote target contains the source commits.
+        // Skipped when caller passed { cleanup: false } (e.g. "提交代码" intermediate save that
+        // keeps the iteration branch alive for continued work).
+        if (!cleanup) {
+            return {
+                success: true,
+                message: `✅ 已推送迭代分支 ${sourceBranch} 到远程并合并到基线 ${target}（worktree 与迭代分支保留，可继续工作）`,
+            };
         }
 
         const cleanupFailures: Array<{ repo: string; reason: string }> = [];
-
-        if (this.config.frontendGit) {
-            const frontendMainDir = this.getMainRepoDir('frontend');
-            const frontendWorktreeDir = path.join(iterationDir, 'frontend');
-            const cleanup = await this.cleanupMergedBranch(frontendMainDir, frontendWorktreeDir, sourceBranch);
-            if (!cleanup.ok) {
-                cleanupFailures.push({ repo: 'frontend', reason: cleanup.reason || '未知错误' });
-            }
-        }
-
-        if (this.config.backendGit) {
-            const backendMainDir = this.getMainRepoDir('backend');
-            const backendWorktreeDir = path.join(iterationDir, 'backend');
-            const cleanup = await this.cleanupMergedBranch(backendMainDir, backendWorktreeDir, sourceBranch);
-            if (!cleanup.ok) {
-                cleanupFailures.push({ repo: 'backend', reason: cleanup.reason || '未知错误' });
+        for (const repo of repos) {
+            const cleanupResult = await this.cleanupMergedBranch(repo.mainDir, repo.worktreeDir, sourceBranch, target);
+            if (!cleanupResult.ok) {
+                cleanupFailures.push({ repo: repo.kind, reason: cleanupResult.reason || '未知错误' });
             }
         }
 
         if (cleanupFailures.length > 0) {
             const detail = cleanupFailures.map(f => `[${f.repo}] ${f.reason}`).join('\n');
-            return { success: true, message: `已自动合并到个人分支 ${target}，但分支清理未完全成功：\n${detail}` };
+            return {
+                success: true,
+                message: `✅ 已合并到远程基线 ${target}（已校验远程包含本次提交）。\n` +
+                    `但部分清理步骤失败：\n${detail}\n` +
+                    `代码本身已安全在远程基线，可手动清理 worktree/迭代分支。`,
+            };
         }
 
-        return { success: true, message: `已自动合并到个人分支 ${target}，并已删除迭代分支 ${sourceBranch}` };
+        return { success: true, message: `✅ 已合并到远程基线 ${target} 并清理迭代分支 ${sourceBranch}` };
     }
 
-    private async mergeRepoBranch(repoDir: string, sourceBranch: string, targetBranch: string): Promise<{ ok: boolean; reason?: string }> {
+    /**
+     * Prepare a worktree for merging: auto-commit any pending changes on the iteration branch,
+     * push it to remote as a safety backup, and verify the remote SHA matches local.
+     * Returns the verified source SHA so the caller can later assert it is an ancestor of the
+     * target branch after merge.
+     */
+    private async prepareIterationForMerge(worktreeDir: string, sourceBranch: string, task: Task): Promise<{ ok: boolean; reason?: string; sha?: string }> {
+        if (!fs.existsSync(worktreeDir)) {
+            return { ok: false, reason: `worktree 目录不存在：${worktreeDir}` };
+        }
+
+        const branchErr = await this.assertExpectedBranch(worktreeDir, sourceBranch);
+        if (branchErr) {
+            return { ok: false, reason: branchErr };
+        }
+
+        const addCmd = await this.execCmd('git add -A', worktreeDir);
+        if (!addCmd) {
+            return { ok: false, reason: `git add 失败：${this.lastExecError}` };
+        }
+
+        const status = await this.execCmdOutput('git status --porcelain', worktreeDir);
+        if (!status.success) {
+            return { ok: false, reason: `git status 失败：${this.lastExecError}` };
+        }
+        if (status.stdout.trim().length > 0) {
+            const commitMessage = this.buildCommitMessage(task);
+            const committed = await this.execCmd(`git commit -m "${commitMessage}"`, worktreeDir);
+            if (!committed) {
+                return { ok: false, reason: `自动提交未提交改动失败：${this.lastExecError}` };
+            }
+        }
+
+        // Confirm working tree is clean now — otherwise the later non-forced worktree remove
+        // could still fail and we want to surface it as a merge-prep error, not a cleanup error.
+        const recheck = await this.execCmdOutput('git status --porcelain', worktreeDir);
+        if (!recheck.success || recheck.stdout.trim().length > 0) {
+            return { ok: false, reason: `worktree 仍有未跟踪/未提交内容：${recheck.stdout.trim() || this.lastExecError}` };
+        }
+
+        const pushed = await this.execCmd(`git push -u origin ${sourceBranch}`, worktreeDir);
+        if (!pushed) {
+            return { ok: false, reason: `推送迭代分支到远程失败：${this.lastExecError}` };
+        }
+
+        const fetched = await this.execCmd('git fetch origin', worktreeDir);
+        if (!fetched) {
+            return { ok: false, reason: `推送后 fetch origin 失败：${this.lastExecError}` };
+        }
+
+        const localShaOut = await this.execCmdOutput(`git rev-parse ${sourceBranch}`, worktreeDir);
+        if (!localShaOut.success) {
+            return { ok: false, reason: `读取本地 ${sourceBranch} SHA 失败：${this.lastExecError}` };
+        }
+        const remoteShaOut = await this.execCmdOutput(`git rev-parse origin/${sourceBranch}`, worktreeDir);
+        if (!remoteShaOut.success) {
+            return { ok: false, reason: `读取远程 origin/${sourceBranch} SHA 失败：${this.lastExecError}` };
+        }
+        const localSha = localShaOut.stdout.trim();
+        const remoteSha = remoteShaOut.stdout.trim();
+        if (!localSha || !remoteSha || localSha !== remoteSha) {
+            return {
+                ok: false,
+                reason: `远程 origin/${sourceBranch} (${remoteSha || '空'}) 与本地 ${sourceBranch} (${localSha || '空'}) 不一致，推送未真正生效`,
+            };
+        }
+        return { ok: true, sha: localSha };
+    }
+
+    private async mergeRepoBranch(repoDir: string, sourceBranch: string, targetBranch: string, expectedSourceSha: string): Promise<{ ok: boolean; reason?: string }> {
         if (!fs.existsSync(repoDir)) {
             return { ok: false, reason: `目录不存在：${repoDir}` };
         }
+        if (!expectedSourceSha) {
+            return { ok: false, reason: `内部错误：缺少 ${sourceBranch} 的预期 SHA，已中止合并` };
+        }
 
-        await this.execCmd('git fetch origin', repoDir);
+        const fetched = await this.execCmd('git fetch origin', repoDir);
+        if (!fetched) {
+            return { ok: false, reason: `fetch origin 失败：${this.lastExecError}` };
+        }
 
         const checkoutTarget = await this.execCmd(`git checkout ${targetBranch}`, repoDir);
         if (!checkoutTarget) {
@@ -392,7 +513,16 @@ export class GitService {
             }
         }
 
-        await this.execCmd(`git pull origin ${targetBranch}`, repoDir);
+        // pull must succeed — proceeding against a stale local target can silently push the
+        // wrong history or cause the post-push ancestry check to fail confusingly.
+        // Skip pull if remote branch doesn't yet exist (first push of target).
+        const remoteTargetExists = await this.execCmd(`git rev-parse --verify origin/${targetBranch}`, repoDir);
+        if (remoteTargetExists) {
+            const pulled = await this.execCmd(`git pull origin ${targetBranch}`, repoDir);
+            if (!pulled) {
+                return { ok: false, reason: `git pull origin ${targetBranch} 失败：${this.lastExecError}` };
+            }
+        }
 
         if (this.config.mergeDryRunEnabled) {
             const dryRunOk = await this.execCmd(`git merge --no-commit --no-ff ${sourceBranch}`, repoDir);
@@ -412,24 +542,85 @@ export class GitService {
             return { ok: false, reason: `合并命令执行失败：${this.lastExecError}` };
         }
 
+        // Local sanity: merged target must now contain the iteration SHA.
+        const localContainsSource = await this.execCmd(`git merge-base --is-ancestor ${expectedSourceSha} HEAD`, repoDir);
+        if (!localContainsSource) {
+            return { ok: false, reason: `本地合并后 HEAD 不包含 ${sourceBranch} 的 commit ${expectedSourceSha}` };
+        }
+
         const pushed = await this.execCmd(`git push origin ${targetBranch}`, repoDir);
         if (!pushed) {
             return { ok: false, reason: `push 到 ${targetBranch} 失败：${this.lastExecError}` };
         }
 
+        // Verify remote actually advanced. `git push` can exit 0 in degenerate cases without
+        // updating the remote ref we expected, so we explicitly compare SHAs.
+        const refetched = await this.execCmd('git fetch origin', repoDir);
+        if (!refetched) {
+            return { ok: false, reason: `推送后 fetch origin 失败，无法校验远程：${this.lastExecError}` };
+        }
+        const localTargetSha = await this.execCmdOutput(`git rev-parse ${targetBranch}`, repoDir);
+        if (!localTargetSha.success) {
+            return { ok: false, reason: `读取本地 ${targetBranch} SHA 失败：${this.lastExecError}` };
+        }
+        const remoteTargetSha = await this.execCmdOutput(`git rev-parse origin/${targetBranch}`, repoDir);
+        if (!remoteTargetSha.success) {
+            return { ok: false, reason: `读取远程 origin/${targetBranch} SHA 失败：${this.lastExecError}` };
+        }
+        const lts = localTargetSha.stdout.trim();
+        const rts = remoteTargetSha.stdout.trim();
+        if (!lts || !rts || lts !== rts) {
+            return {
+                ok: false,
+                reason: `远程 origin/${targetBranch} (${rts || '空'}) 与本地 ${targetBranch} (${lts || '空'}) 不一致，推送未真正生效`,
+            };
+        }
+
+        // Final verification: the remote target ref must contain the source SHA.
+        const remoteContainsSource = await this.execCmd(`git merge-base --is-ancestor ${expectedSourceSha} origin/${targetBranch}`, repoDir);
+        if (!remoteContainsSource) {
+            return {
+                ok: false,
+                reason: `远程 origin/${targetBranch} 不包含 ${sourceBranch} 的 commit ${expectedSourceSha}，合并校验失败`,
+            };
+        }
+
         return { ok: true };
     }
 
-    private async cleanupMergedBranch(mainRepoDir: string, worktreeDir: string, sourceBranch: string): Promise<{ ok: boolean; reason?: string }> {
+    private async cleanupMergedBranch(mainRepoDir: string, worktreeDir: string, sourceBranch: string, targetBranch: string): Promise<{ ok: boolean; reason?: string }> {
         if (!fs.existsSync(mainRepoDir)) {
             return { ok: false, reason: `主仓库目录不存在：${mainRepoDir}` };
         }
 
+        // Safety net: re-assert that the remote target branch already contains the iteration
+        // tip before deleting anything. mergeRepoBranch verified this just now, but if anything
+        // raced in between we'd rather fail-safe here than orphan the user's work.
+        const sourceShaOut = await this.execCmdOutput(`git rev-parse ${sourceBranch}`, mainRepoDir);
+        if (sourceShaOut.success) {
+            const sourceSha = sourceShaOut.stdout.trim();
+            if (sourceSha) {
+                const ancestorOk = await this.execCmd(
+                    `git merge-base --is-ancestor ${sourceSha} origin/${targetBranch}`,
+                    mainRepoDir,
+                );
+                if (!ancestorOk) {
+                    return {
+                        ok: false,
+                        reason: `保护性检查失败：远程 origin/${targetBranch} 未包含 ${sourceBranch} (${sourceSha})，已中止清理`,
+                    };
+                }
+            }
+        }
+
         const registered = await this.hasRegisteredWorktreeAtPath(mainRepoDir, worktreeDir);
         if (registered) {
-            const removed = await this.execCmd(`git worktree remove --force "${worktreeDir}"`, mainRepoDir);
+            // Intentionally NOT --force: any lingering uncommitted file in the worktree should
+            // block deletion. prepareIterationForMerge already committed+pushed everything,
+            // so a clean removal should succeed in the happy path.
+            const removed = await this.execCmd(`git worktree remove "${worktreeDir}"`, mainRepoDir);
             if (!removed) {
-                return { ok: false, reason: `移除 worktree 失败：${this.lastExecError}` };
+                return { ok: false, reason: `移除 worktree 失败（可能存在未提交改动，已停止清理）：${this.lastExecError}` };
             }
         }
 
@@ -542,6 +733,30 @@ export class GitService {
             return true;
         }
         return this.execCmd(`git checkout -b ${branch} origin/${branch}`, repoDir);
+    }
+
+    private async getCurrentBranch(repoDir: string): Promise<string | null> {
+        const result = await this.execCmdOutput('git branch --show-current', repoDir);
+        if (!result.success) {
+            return null;
+        }
+        return result.stdout.trim() || null;
+    }
+
+    /**
+     * Returns an error string if the repo at repoDir is NOT on expectedBranch, or null if it is.
+     * Skips the check when the directory doesn't exist (let downstream report the missing dir).
+     */
+    private async assertExpectedBranch(repoDir: string, expectedBranch: string): Promise<string | null> {
+        if (!fs.existsSync(repoDir)) {
+            return null;
+        }
+        const currentBranch = await this.getCurrentBranch(repoDir);
+        if (currentBranch && currentBranch !== expectedBranch) {
+            return `分支异常：当前所在分支为 "${currentBranch}"，期望分支为 "${expectedBranch}"。` +
+                `请检查 worktree 是否被误操作（例如手动执行了 git checkout）。操作已中止，以防止代码推送到错误分支。`;
+        }
+        return null;
     }
 
     private hasGitWorktree(worktreeDir: string): boolean {

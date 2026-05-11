@@ -51,6 +51,7 @@ class HarnessMessageController {
             case 'nextTask':
             case 'retryTask':
             case 'setSubTaskStatus':
+            case 'setTaskAiProvider':
             case 'openArtifact':
             case 'openFolderLocation':
             case 'next':
@@ -60,6 +61,8 @@ class HarnessMessageController {
             case 'pushAll':
             case 'completeDevWithPush':
             case 'pushAndNextStage':
+            case 'commitToBaseline':
+            case 'openMasterWorkspace':
                 return true;
             case 'page':
                 if (msg.page === 'main') {
@@ -90,10 +93,31 @@ class HarnessMessageController {
                 this.deps.restoreSelectedAgentPrompt();
                 return;
             case 'saveGit':
-                await this.deps.saveGit(msg.fg, msg.bg, msg.mb, msg.sb, msg.dr);
+                await this.deps.saveGit(msg.fg, msg.bg, msg.bb, msg.dr);
                 return;
             case 'saveDevConfig':
                 this.deps.saveDevConfig(msg);
+                return;
+            case 'saveRuntimeConfig':
+                this.deps.saveRuntimeConfig(msg);
+                return;
+            case 'saveAdvancedConfig':
+                this.deps.saveAdvancedConfig(msg);
+                return;
+            case 'initProjectStructure':
+                await this.deps.initProjectStructure();
+                return;
+            case 'applyProjectStructurePreview':
+                await this.deps.applyProjectStructurePreview();
+                return;
+            case 'openArtifactsIndex':
+                await this.deps.openArtifactsIndex();
+                return;
+            case 'openMasterWorkspace':
+                await this.deps.openMasterWorkspace();
+                return;
+            case 'autoDetectDevEnv':
+                await this.deps.autoDetectDevEnv();
                 return;
             case 'testAiProvider':
                 await this.deps.testAiProvider();
@@ -135,6 +159,9 @@ class HarnessMessageController {
             case 'setTaskAutomation':
                 this.deps.setTaskAutomation(msg.id, msg.aa, msg.ar);
                 return;
+            case 'setTaskAiProvider':
+                this.deps.setTaskAiProvider(msg.id, msg.ap);
+                return;
             case 'openFolderLocation':
                 await this.deps.openFolderLocation(msg.id, msg.location);
                 return;
@@ -158,6 +185,9 @@ class HarnessMessageController {
                 return;
             case 'pushAndNextStage':
                 await this.deps.pushAndNextStage(msg.id);
+                return;
+            case 'commitToBaseline':
+                await this.deps.commitToBaseline(msg.id);
                 return;
         }
     }

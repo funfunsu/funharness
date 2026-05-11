@@ -41,8 +41,10 @@ const models_1 = require("./models");
 class TaskScheduler {
     constructor(iterDir, workspaceRoot, config, dispatchAi, onStatusChange) {
         this.watcher = null;
+        this.pollTimer = null;
         this.autoMode = false;
         this.timeoutTimer = null;
+        this.handledSignals = new Set();
         this.iterDir = iterDir;
         this.workspaceRoot = workspaceRoot;
         this.docsDir = path.join(iterDir, 'docs');
@@ -98,7 +100,7 @@ class TaskScheduler {
             else if (trimmed.startsWith('- 依赖:') || trimmed.startsWith('- 依赖：')) {
                 const depStr = trimmed.replace(/^- 依赖[：:]/, '').trim();
                 if (depStr) {
-                    current.depends = depStr.split(/[,，]/).map(d => d.trim()).filter(Boolean);
+                    current.depends = depStr.replace(/[\[\]]/g, '').split(/[,，]/).map(d => d.trim()).filter(Boolean);
                 }
                 currentField = '';
             }
@@ -397,7 +399,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         this.updateSubTaskStatus(subTask.id, 'doing');
         this.onStatusChange();
         const query = this.buildDispatchQuery(subTask, iterTask);
-        await this.dispatchAi(query, this.iterDir, 'dev-subtask');
+        await this.dispatchAi(query, this.iterDir, 'dev-subtask', iterTask.aiProvider);
         this.startTimeout(subTask.id);
     }
     async dispatchNext(iterTask) {
@@ -415,66 +417,110 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             return;
         const signalsDir = path.join(this.iterDir, 'signals');
         fs.mkdirSync(signalsDir, { recursive: true });
+        // 1) FileSystemWatcher — event-based, fires immediately on file creation.
         const pattern = new vscode.RelativePattern(signalsDir, 'done-*');
         this.watcher = vscode.workspace.createFileSystemWatcher(pattern);
         this.watcher.onDidCreate(async (uri) => {
-            const fileName = path.basename(uri.fsPath);
-            const taskId = fileName.replace('done-', '');
-            this.clearTimeout();
-            this.writeLog(taskId, `信号文件检测到: ${fileName}`);
-            const testScript = path.join(this.iterDir, 'tests', `test-${taskId}.sh`);
-            const testScriptPs = path.join(this.iterDir, 'tests', `test-${taskId}.ps1`);
-            const subTasks = this.parseTasksMd();
-            const subTask = subTasks.find(t => t.id === taskId);
-            let outputOk = true;
-            const expectedOutputFiles = this.getPathLikeOutputs(subTask);
-            const signalFiles = this.readSignalFiles(uri.fsPath);
-            const filesToCheck = expectedOutputFiles.length > 0 ? expectedOutputFiles : signalFiles;
-            for (const f of filesToCheck) {
-                const fullPath = path.isAbsolute(f) ? f : path.join(this.iterDir, f);
-                if (!fs.existsSync(fullPath)) {
-                    outputOk = false;
-                    break;
-                }
-            }
-            if (outputOk) {
-                if (fs.existsSync(testScriptPs)) {
-                    this.writeLog(taskId, `ℹ 检测到测试脚本，可按需手动执行: ${testScriptPs}`);
-                }
-                else if (fs.existsSync(testScript)) {
-                    this.writeLog(taskId, `ℹ 检测到测试脚本，可按需手动执行: ${testScript}`);
-                }
-                if (this.autoMode) {
-                    this.updateSubTaskStatus(taskId, 'done');
-                    this.writeLog(taskId, `✅ 输出校验通过（检查文件数: ${filesToCheck.length}），自动标记完成`);
-                    this.onStatusChange();
-                    await this.dispatchNext(iterTask);
-                }
-                else {
-                    const choice = await vscode.window.showInformationMessage(`✅ 任务 ${taskId} 信号已到达，确认推进？`, '确认完成', '人工检查');
-                    if (choice === '确认完成') {
-                        this.updateSubTaskStatus(taskId, 'done');
-                        this.writeLog(taskId, '✅ 用户确认完成');
-                        this.onStatusChange();
-                    }
-                }
-            }
-            else {
-                this.updateSubTaskStatus(taskId, 'failed');
-                this.writeLog(taskId, `❌ 输出文件不完整（检查文件数: ${filesToCheck.length}）`);
-                this.onStatusChange();
-                this.autoMode = false;
-                vscode.window.showWarningMessage(`❌ 任务 ${taskId} 输出文件不完整`);
-            }
+            const taskId = path.basename(uri.fsPath).replace('done-', '');
+            await this.handleSignal(taskId, uri.fsPath, iterTask);
         });
+        // 2) Polling fallback — catches signals that the watcher missed.
+        this.startPolling(signalsDir, iterTask);
     }
     stopWatching() {
         if (this.watcher) {
             this.watcher.dispose();
             this.watcher = null;
         }
+        this.stopPolling();
         this.clearTimeout();
+        this.handledSignals.clear();
         this.autoMode = false;
+    }
+    startPolling(signalsDir, iterTask) {
+        this.stopPolling();
+        this.pollTimer = setInterval(async () => {
+            if (!fs.existsSync(signalsDir))
+                return;
+            let entries;
+            try {
+                entries = fs.readdirSync(signalsDir).filter(f => f.startsWith('done-'));
+            }
+            catch {
+                return;
+            }
+            for (const fileName of entries) {
+                const taskId = fileName.replace('done-', '');
+                if (this.handledSignals.has(taskId))
+                    continue;
+                const filePath = path.join(signalsDir, fileName);
+                await this.handleSignal(taskId, filePath, iterTask);
+            }
+        }, 15000);
+    }
+    stopPolling() {
+        if (this.pollTimer) {
+            clearInterval(this.pollTimer);
+            this.pollTimer = null;
+        }
+    }
+    async handleSignal(taskId, signalFilePath, iterTask) {
+        if (this.handledSignals.has(taskId))
+            return;
+        // Skip tasks already marked done — avoids re-prompting after VS Code restart.
+        const currentTasks = this.parseTasksMd();
+        const currentTask = currentTasks.find(t => t.id === taskId);
+        if (currentTask && currentTask.status === 'done') {
+            this.handledSignals.add(taskId);
+            return;
+        }
+        this.handledSignals.add(taskId);
+        this.clearTimeout();
+        this.writeLog(taskId, `信号文件检测到: done-${taskId}`);
+        const testScript = path.join(this.iterDir, 'tests', `test-${taskId}.sh`);
+        const testScriptPs = path.join(this.iterDir, 'tests', `test-${taskId}.ps1`);
+        const subTasks = this.parseTasksMd();
+        const subTask = subTasks.find(t => t.id === taskId);
+        let outputOk = true;
+        const expectedOutputFiles = this.getPathLikeOutputs(subTask);
+        const signalFiles = this.readSignalFiles(signalFilePath);
+        const filesToCheck = expectedOutputFiles.length > 0 ? expectedOutputFiles : signalFiles;
+        for (const f of filesToCheck) {
+            const fullPath = path.isAbsolute(f) ? f : path.join(this.iterDir, f);
+            if (!fs.existsSync(fullPath)) {
+                outputOk = false;
+                break;
+            }
+        }
+        if (outputOk) {
+            if (fs.existsSync(testScriptPs)) {
+                this.writeLog(taskId, `ℹ 检测到测试脚本，可按需手动执行: ${testScriptPs}`);
+            }
+            else if (fs.existsSync(testScript)) {
+                this.writeLog(taskId, `ℹ 检测到测试脚本，可按需手动执行: ${testScript}`);
+            }
+            if (this.autoMode) {
+                this.updateSubTaskStatus(taskId, 'done');
+                this.writeLog(taskId, `✅ 输出校验通过（检查文件数: ${filesToCheck.length}），自动标记完成`);
+                this.onStatusChange();
+                await this.dispatchNext(iterTask);
+            }
+            else {
+                const choice = await vscode.window.showInformationMessage(`✅ 任务 ${taskId} 信号已到达，确认推进？`, '确认完成', '人工检查');
+                if (choice === '确认完成') {
+                    this.updateSubTaskStatus(taskId, 'done');
+                    this.writeLog(taskId, '✅ 用户确认完成');
+                    this.onStatusChange();
+                }
+            }
+        }
+        else {
+            this.updateSubTaskStatus(taskId, 'failed');
+            this.writeLog(taskId, `❌ 输出文件不完整（检查文件数: ${filesToCheck.length}）`);
+            this.onStatusChange();
+            this.autoMode = false;
+            vscode.window.showWarningMessage(`❌ 任务 ${taskId} 输出文件不完整`);
+        }
     }
     async startAuto(iterTask) {
         this.autoMode = true;
@@ -523,11 +569,12 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     startTimeout(taskId) {
         this.clearTimeout();
         this.timeoutTimer = setTimeout(() => {
-            this.updateSubTaskStatus(taskId, 'failed');
-            this.writeLog(taskId, '⏰ 超时（5分钟无信号）');
+            // Timeout is now a soft warning: keep watching for the signal,
+            // but notify the user so they can manually mark done if needed.
+            this.writeLog(taskId, '⏰ 超时提醒（5分钟无信号），仍在监听中');
             this.onStatusChange();
-            this.autoMode = false;
-            vscode.window.showWarningMessage(`⏰ 任务 ${taskId} 超时（5分钟无信号），已标记失败`);
+            vscode.window.showWarningMessage(`⏰ 任务 ${taskId} 已超过5分钟无信号，你可以手动标记完成或继续等待。系统仍在监听信号文件。`);
+            // Do NOT mark failed or stop auto mode — the watcher stays active.
         }, 5 * 60 * 1000);
     }
     clearTimeout() {
@@ -553,7 +600,9 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         if (!value) {
             return false;
         }
-        if (/[\u4e00-\u9fa5]/.test(value) && !/[\\/]/.test(value)) {
+        // Reject values that contain Chinese characters — these are descriptions, not paths.
+        // e.g. "修改 backend/schedule-service 模块以实现..." is NOT a file path.
+        if (/[\u4e00-\u9fa5]/.test(value)) {
             return false;
         }
         if (/[\\/]/.test(value)) {

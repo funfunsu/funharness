@@ -8,7 +8,7 @@ export class SchedulerRegistry {
         private readonly createIterDir: (task: Task) => string,
         private readonly workspaceRoot: string,
         private readonly getConfig: () => Config,
-        private readonly dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask') => Promise<void>,
+        private readonly dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string) => Promise<void>,
         private readonly onStatusChange: () => void,
     ) {}
 

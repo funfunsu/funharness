@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEFAULT_CONFIG = exports.PROMPT_CONFIGS = exports.STAGE = exports.HARNESS_STATE_FILE_LEGACY = exports.HARNESS_STATE_FILE = exports.TASK_PLAN_LEGACY_REL_PATH = exports.TASK_PLAN_PRIMARY_REL_PATH = exports.AGENT_DIR = exports.PROMPTS_DIR = exports.BASE = void 0;
+exports.DEFAULT_CONFIG = exports.PROMPT_CONFIGS = exports.AI_PROVIDERS = exports.STAGE = exports.HARNESS_STATE_FILE_LEGACY = exports.HARNESS_STATE_FILE = exports.TASK_PLAN_LEGACY_REL_PATH = exports.TASK_PLAN_PRIMARY_REL_PATH = exports.AGENT_DIR = exports.PROMPTS_DIR = exports.BASE = void 0;
+exports.getAiProvider = getAiProvider;
 exports.BASE = '.harness';
 exports.PROMPTS_DIR = 'prompts';
 exports.AGENT_DIR = '.github/agents';
@@ -18,6 +19,50 @@ exports.STAGE = {
     READY_FOR_REVIEW: '⏳ 待审核',
     DONE: '✅ 已完成'
 };
+exports.AI_PROVIDERS = [
+    {
+        id: 'copilot-chat',
+        label: 'GitHub Copilot',
+        kind: 'vscode-chat',
+        chatCommand: 'workbench.action.chat.open',
+        detectHint: 'workbench.action.chat.open',
+    },
+    {
+        id: 'claude-code',
+        label: 'Claude Code (面板)',
+        kind: 'panel',
+        panelCommand: 'claude-vscode.sidebar.open',
+        detectHint: 'claude-vscode.sidebar.open',
+    },
+    {
+        id: 'claude-code-cli',
+        label: 'Claude Code (CLI 终端)',
+        kind: 'cli',
+        detectHint: 'claude --version',
+    },
+    {
+        id: 'trae',
+        label: 'Trae AI',
+        kind: 'vscode-chat',
+        chatCommand: 'workbench.action.chat.open',
+        detectHint: 'workbench.action.chat.open',
+    },
+    {
+        id: 'qodo',
+        label: 'Qodo Gen',
+        kind: 'vscode-chat',
+        chatCommand: 'workbench.action.chat.open',
+        detectHint: 'workbench.action.chat.open',
+    },
+    {
+        id: 'manual',
+        label: '手工模式（仅生成提示词）',
+        kind: 'manual',
+    },
+];
+function getAiProvider(id) {
+    return exports.AI_PROVIDERS.find(p => p.id === id) || exports.AI_PROVIDERS[exports.AI_PROVIDERS.length - 1];
+}
 exports.PROMPT_CONFIGS = [
     { key: 'req', name: '需求生成 Agent', file: 'requirements_agent.md' },
     { key: 'des', name: '技术设计 Agent', file: 'design_agent.md' },
@@ -28,14 +73,18 @@ exports.PROMPT_CONFIGS = [
 exports.DEFAULT_CONFIG = {
     frontendGit: '',
     backendGit: '',
-    mergeTargetBranch: '',
-    baseSyncBranch: '',
+    baseBranch: '',
     mergeDryRunEnabled: true,
     backendStartCmd: '',
     backendPort: 8080,
     frontendStartCmd: '',
+    startupChainMode: 'full',
+    javaRuntimeProfile: 'dev',
+    frontendStartupTemplate: '{install} && {run}',
+    backendStartupTemplate: '{install} && {offline} && {clean} && {run}',
     techStack: '',
     codingStandards: '',
+    projectConventions: '',
     maxConcurrentAutoTasks: 2,
     autoAdvanceEnabled: false,
     autoRepairEnabled: false,
@@ -45,8 +94,10 @@ exports.DEFAULT_CONFIG = {
     simpleTaskKeywords: 'blacklist,whitelist,crud,toggle,config,list,search,管理,增删改查,配置,名单',
     complexTaskKeywords: 'workflow,state machine,multi-tenant,distributed,transaction,integration,migration,权限,审批,多角色,并发,分布式,跨系统,联调,多模块,复杂',
     aiProvider: 'copilot-chat',
-    claudeCliCommandTemplate: '',
+    cliCommandTemplate: '',
     aiFallbackToManual: true,
     worktreeSyncPaths: 'worktree/.github/instructions',
+    customProjectStructure: '',
+    projectStructureRefineMode: 'local+ai',
 };
 //# sourceMappingURL=models.js.map

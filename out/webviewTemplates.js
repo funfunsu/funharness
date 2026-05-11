@@ -148,7 +148,9 @@ const TASK_ACTION_CONFIGS = [
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: 'all',
-        when: (ctx) => ctx.hasWorktree && ctx.hasFrontendStartCmd,
+        // Worktree subview: always show as long as a frontend start command is configured.
+        // Main panel: still require a worktree, otherwise there's nothing to start.
+        when: (ctx) => ctx.hasFrontendStartCmd && (ctx.isWorktreeSubview || ctx.hasWorktree),
         render: (ctx) => `<button class="btn-gray" onclick="startService('${ctx.task.id}','frontend')">▶ 启动前端</button>`,
     },
     {
@@ -156,25 +158,18 @@ const TASK_ACTION_CONFIGS = [
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: 'all',
-        when: (ctx) => ctx.hasWorktree && ctx.hasBackendStartCmd,
+        when: (ctx) => ctx.hasBackendStartCmd && (ctx.isWorktreeSubview || ctx.hasWorktree),
         render: (ctx) => `<button class="btn-gray" onclick="startService('${ctx.task.id}','backend')">▶ 启动后端</button>`,
     },
     {
-        key: 'manual-push',
+        key: 'commit-to-baseline',
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: 'all',
         when: (ctx) => ctx.hasWorktree,
-        render: (ctx) => `<button class="btn-gray" onclick="manualPush('${ctx.task.id}')">📤 手动提交代码</button>`,
+        render: (ctx) => `<button class="btn-gray" onclick="commitToBaseline('${ctx.task.id}')">📤 提交代码</button>`,
     },
-    {
-        key: 'open-worktree',
-        placement: 'side',
-        panels: ['main'],
-        stages: 'all',
-        when: (ctx) => Boolean(ctx.task.worktreePath),
-        render: (ctx) => `<button class="btn-gray" onclick="openFolderLocation('${ctx.task.id}','worktree')">📁 打开 Worktree</button>`,
-    },
+    // 'open-worktree' is rendered as a fixed button in the task card header, not via the action system.
     {
         key: 'edit-desc',
         placement: 'side',
@@ -303,7 +298,7 @@ ${!isWorktreeSubview ? `
 </div>
 </div>
 
-${isWorktreeSubview ? '<div class="mode-banner">子面板仅保留当前迭代任务操作，不提供高级设置与创建迭代功能。</div>' : ''}
+${isWorktreeSubview ? '<div class="mode-banner">子面板仅保留当前迭代任务操作，不提供高级设置与创建迭代功能。<button class="toolbar-btn" style="margin-left:8px" onclick="openMasterWorkspace()">↩ 回到主工作区</button></div>' : ''}
 
 ${visibleTaskViews.map(view => {
         const t = view.task;
@@ -358,7 +353,10 @@ ${visibleTaskViews.map(view => {
 </div>`;
         return `
 <div class="task-item" data-task-id="${t.id}" data-abnormal="${isAbnormal ? '1' : '0'}">
+<div style="display:flex;justify-content:space-between;align-items:center">
 <div class="task-name">${t.name}</div>
+${!isWorktreeSubview && t.worktreePath ? `<button class="btn-gray" style="flex:none;padding:4px 10px;font-size:11px;min-width:auto" onclick="openFolderLocation('${t.id}','worktree')">📁 Worktree</button>` : ''}
+</div>
 <div class="task-desc">${t.desc}</div>
 <div>阶段：${t.stage}</div>
 <div class="task-status">原因：${health.summary || '-'}</div>
@@ -366,14 +364,20 @@ ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.lat
 <div class="task-status">待办:${stats.todo} 执行中:${stats.doing} 完成:${stats.done}${stats.failed > 0 ? ` 失败:${stats.failed}` : ''}</div>
 <div class="task-progress"><div class="progress-bar" style="width:${view.pct}%"></div></div>
 <div style="font-size:12px">进度：${view.pct}%</div>
+<div class="toggle-row" style="margin:6px 0">
+<span style="font-size:12px">AI 执行器</span>
+<select style="width:auto;margin:0;padding:4px 6px;font-size:11px;background:#2c2c2e;color:#fff;border:none;border-radius:6px" onchange="setTaskAiProvider('${t.id}',this.value)">
+${models_1.AI_PROVIDERS.map(p => `<option value="${p.id}" ${(t.aiProvider || config.aiProvider) === p.id ? 'selected' : ''}>${p.label}</option>`).join('')}
+</select>
+</div>
 
 ${!isWorktreeSubview ? `<details class="task-config">
 <summary>⚙ 展开配置</summary>
 <div class="task-config-body">
 <div class="task-status">Worktree：${t.worktreePath || '-'}</div>
 <div class="task-status">拆分模式：${effectiveSplitMode === 'compact' ? '急速模式' : '标准模式'}${config.compactTaskDecomposition ? '（全局配置）' : ''}</div>
-<div class="task-status">基线分支：${t.baseSyncBranchUsed || '-'}</div>
-<div class="task-status">分支路由：${t.iterationBranch || '-'} -> ${t.mergeTargetBranchUsed || '-'}</div>
+<div class="task-status">基线分支：${t.baseBranchUsed || t.baseSyncBranchUsed || '-'}</div>
+<div class="task-status">迭代分支：${t.iterationBranch || '-'}</div>
 <div class="health-line"><span class="health-badge ${healthClass}">${healthLabel}</span><span class="task-status">${healthStatus}</span></div>
 <div class="task-status">文档：${artifactStatus}</div>
 <div class="task-status">任务自动化：推进 ${taskAutoAdvance ? '开' : '关'} / 回修 ${taskAutoRepair ? '开' : '关'}</div>
@@ -436,12 +440,13 @@ function next(s,id,ts){v.postMessage({type:'next',step:s,id,...(ts?{targetStage:
 function pass(id){v.postMessage({type:'pass',id})}
 function refresh(){v.postMessage({type:'refresh'})}
 function pushAll(id){v.postMessage({type:'pushAndNextStage',id})}
-function manualPush(id){v.postMessage({type:'pushAll',id})}
+function commitToBaseline(id){v.postMessage({type:'commitToBaseline',id})}
 function startAuto(id){v.postMessage({type:'startAuto',id})}
 function pauseAuto(id){v.postMessage({type:'pauseAuto',id})}
 function nextTask(id){v.postMessage({type:'nextTask',id})}
 function retry(subId,id){v.postMessage({type:'retryTask',subId,id})}
 function syncMainCode(id){v.postMessage({type:'syncMainCode',id})}
+function openMasterWorkspace(){v.postMessage({type:'openMasterWorkspace'})}
 function startService(id,target){v.postMessage({type:'startService',id,target})}
 function setSubStatus(id,subId,status){v.postMessage({type:'setSubTaskStatus',id,subId,status})}
 function editTaskDesc(id){v.postMessage({type:'requestEditTaskDesc',id})}
@@ -449,6 +454,7 @@ function resetTask(id){v.postMessage({type:'resetTask',id})}
 function openArtifact(id,artifact){v.postMessage({type:'openArtifact',id,artifact})}
 function openFolderLocation(id,location){v.postMessage({type:'openFolderLocation',id,location})}
 function setTaskAutomation(id,aa,ar){v.postMessage({type:'setTaskAutomation',id,aa,ar})}
+function setTaskAiProvider(id,ap){v.postMessage({type:'setTaskAiProvider',id,ap})}
 function pushDev(id){v.postMessage({type:'pushAndNextStage',id})}
 function toggleAbnormalOnly(){
     abnormalOnly=!abnormalOnly;
@@ -489,7 +495,7 @@ body{background:#111;color:#eee;padding:14px}
 .nav-btn{flex:1;padding:8px;border-radius:8px;border:none;background:#222;color:#eee}
 .nav-btn.active{background:#007aff}
 h5{margin:10px 0 4px;color:#aaa;font-size:12px}
-input,select{width:100%;padding:10px;border-radius:8px;border:none;background:#222;color:#fff;margin-bottom:8px}
+input,select,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:#222;color:#fff;margin-bottom:8px}
 button{width:100%;padding:10px;border-radius:8px;border:none;color:white;margin-top:10px}
 .section{background:#1c1c1e;border-radius:10px;padding:12px;margin-bottom:12px}
 .section-title{font-weight:600;margin-bottom:8px}
@@ -497,6 +503,17 @@ button{width:100%;padding:10px;border-radius:8px;border:none;color:white;margin-
 .toggle-row input{width:auto;margin:0}
 .meta-box{background:#2a2a2d;border:1px solid #3a3a3f;border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px;color:#ddd}
 .meta-box.readonly{border-color:#7a5d00;background:#2b2308;color:#ffd56a}
+.sub-card{background:#232326;border:1px solid #34343a;border-radius:8px;padding:10px;margin-top:10px}
+.sub-title{font-weight:600;font-size:13px;color:#d8d8dd;margin-bottom:8px}
+.hint{font-size:12px;color:#a9a9b0;line-height:1.5;margin-bottom:8px}
+.kv{font-size:12px;color:#c8c8ce;line-height:1.6}
+.kv b{color:#fff}
+.inline-actions{display:flex;gap:8px;flex-wrap:wrap}
+.inline-actions button{flex:1;min-width:160px}
+.fold{margin-top:10px;background:#1a1a1e;border:1px solid #323238;border-radius:8px;padding:8px}
+.fold>summary{cursor:pointer;color:#d3d3d8;font-size:13px;list-style:none}
+.fold>summary::-webkit-details-marker{display:none}
+.fold[open]>summary{margin-bottom:8px;color:#fff}
 </style>
 </head>
 <body>
@@ -518,10 +535,8 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <input id="fg" value="${config.frontendGit || ''}" ${disabled}>
 <h5>后端 Git 地址（可选）</h5>
 <input id="bg" value="${config.backendGit || ''}" ${disabled}>
-<h5>个人合并分支（可选，如 yourname/integration）</h5>
-<input id="mb" value="${config.mergeTargetBranch || ''}" ${disabled}>
-<h5>任务初始化拉取基线分支（可选，优先于个人合并分支）</h5>
-<input id="sb" value="${config.baseSyncBranch || ''}" placeholder="如 yourname/integration 或 main" ${disabled}>
+<h5>基线分支（如 main、master 或 yourname/integration）</h5>
+<input id="bb" value="${config.baseBranch || config.baseSyncBranch || config.mergeTargetBranch || ''}" placeholder="如 main 或 yourname/integration" ${disabled}>
 <div class="toggle-row">
 <span>合并前 dry-run 冲突检查</span>
 <input id="dr" type="checkbox" ${config.mergeDryRunEnabled ? 'checked' : ''} ${disabled}>
@@ -531,16 +546,61 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 
 <div class="section">
 <div class="section-title">开发环境配置</div>
+<div class="sub-card">
+<div class="sub-title">自动检测结果</div>
+<div class="hint">推荐先自动检测环境配置，再按需手工微调。自动检测会回填前后端启动命令和后端端口。</div>
+<div class="kv">
+<div><b>前端启动命令：</b>${config.frontendStartCmd || '（未配置）'}</div>
+<div><b>后端启动命令：</b>${config.backendStartCmd || '（未配置）'}</div>
+<div><b>后端端口：</b>${config.backendPort || 8080}</div>
+<div><b>启动链模式：</b>${config.startupChainMode === 'light' ? '轻量（更快）' : '完整（更稳）'}</div>
+<div><b>Java Profile：</b>${config.javaRuntimeProfile || '（未配置）'}</div>
+</div>
+<div class="hint">来源说明：自动检测会按项目类型生成基础命令，再套用你配置的启动模板。模板占位符支持 {install} / {offline} / {clean} / {run}。</div>
+<div class="inline-actions">
+<button onclick="autoDetectDevEnv()" style="background:#30b0c7" ${disabled}>🤖 自动检测并回填</button>
+<button onclick="openArtifactsIndex()" style="background:#6d6d72" ${disabled}>📚 打开文档归档索引</button>
+</div>
+</div>
+
+<div class="sub-card">
+<div class="sub-title">手动覆盖（运行参数）</div>
+<h5>前端启动命令（如 npm run dev）</h5>
+<input id="fsc" value="${config.frontendStartCmd || ''}" ${disabled}>
 <h5>后端启动命令（如 mvn spring-boot:run）</h5>
 <input id="bsc" value="${config.backendStartCmd || ''}" ${disabled}>
 <h5>后端端口（默认 8080）</h5>
 <input id="bp" type="number" value="${config.backendPort || 8080}" ${disabled}>
-<h5>前端启动命令（如 npm run dev）</h5>
-<input id="fsc" value="${config.frontendStartCmd || ''}" ${disabled}>
+<h5>启动链模式</h5>
+<select id="sm" ${disabled}>
+<option value="full" ${config.startupChainMode !== 'light' ? 'selected' : ''}>完整模式（安装/预热依赖 + 清理 + 启动）</option>
+<option value="light" ${config.startupChainMode === 'light' ? 'selected' : ''}>轻量模式（尽量直接启动）</option>
+</select>
+<h5>Java 运行 Profile（可选）</h5>
+<input id="jp" value="${config.javaRuntimeProfile || ''}" placeholder="如 dev、sit、local" ${disabled}>
+<h5>前端启动模板</h5>
+<textarea id="fst" rows="2" placeholder="例如：{install} && {run}" ${disabled}>${config.frontendStartupTemplate || '{install} && {run}'}</textarea>
+<h5>后端启动模板</h5>
+<textarea id="bst" rows="2" placeholder="例如：{install} && {offline} && {clean} && {run}" ${disabled}>${config.backendStartupTemplate || '{install} && {offline} && {clean} && {run}'}</textarea>
+<h5>CLI 命令模板（CLI 类执行器可选，AI 执行器在各任务卡片上独立设置）</h5>
+<input id="cct" value="${config.cliCommandTemplate || config.claudeCliCommandTemplate || ''}" placeholder="例如：cat \"{promptFile}\" | claude" ${disabled}>
+<div class="toggle-row">
+<span>CLI 执行器失败时自动降级到手工模式</span>
+<input id="afm" type="checkbox" ${config.aiFallbackToManual !== false ? 'checked' : ''} ${disabled}>
+</div>
+<div class="inline-actions">
+<button onclick="saveRuntimeConfig()" style="background:#007aff" ${disabled}>💾 保存运行参数</button>
+</div>
+</div>
+
+<details class="fold">
+<summary>⚙ 高级策略配置（折叠）</summary>
 <h5>技术栈描述</h5>
 <input id="ts" value="${config.techStack || ''}" placeholder="如：前端 Vue3+TS，后端 SpringBoot3" ${disabled}>
-<h5>编码规范</h5>
+<h5>通用编码规范（简要）</h5>
 <input id="cs" value="${config.codingStandards || ''}" placeholder="如：小驼峰命名，方法加注释" ${disabled}>
+<h5>项目自定义约定（多行，完全自定义）</h5>
+<textarea id="pc" rows="6" placeholder="例如：\n1. 前端入口开关必须由后端配置中心下发\n2. 功能入口统一展示在“更多”页\n3. 跳转链接由后端返回并经过白名单校验" ${disabled}>${config.projectConventions || ''}</textarea>
 <h5>最大自动执行并发槽位</h5>
 <input id="mc" type="number" min="1" value="${config.maxConcurrentAutoTasks || 2}" ${disabled}>
 <div class="toggle-row">
@@ -567,22 +627,21 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <input id="sk" value="${config.simpleTaskKeywords || ''}" placeholder="如 blacklist,crud,管理,配置" ${disabled}>
 <h5>复杂需求关键词（逗号分隔）</h5>
 <input id="ck" value="${config.complexTaskKeywords || ''}" placeholder="如 workflow,审批,跨系统,并发" ${disabled}>
-<h5>AI 协作执行器</h5>
-<select id="ap" ${disabled}>
-<option value="copilot-chat" ${config.aiProvider === 'copilot-chat' ? 'selected' : ''}>Copilot Chat（默认）</option>
-<option value="claude-cli" ${config.aiProvider === 'claude-cli' ? 'selected' : ''}>Claude CLI</option>
-<option value="manual" ${config.aiProvider === 'manual' ? 'selected' : ''}>手工模式（仅生成提示词）</option>
-</select>
-<h5>Claude CLI 命令模板（可选）</h5>
-<input id="cct" value="${config.claudeCliCommandTemplate || ''}" placeholder="例如：cat \"{promptFile}\" | claude" ${disabled}>
-<div class="toggle-row">
-<span>Claude CLI 失败时自动降级到手工模式</span>
-<input id="afm" type="checkbox" ${config.aiFallbackToManual !== false ? 'checked' : ''} ${disabled}>
-</div>
 <h5>worktree 打开时同步目录（支持多项，按行/逗号/分号分隔）</h5>
 <textarea id="wsd" rows="3" placeholder="例如：worktree/.github/instructions" ${disabled}>${config.worktreeSyncPaths || ''}</textarea>
-<button onclick="testAiProvider()" style="background:#34c759" ${disabled}>🧪 测试当前 AI 执行器</button>
-<button onclick="saveDevConfig()" style="background:#007aff" ${disabled}>💾 保存开发配置</button>
+<h5>项目结构提炼模式</h5>
+<select id="prm" ${disabled}>
+<option value="local" ${config.projectStructureRefineMode === 'local' ? 'selected' : ''}>仅本地规则提炼（快速）</option>
+<option value="local+ai" ${config.projectStructureRefineMode !== 'local' ? 'selected' : ''}>本地提炼 + AI 二次审阅（更完整）</option>
+</select>
+<h5>自定义项目目录结构（可选，优先级最高）</h5>
+<textarea id="cps" rows="12" placeholder="填写团队约定的目录结构。留空时：已有项目会自动提炼；新项目回退到默认模板。" ${disabled}>${config.customProjectStructure || ''}</textarea>
+<div class="inline-actions">
+<button onclick="initProjectStructure()" style="background:#8e8e93" ${disabled}>🧭 自动检测并初始化项目结构</button>
+<button onclick="applyProjectStructurePreview()" style="background:#5ac8fa" ${disabled}>✅ 应用预览结构</button>
+</div>
+<button onclick="saveAdvancedConfig()" style="background:#007aff" ${disabled}>💾 保存高级策略</button>
+</details>
 </div>
 
 <div class="section">
@@ -596,8 +655,14 @@ const v=acquireVsCodeApi();
 function p(x){v.postMessage({type:'page',page:x})}
 function sel(){v.postMessage({type:'sel',key:document.getElementById('sel').value})}
 function init(){if(confirm('确定恢复选定的 Agent Prompt 出厂设置？'))v.postMessage({type:'initAgent'})}
-function saveGit(){v.postMessage({type:'saveGit',fg:document.getElementById('fg').value,bg:document.getElementById('bg').value,mb:document.getElementById('mb').value,sb:document.getElementById('sb').value,dr:document.getElementById('dr').checked})}
-function saveDevConfig(){v.postMessage({type:'saveDevConfig',bsc:document.getElementById('bsc').value,bp:parseInt(document.getElementById('bp').value)||8080,fsc:document.getElementById('fsc').value,ts:document.getElementById('ts').value,cs:document.getElementById('cs').value,mc:parseInt(document.getElementById('mc').value)||2,aa:document.getElementById('aa').checked,ar:document.getElementById('ar').checked,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,ap:document.getElementById('ap').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,wsd:document.getElementById('wsd').value})}
+function saveGit(){v.postMessage({type:'saveGit',fg:document.getElementById('fg').value,bg:document.getElementById('bg').value,bb:document.getElementById('bb').value,dr:document.getElementById('dr').checked})}
+function saveDevConfig(){v.postMessage({type:'saveDevConfig',bsc:document.getElementById('bsc').value,bp:parseInt(document.getElementById('bp').value)||8080,fsc:document.getElementById('fsc').value,sm:document.getElementById('sm').value,jp:document.getElementById('jp').value,fst:document.getElementById('fst').value,bst:document.getElementById('bst').value,ts:document.getElementById('ts').value,cs:document.getElementById('cs').value,pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,aa:document.getElementById('aa').checked,ar:document.getElementById('ar').checked,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,ap:'${config.aiProvider}',cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value})}
+function saveRuntimeConfig(){v.postMessage({type:'saveRuntimeConfig',bsc:document.getElementById('bsc').value,bp:parseInt(document.getElementById('bp').value)||8080,fsc:document.getElementById('fsc').value,sm:document.getElementById('sm').value,jp:document.getElementById('jp').value,fst:document.getElementById('fst').value,bst:document.getElementById('bst').value,ap:'${config.aiProvider}',cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked})}
+function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',ts:document.getElementById('ts').value,cs:document.getElementById('cs').value,pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,aa:document.getElementById('aa').checked,ar:document.getElementById('ar').checked,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value})}
+function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
+function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
+function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}
+function autoDetectDevEnv(){v.postMessage({type:'autoDetectDevEnv'})}
 function testAiProvider(){v.postMessage({type:'testAiProvider'})}
 </script>
 </body>

@@ -8,8 +8,15 @@ interface HarnessMessageControllerDeps {
     render: () => void;
     setSelectedPromptKey: (key: string) => void;
     restoreSelectedAgentPrompt: () => void;
-    saveGit: (frontendGit: string, backendGit: string, mergeTargetBranch: string, baseSyncBranch: string, dryRun: boolean) => Promise<void>;
+    saveGit: (frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean) => Promise<void>;
     saveDevConfig: (msg: Extract<HarnessMessage, { type: 'saveDevConfig' }>) => void;
+    saveRuntimeConfig: (msg: Extract<HarnessMessage, { type: 'saveRuntimeConfig' }>) => void;
+    saveAdvancedConfig: (msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>) => void;
+    initProjectStructure: () => Promise<void>;
+    applyProjectStructurePreview: () => Promise<void>;
+    openArtifactsIndex: () => Promise<void>;
+    openMasterWorkspace: () => Promise<void>;
+    autoDetectDevEnv: () => Promise<void>;
     testAiProvider: () => Promise<void>;
     createTask: (name: string, desc: string) => Promise<void>;
     requestEditTaskDesc: (taskId: string) => Promise<void>;
@@ -23,6 +30,7 @@ interface HarnessMessageControllerDeps {
     retryTask: (taskId: string, subId: string) => Promise<void>;
     setSubTaskStatus: (taskId: string, subId: string, status: 'todo' | 'doing' | 'done' | 'failed') => Promise<void>;
     setTaskAutomation: (taskId: string, aa: boolean, ar: boolean) => void;
+    setTaskAiProvider: (taskId: string, ap: string) => void;
     openFolderLocation: (taskId: string, location: Extract<HarnessMessage, { type: 'openFolderLocation' }>['location']) => Promise<void>;
     openArtifact: (taskId: string, artifact: Extract<HarnessMessage, { type: 'openArtifact' }>['artifact']) => Promise<void>;
     nextStage: (taskId: string, step: Extract<HarnessMessage, { type: 'next' }>['step'], targetStage?: Extract<HarnessMessage, { type: 'next' }>['targetStage']) => Promise<void>;
@@ -31,6 +39,7 @@ interface HarnessMessageControllerDeps {
     startService: (taskId: string, target: 'frontend' | 'backend') => Promise<void>;
     completeDevWithPush: (taskId: string) => Promise<void>;
     pushAndNextStage: (taskId: string) => Promise<void>;
+    commitToBaseline: (taskId: string) => Promise<void>;
 }
 
 export class HarnessMessageController {
@@ -49,6 +58,7 @@ export class HarnessMessageController {
             case 'nextTask':
             case 'retryTask':
             case 'setSubTaskStatus':
+            case 'setTaskAiProvider':
             case 'openArtifact':
             case 'openFolderLocation':
             case 'next':
@@ -58,6 +68,8 @@ export class HarnessMessageController {
             case 'pushAll':
             case 'completeDevWithPush':
             case 'pushAndNextStage':
+            case 'commitToBaseline':
+            case 'openMasterWorkspace':
                 return true;
             case 'page':
                 if (msg.page === 'main') {
@@ -91,10 +103,31 @@ export class HarnessMessageController {
                 this.deps.restoreSelectedAgentPrompt();
                 return;
             case 'saveGit':
-                await this.deps.saveGit(msg.fg, msg.bg, msg.mb, msg.sb, msg.dr);
+                await this.deps.saveGit(msg.fg, msg.bg, msg.bb, msg.dr);
                 return;
             case 'saveDevConfig':
                 this.deps.saveDevConfig(msg);
+                return;
+            case 'saveRuntimeConfig':
+                this.deps.saveRuntimeConfig(msg);
+                return;
+            case 'saveAdvancedConfig':
+                this.deps.saveAdvancedConfig(msg);
+                return;
+            case 'initProjectStructure':
+                await this.deps.initProjectStructure();
+                return;
+            case 'applyProjectStructurePreview':
+                await this.deps.applyProjectStructurePreview();
+                return;
+            case 'openArtifactsIndex':
+                await this.deps.openArtifactsIndex();
+                return;
+            case 'openMasterWorkspace':
+                await this.deps.openMasterWorkspace();
+                return;
+            case 'autoDetectDevEnv':
+                await this.deps.autoDetectDevEnv();
                 return;
             case 'testAiProvider':
                 await this.deps.testAiProvider();
@@ -136,6 +169,9 @@ export class HarnessMessageController {
             case 'setTaskAutomation':
                 this.deps.setTaskAutomation(msg.id, msg.aa, msg.ar);
                 return;
+            case 'setTaskAiProvider':
+                this.deps.setTaskAiProvider(msg.id, msg.ap);
+                return;
             case 'openFolderLocation':
                 await this.deps.openFolderLocation(msg.id, msg.location);
                 return;
@@ -159,6 +195,9 @@ export class HarnessMessageController {
                 return;
             case 'pushAndNextStage':
                 await this.deps.pushAndNextStage(msg.id);
+                return;
+            case 'commitToBaseline':
+                await this.deps.commitToBaseline(msg.id);
                 return;
         }
     }
