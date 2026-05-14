@@ -1,6 +1,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { BASE, Config, DEFAULT_CONFIG, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, Task } from '../models';
+import { BASE, Config, DEFAULT_CONFIG, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, STAGE, Stage, Task } from '../models';
+
+const STAGE_ORDER: Stage[] = [
+    STAGE.INITIALIZING,
+    STAGE.WRITING_REQUIREMENT,
+    STAGE.WRITING_DESIGN,
+    STAGE.WRITING_TESTCASE,
+    STAGE.WRITING_TASKS,
+    STAGE.DEVELOPING,
+    STAGE.READY_FOR_REVIEW,
+    STAGE.DONE,
+];
 
 export interface HarnessConfigMeta {
     origin: 'master' | 'worktreeSnapshot' | 'unknown';
@@ -56,6 +67,12 @@ export class TaskStoreService {
         const meta = this.getConfigMeta();
         if (meta.origin === 'worktreeSnapshot') {
             this.saveLocalTasks(tasks);
+            // Propagate to master root if reachable, so that:
+            // 1) The master root's iteration-state.json reflects the latest task state
+            //    instead of lagging until master itself triggers a save.
+            // 2) The user reading the file directly (e.g. after passByTaskId) sees the
+            //    expected stage, not the stale pre-merge value.
+            this.propagateTasksToMaster(meta.masterRoot, tasks);
             return;
         }
 
@@ -74,6 +91,9 @@ export class TaskStoreService {
 
             // Preserve per-task fields that may have been set from the worktree subview,
             // which has its own in-memory copy the master panel doesn't see in real time.
+            // Critically: do NOT regress task.stage. If the subview already advanced this
+            // task (e.g. after passByTaskId set DONE), master must not overwrite it back to
+            // an earlier stage just because master's in-memory copy hasn't reloaded yet.
             const taskToSave = { ...task };
             if (fs.existsSync(file)) {
                 try {
@@ -81,6 +101,9 @@ export class TaskStoreService {
                     const existingTask = existing.find(t => t.id === task.id);
                     if (existingTask?.aiProvider && !task.aiProvider) {
                         taskToSave.aiProvider = existingTask.aiProvider;
+                    }
+                    if (existingTask?.stage && this.isStageMoreAdvanced(existingTask.stage, task.stage)) {
+                        taskToSave.stage = existingTask.stage;
                     }
                 } catch {
                     // ignore malformed files
@@ -185,6 +208,18 @@ export class TaskStoreService {
         }
     }
 
+    private isStageMoreAdvanced(candidate: Stage | undefined, current: Stage | undefined): boolean {
+        if (!candidate || !current) {
+            return false;
+        }
+        const candidateIdx = STAGE_ORDER.indexOf(candidate);
+        const currentIdx = STAGE_ORDER.indexOf(current);
+        if (candidateIdx < 0 || currentIdx < 0) {
+            return false;
+        }
+        return candidateIdx > currentIdx;
+    }
+
     private saveLocalTasks(tasks: Task[]): void {
         const file = this.getTaskFile();
         fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -192,6 +227,41 @@ export class TaskStoreService {
         const legacy = this.getLegacyTaskFile();
         if (fs.existsSync(legacy)) {
             fs.rmSync(legacy, { force: true });
+        }
+    }
+
+    /**
+     * Called when saving from a worktree subview: merge the in-subview tasks into the
+     * master root's iteration-state.json so master reads the same state without needing
+     * to call loadTasks first. Each task is matched by id; tasks already in master but
+     * not in this subview's snapshot are preserved.
+     */
+    private propagateTasksToMaster(masterRoot: string | undefined, tasks: Task[]): void {
+        if (!masterRoot || !fs.existsSync(masterRoot)) {
+            return;
+        }
+        try {
+            const masterFile = path.join(masterRoot, BASE, HARNESS_STATE_FILE);
+            fs.mkdirSync(path.dirname(masterFile), { recursive: true });
+            let masterTasks: Task[] = [];
+            if (fs.existsSync(masterFile)) {
+                try {
+                    const parsed = JSON.parse(fs.readFileSync(masterFile, 'utf8')) as Task[];
+                    if (Array.isArray(parsed)) {
+                        masterTasks = parsed;
+                    }
+                } catch {
+                    // ignore malformed file, fall through to overwrite
+                }
+            }
+            const byId = new Map<string, Task>(masterTasks.map(t => [t.id, t]));
+            for (const task of tasks) {
+                byId.set(task.id, { ...byId.get(task.id), ...task });
+            }
+            const merged = Array.from(byId.values());
+            fs.writeFileSync(masterFile, JSON.stringify(merged, null, 2), 'utf8');
+        } catch {
+            // Subview save must not be blocked by master propagation failures.
         }
     }
 

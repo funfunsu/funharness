@@ -416,13 +416,21 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
 
     async dispatchNext(iterTask: Task): Promise<boolean> {
         const next = this.getNextTask();
-        if (!next) {
+        if (next) {
+            await this.dispatchTask(next, iterTask);
+            return true;
+        }
+        // No 'todo' available. Only celebrate when literally everything is done.
+        // If there are still 'doing' tasks, stay silent and wait — they'll trigger
+        // dispatchNext again on completion. If there are 'failed' or dependency-blocked
+        // tasks, also stay silent so the user doesn't get a misleading "全部完成".
+        const subTasks = this.parseTasksMd();
+        const allDone = subTasks.length > 0 && subTasks.every(t => t.status === 'done');
+        if (allDone) {
             vscode.window.showInformationMessage('🎉 所有编码任务已完成！');
             this.autoMode = false;
-            return false;
         }
-        await this.dispatchTask(next, iterTask);
-        return true;
+        return false;
     }
 
     startWatching(iterTask: Task): void {

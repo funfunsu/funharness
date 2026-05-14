@@ -15,7 +15,7 @@ export type HarnessMessage =
     | { type: 'openMasterWorkspace' }
     | { type: 'autoDetectDevEnv' }
     | { type: 'testAiProvider' }
-    | { type: 'create'; name: string; desc: string }
+    | { type: 'create'; name: string; desc: string; quickMode?: boolean }
     | { type: 'requestEditTaskDesc'; id: string }
     | { type: 'updateTaskDesc'; id: string; desc: string }
     | { type: 'resetTask'; id: string }
@@ -34,6 +34,7 @@ export type HarnessMessage =
     | { type: 'pass'; id: string }
     | { type: 'syncMainCode'; id: string }
     | { type: 'startService'; id: string; target: 'frontend' | 'backend' }
+    | { type: 'startServices'; id: string }
     | { type: 'completeDevWithPush'; id: string }
     | { type: 'pushAndNextStage'; id: string }
     | { type: 'commitToBaseline'; id: string };

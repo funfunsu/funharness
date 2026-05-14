@@ -18,7 +18,7 @@ interface HarnessMessageControllerDeps {
     openMasterWorkspace: () => Promise<void>;
     autoDetectDevEnv: () => Promise<void>;
     testAiProvider: () => Promise<void>;
-    createTask: (name: string, desc: string) => Promise<void>;
+    createTask: (name: string, desc: string, quickMode?: boolean) => Promise<void>;
     requestEditTaskDesc: (taskId: string) => Promise<void>;
     updateTaskDesc: (taskId: string, desc: string) => void;
     resetTask: (taskId: string) => Promise<void>;
@@ -37,6 +37,7 @@ interface HarnessMessageControllerDeps {
     pass: (taskId: string) => Promise<void>;
     syncMainCode: (taskId: string) => Promise<void>;
     startService: (taskId: string, target: 'frontend' | 'backend') => Promise<void>;
+    startServices: (taskId: string) => Promise<void>;
     completeDevWithPush: (taskId: string) => Promise<void>;
     pushAndNextStage: (taskId: string) => Promise<void>;
     commitToBaseline: (taskId: string) => Promise<void>;
@@ -65,6 +66,7 @@ export class HarnessMessageController {
             case 'pass':
             case 'syncMainCode':
             case 'startService':
+            case 'startServices':
             case 'pushAll':
             case 'completeDevWithPush':
             case 'pushAndNextStage':
@@ -133,7 +135,7 @@ export class HarnessMessageController {
                 await this.deps.testAiProvider();
                 return;
             case 'create':
-                await this.deps.createTask(msg.name, msg.desc);
+                await this.deps.createTask(msg.name, msg.desc, msg.quickMode);
                 return;
             case 'requestEditTaskDesc':
                 await this.deps.requestEditTaskDesc(msg.id);
@@ -189,6 +191,9 @@ export class HarnessMessageController {
                 return;
             case 'startService':
                 await this.deps.startService(msg.id, msg.target);
+                return;
+            case 'startServices':
+                await this.deps.startServices(msg.id);
                 return;
             case 'completeDevWithPush':
                 await this.deps.completeDevWithPush(msg.id);

@@ -41,6 +41,8 @@ export interface Task {
     autoAdvanceEnabled?: boolean;
     autoRepairEnabled?: boolean;
     aiProvider?: string;
+    /** When true, the task skips requirements/design/testcase/task-split and goes directly to DEVELOPING. */
+    quickMode?: boolean;
 }
 
 // ── AI Provider Registry ───────────────────────────────────────────

@@ -1,9 +1,32 @@
-# Change Log
+# 更新日志
 
-All notable changes to the "funfun-dev-partner" extension will be documented in this file.
+本文件记录 Fun Harness AI 研发流程插件的所有重要变更。
 
-Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
+格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.0.9] - 2026-05-14
 
-- Initial release
+### 新增
+- **快捷模式**：创建迭代任务时可勾选"快捷模式"，跳过需求/设计/测试用例/任务拆解，直接进入开发阶段，开发 Agent 仅依据任务描述与项目结构上下文工作。
+- **统一"启动服务"按钮**：合并原"启动前端 / 启动后端"为单一入口，扫描迭代目录下的 frontend / backend 子仓逐个启动；按钮在 worktree 子面板任意阶段常驻可见。
+- **fun_harness_start 启动脚本**：未配置启动命令时派发 AI Agent 生成 `fun_harness_start.sh` / `.ps1`；启动脚本自动清理占用端口与残留进程，并针对 Java 多模块工程识别可启动模块。
+- **"提交代码"按钮**：将原"手动提交代码"升级为推送迭代分支并合并到远程基线（保留 worktree 与迭代分支，便于继续迭代）。
+
+### 修复
+- **合并代码丢失风险**：重写"完成任务并合并"为三阶段流程（备份推送 → 合并校验 → 安全清理），任一步失败立即中止且不删除任何本地/远程内容；推送后通过 SHA 与祖先校验确认远程基线确实包含本次提交。
+- **任务状态不同步**：在 worktree 子面板完成合并后，任务状态会回写主项目根的状态文件；主面板保存时不再把已推进的阶段回退。
+- **误报"所有编码任务已完成"**：并发执行场景下，仍有子任务运行时不再提前提示全部完成。
+- **Windows 启动脚本调用失败**：改用系统自带的 `powershell` 调用启动脚本，不再依赖未必安装的 `pwsh`（PowerShell 7+）。
+
+### 变更
+- 重写 README，按插件实际能力组织内容。
+- 开源许可证由 MIT 切换为 PolyForm Noncommercial 1.0.0（仅限非商业用途）。
+
+## [0.0.7] - 2026-05-11
+
+### 变更
+- 初始化代码仓库功能优化。
+
+## [0.0.6]
+
+- 首个公开发布版本。

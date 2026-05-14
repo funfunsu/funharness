@@ -157,7 +157,9 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
-        when: (ctx) => !ctx.allSubTasksDone,
+        // Quick-mode tasks have no subtask plan, so the auto-scheduler / "next" buttons
+        // wouldn't have anything to dispatch — hide them and show "运行开发 Agent" instead.
+        when: (ctx) => !ctx.allSubTasksDone && !ctx.task.quickMode,
         render: (ctx) => ctx.taskView.isAuto
             ? `<button class="btn-orange" onclick="pauseAuto('${ctx.task.id}')">⏸ 暂停</button>`
             : `<button class="btn-green" onclick="startAuto('${ctx.task.id}')">▶ 自动执行</button>`,
@@ -167,8 +169,16 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
-        when: (ctx) => !ctx.allSubTasksDone,
+        when: (ctx) => !ctx.allSubTasksDone && !ctx.task.quickMode,
         render: (ctx) => `<button class="btn-gray" onclick="nextTask('${ctx.task.id}')">⏭ 下一个</button>`,
+    },
+    {
+        key: 'dev-run-quick',
+        placement: 'primary',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.DEVELOPING],
+        when: (ctx) => Boolean(ctx.task.quickMode),
+        render: (ctx) => `<button class="btn-green" onclick="runAgent('dev','${ctx.task.id}')">🤖 运行开发 Agent</button>`,
     },
     {
         key: 'dev-push-primary',
@@ -193,22 +203,15 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         render: (ctx) => `<button class="btn-gray" onclick="syncMainCode('${ctx.task.id}')">🔄 从基线同步代码</button>`,
     },
     {
-        key: 'start-frontend',
+        key: 'start-services',
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: 'all',
-        // Worktree subview: always show as long as a frontend start command is configured.
-        // Main panel: still require a worktree, otherwise there's nothing to start.
-        when: (ctx) => ctx.hasFrontendStartCmd && (ctx.isWorktreeSubview || ctx.hasWorktree),
-        render: (ctx) => `<button class="btn-gray" onclick="startService('${ctx.task.id}','frontend')">▶ 启动前端</button>`,
-    },
-    {
-        key: 'start-backend',
-        placement: 'side',
-        panels: ['main', 'worktree'],
-        stages: 'all',
-        when: (ctx) => ctx.hasBackendStartCmd && (ctx.isWorktreeSubview || ctx.hasWorktree),
-        render: (ctx) => `<button class="btn-gray" onclick="startService('${ctx.task.id}','backend')">▶ 启动后端</button>`,
+        // Always show in worktree subview; show in main panel when an iteration worktree exists.
+        // Click handler walks frontend/ + backend/ under the iter dir, runs fun_harness_start.{sh,ps1}
+        // if present, otherwise materializes config cmd or dispatches AI to generate the script.
+        when: (ctx) => ctx.isWorktreeSubview || ctx.hasWorktree,
+        render: (ctx) => `<button class="btn-gray" onclick="startServices('${ctx.task.id}')">▶ 启动服务</button>`,
     },
     {
         key: 'commit-to-baseline',
@@ -478,6 +481,9 @@ ${!isWorktreeSubview ? `<div class="fixed-bottom">
 <h4>🚀 创建迭代开发版本</h4>
 <input id="name" placeholder="迭代名称（英文）">
 <textarea id="desc" rows="2" placeholder="功能描述"></textarea>
+<label style="display:flex;align-items:center;gap:6px;margin:4px 0 8px;font-size:12px;color:var(--vscode-descriptionForeground)">
+<input type="checkbox" id="quickMode"> 快捷模式（跳过需求/设计/任务拆解，直接进入开发）
+</label>
 <button class="btn-primary" onclick="create()">创建迭代开发版本</button>
 </div>
 </div>` : ''}
@@ -490,9 +496,11 @@ function create(){
     const name=document.getElementById('name').value.trim();
     const desc=document.getElementById('desc').value.trim();
     if(!name){alert('请输入迭代名称（英文）');return;}
-    v.postMessage({type:'create',name,desc});
+    const quickMode=document.getElementById('quickMode').checked;
+    v.postMessage({type:'create',name,desc,quickMode});
     document.getElementById('name').value='';
     document.getElementById('desc').value='';
+    document.getElementById('quickMode').checked=false;
 }
 function runAgent(s,id){v.postMessage({type:'runAgent',step:s,id})}
 function next(s,id,ts){v.postMessage({type:'next',step:s,id,...(ts?{targetStage:ts}:{})})}
@@ -507,6 +515,7 @@ function retry(subId,id){v.postMessage({type:'retryTask',subId,id})}
 function syncMainCode(id){v.postMessage({type:'syncMainCode',id})}
 function openMasterWorkspace(){v.postMessage({type:'openMasterWorkspace'})}
 function startService(id,target){v.postMessage({type:'startService',id,target})}
+function startServices(id){v.postMessage({type:'startServices',id})}
 function setSubStatus(id,subId,status){v.postMessage({type:'setSubTaskStatus',id,subId,status})}
 function editTaskDesc(id){v.postMessage({type:'requestEditTaskDesc',id})}
 function resetTask(id){v.postMessage({type:'resetTask',id})}
