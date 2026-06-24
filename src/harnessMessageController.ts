@@ -6,9 +6,8 @@ interface HarnessMessageControllerDeps {
     setPage: (page: string) => void;
     reloadTasks: () => void;
     render: () => void;
-    setSelectedPromptKey: (key: string) => void;
-    restoreSelectedAgentPrompt: () => void;
-    saveGit: (frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean) => Promise<void>;
+    restoreFactoryPrompts: () => void;
+    saveGit:(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean) => Promise<void>;
     saveDevConfig: (msg: Extract<HarnessMessage, { type: 'saveDevConfig' }>) => void;
     saveRuntimeConfig: (msg: Extract<HarnessMessage, { type: 'saveRuntimeConfig' }>) => void;
     saveAdvancedConfig: (msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>) => void;
@@ -41,6 +40,12 @@ interface HarnessMessageControllerDeps {
     completeDevWithPush: (taskId: string) => Promise<void>;
     pushAndNextStage: (taskId: string) => Promise<void>;
     commitToBaseline: (taskId: string) => Promise<void>;
+    saveCustomButtons: (buttons: { name: string; command: string; workdir?: string }[]) => void;
+    runCustomButton: (taskId: string, buttonId: string) => Promise<void>;
+    openScriptDir: () => Promise<void>;
+    saveAutoPollConfig: (msg: Extract<HarnessMessage, { type: 'saveAutoPollConfig' }>) => void;
+    createPollScriptTemplate: () => Promise<void>;
+    toggleAutoPoll: (enable: boolean) => void;
 }
 
 export class HarnessMessageController {
@@ -71,7 +76,9 @@ export class HarnessMessageController {
             case 'completeDevWithPush':
             case 'pushAndNextStage':
             case 'commitToBaseline':
+            case 'runCustomButton':
             case 'openMasterWorkspace':
+            case 'toggleAutoPoll':
                 return true;
             case 'page':
                 if (msg.page === 'main') {
@@ -98,11 +105,8 @@ export class HarnessMessageController {
                 this.deps.reloadTasks();
                 this.deps.render();
                 return;
-            case 'sel':
-                this.deps.setSelectedPromptKey(msg.key);
-                return;
-            case 'initAgent':
-                this.deps.restoreSelectedAgentPrompt();
+            case 'restoreFactoryPrompts':
+                this.deps.restoreFactoryPrompts();
                 return;
             case 'saveGit':
                 await this.deps.saveGit(msg.fg, msg.bg, msg.bb, msg.dr);
@@ -203,6 +207,24 @@ export class HarnessMessageController {
                 return;
             case 'commitToBaseline':
                 await this.deps.commitToBaseline(msg.id);
+                return;
+            case 'saveCustomButtons':
+                this.deps.saveCustomButtons(msg.buttons);
+                return;
+            case 'runCustomButton':
+                await this.deps.runCustomButton(msg.id, msg.buttonId);
+                return;
+            case 'openScriptDir':
+                await this.deps.openScriptDir();
+                return;
+            case 'saveAutoPollConfig':
+                this.deps.saveAutoPollConfig(msg);
+                return;
+            case 'createPollScriptTemplate':
+                await this.deps.createPollScriptTemplate();
+                return;
+            case 'toggleAutoPoll':
+                this.deps.toggleAutoPoll(msg.enable);
                 return;
         }
     }

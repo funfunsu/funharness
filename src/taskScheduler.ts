@@ -15,6 +15,7 @@ export class TaskScheduler {
     private onStatusChange: () => void;
     private config: Config;
     private readonly dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string) => Promise<void>;
+    private readonly getDevSystemPrompt: () => string;
 
     constructor(
         iterDir: string,
@@ -22,6 +23,7 @@ export class TaskScheduler {
         config: Config,
         dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask') => Promise<void>,
         onStatusChange: () => void,
+        getDevSystemPrompt: () => string,
     ) {
         this.iterDir = iterDir;
         this.workspaceRoot = workspaceRoot;
@@ -29,6 +31,7 @@ export class TaskScheduler {
         this.config = config;
         this.dispatchAi = dispatchAi;
         this.onStatusChange = onStatusChange;
+        this.getDevSystemPrompt = getDevSystemPrompt;
     }
 
     parseTasksMd(): SubTask[] {
@@ -215,9 +218,12 @@ export class TaskScheduler {
             dependencySection = `\n## 前置依赖任务及其产出物\n\n**以下是本任务依赖的前置任务。它们的输出文件（如 API 协议、接口定义、数据模型等）是本任务的输入约束，请严格遵循。**\n\n${depParts.join('\n\n')}\n`;
         }
 
-        return `@fun-harness-dev
+        const devSystemPrompt = this.getDevSystemPrompt().trim();
+        const systemPromptSection = devSystemPrompt
+            ? `${devSystemPrompt}\n\n=====================================================================\n# 当前要执行的具体任务（请严格按以下指令完成本次编码）\n\n`
+            : '';
 
-## 编码任务指令
+        return `${systemPromptSection}## 编码任务指令
 
 - 任务ID：${subTask.id}
 - 任务名称：${subTask.name}

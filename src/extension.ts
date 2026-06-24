@@ -4,8 +4,12 @@ import * as path from 'path';
 import {
     BASE,
     Config,
+    CUSTOM_SCRIPT_DIR,
+    CustomButton,
+    DEFAULT_AUTO_POLL_PROMPT,
     DEFAULT_CONFIG,
-    PROMPT_CONFIGS,
+    DEFAULT_POLL_SCRIPT,
+    TODO_FILE,
     STAGE,
     SubTask,
     TASK_PLAN_LEGACY_REL_PATH,
@@ -26,6 +30,7 @@ import { HarnessMessageController } from './harnessMessageController';
 import { SchedulerRegistry } from './schedulerRegistry';
 import { HarnessActionsService } from './services/harnessActionsService';
 import { ProjectStructureService } from './services/projectStructureService';
+import { AutoPollService } from './services/autoPollService';
 
 let harness: Harness | undefined;
 let workspaceRoot: string;
@@ -80,7 +85,6 @@ class Harness {
     private sidebarView?: vscode.WebviewView;
     tasks: Task[] = [];
     private currentPage: string = 'main';
-    private selectedPromptKey: string = 'req';
     private config: Config = { ...DEFAULT_CONFIG };
     private schedulerRegistry!: SchedulerRegistry;
     private taskStore!: TaskStoreService;
@@ -91,6 +95,7 @@ class Harness {
     private actionsService!: HarnessActionsService;
     private aiDispatchService!: AiDispatchService;
     private projectStructureService!: ProjectStructureService;
+    private autoPollService!: AutoPollService;
     private autoAdvanceRunning: boolean = false;
     private openedWorkspacePath: string = '';
     private initializationError?: string;
@@ -115,16 +120,25 @@ class Harness {
             this.promptService = new PromptService(workspaceRoot, extensionPath);
             this.projectStructureService = new ProjectStructureService(workspaceRoot, extensionPath);
             this.aiDispatchService = new AiDispatchService(() => this.config);
+            this.autoPollService = new AutoPollService({
+                getMasterRoot: () => this.getMasterRoot(),
+                getConfig: () => this.config,
+                getCurrentWorktreePath: () => this.openedWorkspacePath || workspaceRoot,
+                onStatusChange: () => this.render(),
+                dispatchTodo: async (todoContent, worktreePath, prompt) => this.dispatchTodoToAi(todoContent, worktreePath, prompt),
+            });
             this.schedulerRegistry = new SchedulerRegistry(
                 (task) => this.getIterationDir(task),
                 workspaceRoot,
                 () => this.config,
                 async (query, iterDir, source, providerOverride) => this.aiDispatchService.dispatch(query, iterDir, source, providerOverride),
                 () => this.render(),
+                () => this.promptService.getRenderedPrompt('dev', '', '', workspaceRoot, this.config),
             );
             this.actionsService = new HarnessActionsService({
                 getTasks: () => this.tasks,
                 getConfig: () => this.config,
+                getMasterRoot: () => this.getMasterRoot(),
                 getIterationDir: (task) => this.getIterationDir(task),
                 ensureIterationDir: (task) => this.taskStore.ensureIterationDir(task),
                 saveAndRender: () => this.saveAndRender(),
@@ -142,8 +156,7 @@ class Harness {
                 setPage: (page) => { this.currentPage = page; },
                 reloadTasks: () => this.loadTasks(),
                 render: () => this.render(),
-                setSelectedPromptKey: (key) => { this.selectedPromptKey = key; },
-                restoreSelectedAgentPrompt: () => this.restoreSelectedAgentPrompt(),
+                restoreFactoryPrompts: () => this.handleRestoreFactoryPrompts(),
                 saveGit: (frontendGit, backendGit, baseBranch, dryRun) => this.handleSaveGit(frontendGit, backendGit, baseBranch, dryRun),
                 saveDevConfig: (msg) => this.handleSaveDevConfig(msg),
                 saveRuntimeConfig: (msg) => this.handleSaveRuntimeConfig(msg),
@@ -183,9 +196,13 @@ class Harness {
                 completeDevWithPush: async (taskId) => this.actionsService.completeDevWithPush(taskId),
                 pushAndNextStage: async (taskId) => this.actionsService.pushAndNextStage(taskId),
                 commitToBaseline: async (taskId) => this.actionsService.commitToBaselineByTaskId(taskId),
+                saveCustomButtons: (buttons) => this.handleSaveCustomButtons(buttons),
+                runCustomButton: async (taskId, buttonId) => this.actionsService.runCustomButtonByTaskId(taskId, buttonId),
+                openScriptDir: () => this.handleOpenScriptDir(),
+                saveAutoPollConfig: (msg) => this.handleSaveAutoPollConfig(msg),
+                createPollScriptTemplate: () => this.handleCreatePollScriptTemplate(),
+                toggleAutoPoll: (enable) => this.handleToggleAutoPoll(enable),
             });
-            this.promptService.ensureProjectPrompts();
-            this.promptService.createAgentDefinitions();
             startMasterArtifactWatcher(this.context, {
                 workspaceRoot,
                 baseDirName: BASE,
@@ -197,6 +214,10 @@ class Harness {
                 this.currentPage = 'settings';
             }
             this.gitService.setConfig(this.config);
+            // If this worktree window left auto-polling on before a reload, pick it back up.
+            if (this.isWorktreeSubview()) {
+                this.autoPollService.resumeIfOwnedAfterReload();
+            }
             setInterval(async () => {
                 if (this.currentPage !== 'main' || this.autoAdvanceRunning) {
                     return;
@@ -292,6 +313,44 @@ class Harness {
         return this.taskStore.getIterationDir(task);
     }
 
+    /** The master workspace root ("主目录"), resolved even from a worktree subview window. */
+    private getMasterRoot(): string {
+        if (this.configMeta.origin === 'worktreeSnapshot' && this.configMeta.masterRoot && fs.existsSync(this.configMeta.masterRoot)) {
+            return this.configMeta.masterRoot;
+        }
+        return workspaceRoot;
+    }
+
+    /** File names available for custom buttons, scanned from <masterRoot>/script/. */
+    private listCustomScripts(): string[] {
+        const dir = path.join(this.getMasterRoot(), CUSTOM_SCRIPT_DIR);
+        try {
+            return fs.readdirSync(dir, { withFileTypes: true })
+                .filter(e => e.isFile() && !e.name.startsWith('.'))
+                .map(e => e.name)
+                .sort((a, b) => a.localeCompare(b));
+        } catch {
+            return [];
+        }
+    }
+
+    /** Create (if needed) and reveal the shared script dir, guiding the user to put scripts there. */
+    private async handleOpenScriptDir(): Promise<void> {
+        const dir = path.join(this.getMasterRoot(), CUSTOM_SCRIPT_DIR);
+        try {
+            fs.mkdirSync(dir, { recursive: true });
+        } catch {
+            // best-effort
+        }
+        try {
+            await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(dir));
+        } catch {
+            // reveal is best-effort; the path is still shown below
+        }
+        vscode.window.showInformationMessage(`请将脚本放入此目录后点「刷新脚本列表」：${dir}`);
+        this.renderSettings();
+    }
+
     private getTaskStats(task: Task): TaskStats {
         const scheduler = this.getScheduler(task);
         const subTasks = scheduler.parseTasksMd();
@@ -356,7 +415,7 @@ class Harness {
                 mainFrontendExists: fs.existsSync(mainFrontendDir),
                 mainBackendExists: fs.existsSync(mainBackendDir),
                 branchRouteReady: Boolean(task.iterationBranch),
-                mergeRouteReady: Boolean(task.baseBranchUsed || task.baseSyncBranchUsed || task.mergeTargetBranchUsed),
+                mergeRouteReady: Boolean(task.baseBranchUsed),
             };
             const healthReasons: string[] = [];
             let severity: 'good' | 'warn' | 'bad' = 'good';
@@ -433,6 +492,8 @@ class Harness {
             frontendStartCmd: this.config.frontendStartCmd,
             backendStartCmd: this.config.backendStartCmd,
             aiProvider: this.config.aiProvider,
+            customButtons: this.config.customButtons || [],
+            autoPoll: this.isWorktreeSubview() ? this.autoPollService.getStatus() : undefined,
         });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -450,9 +511,9 @@ class Harness {
         try {
             webview.html = buildSettingsPageHtml(
                 this.config,
-                this.selectedPromptKey,
-                PROMPT_CONFIGS,
                 this.configMeta,
+                this.listCustomScripts(),
+                path.join(this.getMasterRoot(), CUSTOM_SCRIPT_DIR),
             );
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -475,9 +536,18 @@ class Harness {
         this.render();
     }
 
-    private restoreSelectedAgentPrompt(): void {
-        this.promptService.restoreAgentPrompt(this.selectedPromptKey);
-        vscode.window.showInformationMessage('✅ Agent Prompt 已恢复出厂设置');
+    private handleRestoreFactoryPrompts(): void {
+        if (this.configMeta.readOnly) {
+            vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改设置');
+            return;
+        }
+        try {
+            const restored = this.promptService.restoreFactoryPrompts();
+            vscode.window.showInformationMessage(`✅ 已将 ${restored.length} 个 Prompt 恢复为出厂设置（写入 .harness/prompts/）`);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`恢复 Prompt 出厂设置失败：${message}`);
+        }
     }
 
     private async handleSaveGit(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean): Promise<void> {
@@ -542,6 +612,7 @@ class Harness {
         this.config.aiProvider = msg.ap;
         this.config.cliCommandTemplate = msg.cct;
         this.config.aiFallbackToManual = msg.afm;
+        this.config.aiPanelAutoSubmit = msg.pas;
         this.config.worktreeSyncPaths = msg.wsd;
         this.config.customProjectStructure = msg.cps;
         this.config.projectStructureRefineMode = msg.prm === 'local' ? 'local' : 'local+ai';
@@ -575,6 +646,7 @@ class Harness {
         this.config.aiProvider = msg.ap;
         this.config.cliCommandTemplate = msg.cct;
         this.config.aiFallbackToManual = msg.afm;
+        this.config.aiPanelAutoSubmit = msg.pas;
         this.saveConfig();
         vscode.window.showInformationMessage('✅ 运行参数已保存');
     }
@@ -602,6 +674,131 @@ class Harness {
         this.saveConfig();
         this.ensureProjectStructureBaseline();
         vscode.window.showInformationMessage('✅ 高级策略已保存');
+    }
+
+    private handleSaveCustomButtons(buttons: { name: string; command: string; workdir?: string }[]): void {
+        if (this.configMeta.readOnly) {
+            vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改自定义按钮');
+            return;
+        }
+
+        const normalized: CustomButton[] = (buttons || [])
+            .map((b, i) => ({
+                id: `cb_${i}`,
+                name: (b.name || '').trim(),
+                command: (b.command || '').trim(),
+                workdir: (b.workdir || '').trim(),
+            }))
+            .filter(b => b.name && b.command);
+
+        this.config.customButtons = normalized;
+        this.saveConfig();
+        // Push the latest buttons into existing worktree snapshots so their subview
+        // panels reflect them after a window reload (new worktrees inherit on creation).
+        this.taskStore.syncCustomButtonsToWorktrees(normalized);
+        // Ensure the shared script dir exists so the user has a place to drop scripts.
+        const scriptDir = path.join(this.getMasterRoot(), CUSTOM_SCRIPT_DIR);
+        try {
+            fs.mkdirSync(scriptDir, { recursive: true });
+        } catch {
+            // best-effort
+        }
+        this.renderSettings();
+        vscode.window.showInformationMessage(`✅ 已保存 ${normalized.length} 个自定义按钮。脚本请放在：${scriptDir}`);
+    }
+
+    private handleSaveAutoPollConfig(msg: Extract<HarnessMessage, { type: 'saveAutoPollConfig' }>): void {
+        if (this.configMeta.readOnly) {
+            vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，自动轮询设置请在主窗口修改');
+            return;
+        }
+        const interval = Math.max(5, Math.floor(Number(msg.interval) || 0));
+        const script = (msg.script || '').trim() || DEFAULT_POLL_SCRIPT;
+        this.config.autoPollIntervalSec = interval;
+        this.config.autoPollScript = script;
+        this.config.autoPollPrompt = (msg.prompt || '').trim() || DEFAULT_AUTO_POLL_PROMPT;
+        // Keep as-is (incl. an explicit empty string, which disables skip-matching). Markers are
+        // matched per-line after trimming, so trailing blank lines are harmless.
+        this.config.autoPollSkipMarkers = msg.skipMarkers ?? '';
+        this.saveConfig();
+        // Ensure the shared script dir exists so the user has somewhere to put the script.
+        try {
+            fs.mkdirSync(path.join(this.getMasterRoot(), CUSTOM_SCRIPT_DIR), { recursive: true });
+        } catch {
+            // best-effort
+        }
+        this.renderSettings();
+        vscode.window.showInformationMessage(
+            `✅ 自动轮询设置已保存（间隔 ${interval}s，脚本 ${script}）。开启后将「拉取并执行」：拉到新内容即派发给当前任务的 AI 执行器。`
+        );
+    }
+
+    /**
+     * Invoked when a poll updates todo.md and auto-dispatch is on. Builds a prompt around the
+     * pulled tasks and routes it through the shared AI dispatch path, honoring the active task's
+     * configured AI executor (Claude Code panel/CLI, Copilot, etc.).
+     */
+    private async dispatchTodoToAi(todoContent: string, worktreePath: string, promptOverride?: string): Promise<void> {
+        const task = this.tasks.find(t => t.stage !== STAGE.DONE) || this.tasks[0];
+        const provider = (task?.aiProvider || this.config.aiProvider || '').trim() || undefined;
+        const query = this.buildAutoPollDispatchQuery(todoContent, promptOverride);
+        await this.aiDispatchService.dispatch(query, worktreePath, 'dev-subtask', provider);
+    }
+
+    /**
+     * The auto-dispatch query is simply the user-configured prompt followed by the pulled todo.md
+     * content. `promptOverride` carries the master-config value resolved by AutoPollService (so
+     * worktree windows use the latest prompt, not their stale config snapshot); falls back to this
+     * window's config and finally the built-in default.
+     */
+    private buildAutoPollDispatchQuery(todoContent: string, promptOverride?: string): string {
+        const prompt = (promptOverride ?? this.config.autoPollPrompt ?? '').trim() || DEFAULT_AUTO_POLL_PROMPT;
+        const trimmed = todoContent.length > 8000
+            ? `${todoContent.slice(0, 8000)}\n... (内容过长已截断，请直接读取 ${TODO_FILE} 获取完整清单)`
+            : todoContent;
+        const todoBlock = todoContent.trim().startsWith('```') ? trimmed : '```markdown\n' + trimmed + '\n```';
+        return [prompt, '', todoBlock].join('\n');
+    }
+
+    /** Scaffold a starter pull-task script (Node) under <masterRoot>/script/ if it doesn't exist yet. */
+    private async handleCreatePollScriptTemplate(): Promise<void> {
+        if (this.configMeta.readOnly) {
+            vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，请在主窗口创建脚本');
+            return;
+        }
+        const scriptDir = path.join(this.getMasterRoot(), CUSTOM_SCRIPT_DIR);
+        const script = (this.config.autoPollScript || '').trim() || DEFAULT_POLL_SCRIPT;
+        const scriptPath = path.join(scriptDir, script);
+        try {
+            fs.mkdirSync(scriptDir, { recursive: true });
+        } catch {
+            // best-effort
+        }
+        if (fs.existsSync(scriptPath)) {
+            const doc = await vscode.workspace.openTextDocument(scriptPath);
+            await vscode.window.showTextDocument(doc, { preview: false });
+            vscode.window.showInformationMessage(`脚本已存在，已为你打开：${scriptPath}`);
+            this.renderSettings();
+            return;
+        }
+        const isJs = /\.(c|m)?js$/i.test(script);
+        const template = isJs
+            ? `// fun-harness 拉取远程任务脚本。\n// 约定：把本次拉取到的"任务清单"内容打印到 stdout（标准输出）。\n// 插件会读取 stdout：仅当内容非空且与现有 todo.md 不同才覆盖 todo.md。\n// 运行目录（cwd）为当前 worktree。运行方式：node ${script}\n\nasync function pullTasks() {\n    // TODO: 在这里实现你的远程拉取逻辑（如调用 API、读取队列等）。\n    // 返回 markdown 文本；返回空字符串表示"本次无新内容"，插件不会覆盖 todo.md。\n    return '';\n}\n\npullTasks()\n    .then((content) => {\n        if (content && content.trim()) {\n            process.stdout.write(content);\n        }\n    })\n    .catch((err) => {\n        console.error(err && err.stack ? err.stack : String(err));\n        process.exit(1);\n    });\n`
+            : `#!/usr/bin/env bash\n# fun-harness 拉取远程任务脚本。\n# 约定：把本次拉取到的"任务清单"内容打印到 stdout（标准输出）。\n# 插件仅当内容非空且与现有 todo.md 不同才覆盖 todo.md。运行目录（cwd）为当前 worktree。\nset -euo pipefail\n\n# TODO: 在这里实现远程拉取逻辑，并 echo 出 markdown 内容。\n# 输出为空表示本次无新内容，插件不会覆盖 todo.md。\n`;
+        fs.writeFileSync(scriptPath, template, 'utf8');
+        const doc = await vscode.workspace.openTextDocument(scriptPath);
+        await vscode.window.showTextDocument(doc, { preview: false });
+        vscode.window.showInformationMessage(`✅ 已创建示例脚本：${scriptPath}`);
+        this.renderSettings();
+    }
+
+    private handleToggleAutoPoll(enable: boolean): void {
+        if (enable) {
+            const task = this.tasks.find(t => t.stage !== STAGE.DONE) || this.tasks[0];
+            this.autoPollService.enable(task?.name || path.basename(this.openedWorkspacePath || workspaceRoot));
+        } else {
+            this.autoPollService.disable();
+        }
     }
 
     private ensureProjectStructureBaseline(): void {
@@ -1380,6 +1577,10 @@ class Harness {
         this.schedulerRegistry.stopAll();
     }
 
+    disposeAutoPoll(): void {
+        this.autoPollService?.dispose();
+    }
+
     private readLatestFailureReason(iterDir: string, subTasks: SubTask[]): string {
         const failed = subTasks.filter(item => item.status === 'failed').map(item => item.id);
         if (failed.length === 0) {
@@ -1418,5 +1619,6 @@ class Harness {
 export function deactivate(): void {
     if (harness) {
         harness.stopAllSchedulers();
+        harness.disposeAutoPoll();
     }
 }

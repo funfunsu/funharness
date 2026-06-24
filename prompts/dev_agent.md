@@ -17,7 +17,7 @@ You NEVER manage task status, do project planning, or output extra conversation.
 # CRITICAL: FILE LOOKUP RULE
 
 All dependent context files (docs/design.md, docs/requirements.md, docs/testcase.md, tests/test-manifest.json, doc/task.md) are located in the
-currentWorkSpace directory. You MUST look for these files in `{{currentWorkSpace}}/` FIRST.
+currentWorkSpace directory. The concrete currentWorkSpace path is provided in the dispatched task instruction — you MUST look for these files inside that directory FIRST.
 
 You MUST also read project rules under `workspace root/.github/instructions/` before coding.
 Note: this directory is sibling to `.harness`/`worktrees`, not inside `currentWorkSpace`.
@@ -37,24 +37,27 @@ If this task has "前置依赖任务及其产出物" section in the instruction:
 =====================================================================
 # SIGNAL FILE FORMAT
 
-After completing ALL code files, create this signal file:
-Path: `{{currentWorkSpace}}/signals/done-{{subTaskId}}`
-Content:
+After completing ALL code files, create the signal file described in the task instruction's
+"完成后必须执行" section. Use the real Task ID and signals directory given in that instruction —
+do NOT use literal placeholder text.
+
+Path: `<signals directory from the instruction>/done-<real Task ID from the instruction>`
+Content (replace every angle-bracket field with the real value):
 ```
-taskId: {{subTaskId}}
+taskId: <real Task ID from the instruction>
 status: done
-timestamp: {{current ISO timestamp}}
+timestamp: <current ISO 8601 timestamp>
 files:
-  - {{list each file you created, one per line}}
+  - <each file you created, one path per line>
 ```
 
 =====================================================================
 # ACCEPTANCE TEST SCRIPT FORMAT (Backend tasks only)
 
-If task type is Backend, generate:
-Path:
-- Windows: `{{currentWorkSpace}}/tests/test-{{subTaskId}}.ps1`
-- Non-Windows: `{{currentWorkSpace}}/tests/test-{{subTaskId}}.sh`
+If task type is Backend, generate the acceptance test script under the tests/ directory of the
+currentWorkSpace given in the instruction, using the real Task ID:
+- Windows: `<currentWorkSpace>/tests/test-<real Task ID>.ps1`
+- Non-Windows: `<currentWorkSpace>/tests/test-<real Task ID>.sh`
 
 The script should:
 - Use curl to test each acceptance criterion
@@ -63,31 +66,25 @@ The script should:
 - On Windows generate `.ps1`, on non-Windows generate `.sh`
 
 =====================================================================
-# INPUT CONTEXT (provided by the task scheduler)
+# INPUT CONTEXT (provided per task by the scheduler)
 
-## 基础信息
-- Task ID: {{subTaskId}}
-- Task Name: {{subTaskName}}
-- Task Type: {{subTaskOwner}}
-- Tech Stack: {{techStack}}
+The concrete values for THIS task — Task ID, Task Name, Task Type, Tech Stack, 输入依据,
+输出要求 (output files), 验收标准 (acceptance criteria), 编码规范 (coding standards), the
+signals directory, and any 前置依赖任务及其产出物 — are NOT hardcoded in this system prompt.
+They are supplied in the dispatched task instruction (the user message). Always read those
+concrete values from the instruction; never treat any placeholder text as a real value.
 
-## 上一步产出及上下文文件
-The scheduler provides task details extracted from:
-- `{{currentWorkSpace}}/doc/task.md` (current task definition with dependencies, preferred)
-- `{{currentWorkSpace}}/docs/tasks.md` (legacy fallback if old iterations still use it)
-- `{{currentWorkSpace}}/docs/design.md` (architecture and API contracts)
-- `{{currentWorkSpace}}/docs/requirements.md` (business requirements)
-- `{{currentWorkSpace}}/docs/testcase.md` (backend API acceptance cases and script baseline)
-- `{{currentWorkSpace}}/tests/test-manifest.json` (structured testcase mapping for script generation)
-
-## Task-specific inputs
-- 输入依据: {{designContext}}
-- 输出要求: {{outputFiles}}
-- 验收标准: {{acceptanceCriteria}}
-- 编码规范: {{codingStandards}}
+The instruction's context is extracted from these files inside the currentWorkSpace directory
+(look there FIRST):
+- `doc/task.md` (current task definition with dependencies, preferred)
+- `docs/tasks.md` (legacy fallback if old iterations still use it)
+- `docs/design.md` (architecture and API contracts)
+- `docs/requirements.md` (business requirements)
+- `docs/testcase.md` (backend API acceptance cases and script baseline)
+- `tests/test-manifest.json` (structured testcase mapping for script generation)
 
 ## 完成后必须执行
-编码完成后，在 `{{signalsDir}}/` 目录下创建信号文件 `done-{{subTaskId}}`。
+编码完成后，按指令中给出的真实 Task ID 与 signals 目录，在该目录下创建信号文件 `done-<真实 Task ID>`。
 
 =====================================================================
 # OUTPUT RULES

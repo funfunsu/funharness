@@ -1,5 +1,92 @@
-import { Config, PromptConfig, STAGE, SubTask, Task, TaskStats, AI_PROVIDERS } from './models';
+import { Config, CustomButton, STAGE, SubTask, Task, TaskStats, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS } from './models';
 import { HarnessConfigMeta } from './services/taskStoreService';
+import { AutoPollStatus } from './services/autoPollService';
+
+/** Escape a string for safe interpolation into HTML text or a double-quoted attribute. */
+function escapeHtml(value: string): string {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function buildScriptOptions(selected: string, scriptFiles: string[]): string {
+    const opts = ['<option value="">（选择脚本）</option>'];
+    let matched = false;
+    for (const f of scriptFiles) {
+        const sel = f === selected ? ' selected' : '';
+        if (sel) {
+            matched = true;
+        }
+        opts.push(`<option value="${escapeHtml(f)}"${sel}>${escapeHtml(f)}</option>`);
+    }
+    // A previously chosen script that no longer exists is kept (marked 缺失) so the
+    // button isn't silently re-pointed when its file is missing.
+    if (selected && !matched) {
+        opts.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)}（缺失）</option>`);
+    }
+    return opts.join('');
+}
+
+/** Worktree subfolders a custom button can run in. Empty value = worktree root. */
+const CUSTOM_BUTTON_WORKDIRS = ['frontend', 'backend'];
+
+function buildWorkdirOptions(selected: string): string {
+    const opts = ['<option value="">根目录</option>'];
+    let matched = false;
+    for (const d of CUSTOM_BUTTON_WORKDIRS) {
+        const sel = d === selected ? ' selected' : '';
+        if (sel) {
+            matched = true;
+        }
+        opts.push(`<option value="${escapeHtml(d)}"${sel}>${escapeHtml(d)}</option>`);
+    }
+    // Keep a previously chosen folder that isn't in the standard set, so a button
+    // configured for a custom layout isn't silently reset to the root.
+    if (selected && !matched) {
+        opts.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)}（自定义）</option>`);
+    }
+    return opts.join('');
+}
+
+function customButtonRowHtml(name: string, command: string, workdir: string, scriptFiles: string[], disabled: string): string {
+    return `<div class="cb-row">
+<input class="cb-name" placeholder="按钮名称（如 部署）" value="${escapeHtml(name)}" ${disabled}>
+<select class="cb-dir" ${disabled} title="执行目录">${buildWorkdirOptions(workdir)}</select>
+<select class="cb-cmd" ${disabled}>${buildScriptOptions(command, scriptFiles)}</select>
+<button class="cb-del" onclick="removeCustomButton(this)" ${disabled}>✕</button>
+</div>`;
+}
+
+/** Worktree-subview card for the exclusive remote-task auto-poller. */
+function buildAutoPollPanelHtml(status: AutoPollStatus): string {
+    const intervalLabel = `${status.intervalSec}s`;
+    const dispatchLine = '<div class="autopoll-hint">🤖 拉取到新内容后会自动把任务派发给当前迭代任务的 AI 执行器（拉取并执行）。</div>';
+    if (status.enabledHere) {
+        return `<div class="autopoll-card on">
+<div class="autopoll-title">🟢 自动轮询远程任务并执行：运行中</div>
+<div class="autopoll-hint">每 ${intervalLabel} 运行 <b>${escapeHtml(status.script)}</b>，拉取到的新内容写入当前 worktree 的 <b>todo.md</b>（内容为空或无变化时不覆盖）。</div>
+${dispatchLine}
+<button class="btn-orange" onclick="toggleAutoPoll(false)">⏸ 关闭自动轮询</button>
+</div>`;
+    }
+
+    const elsewhereNote = status.activeElsewhereName
+        ? `<div class="autopoll-warn">「${escapeHtml(status.activeElsewhereName)}」worktree 已开启自动轮询，请移步该 worktree，或先在那里关闭后再开启。</div>`
+        : '';
+    const scriptNote = status.scriptExists
+        ? ''
+        : `<div class="autopoll-warn">未找到拉取脚本 <b>script/${escapeHtml(status.script)}</b>，请先在主工作区「高级设置 → 自动轮询」中创建脚本。</div>`;
+    return `<div class="autopoll-card">
+<div class="autopoll-title">⚪ 自动轮询远程任务并执行：未开启</div>
+<div class="autopoll-hint">开启后，本 worktree 每 ${intervalLabel} 运行 <b>${escapeHtml(status.script)}</b>，将拉取到的新内容写入 <b>todo.md</b>，并自动派发给当前迭代任务的 AI 执行器执行。同一时间只能有一个 worktree 开启。</div>
+${elsewhereNote}
+${scriptNote}
+<button class="btn-green" onclick="toggleAutoPoll(true)">▶ 开启自动轮询远程任务并执行</button>
+</div>`;
+}
 
 export interface MainTaskViewModel {
     task: Task;
@@ -269,8 +356,9 @@ function collectTaskActions(ctx: TaskActionContext): { primaryActions: string[];
 export function buildMainPageHtml(
     taskViews: MainTaskViewModel[],
     dashboard: { activeAutoCount: number; maxConcurrentAutoTasks: number; abnormalCount: number },
-    config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; frontendStartCmd: string; backendStartCmd: string; aiProvider: string }
+    config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; frontendStartCmd: string; backendStartCmd: string; aiProvider: string; customButtons: CustomButton[]; autoPoll?: AutoPollStatus }
 ): string {
+    const customButtons = config.customButtons || [];
     const isWorktreeSubview = config.isWorktreeSubview === true;
     const visibleTaskViews = isWorktreeSubview
         ? taskViews.slice(0, 1)
@@ -332,6 +420,12 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .stage-more-actions button{flex:1;padding:8px;border-radius:8px;border:none;font-size:11px;min-width:120px}
 .task-hidden{display:none}
 .mode-banner{margin:10px 0 12px;padding:8px 10px;background:#1d2e3b;border:1px solid #2f556f;border-radius:8px;color:#9ecff0;font-size:12px}
+.autopoll-card{margin:0 0 12px;padding:10px 12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
+.autopoll-card.on{border-color:#1f6b3a;background:#13251a}
+.autopoll-title{font-weight:600;font-size:13px;margin-bottom:6px}
+.autopoll-hint{font-size:12px;color:#a9a9b0;line-height:1.5;margin-bottom:8px}
+.autopoll-warn{font-size:12px;color:#ffd56a;background:#2b2308;border:1px solid #7a5d00;border-radius:8px;padding:8px;margin-bottom:8px}
+.autopoll-card button{width:100%;padding:8px;border-radius:8px;border:none;font-size:12px}
 .sub-task-panel{margin-top:8px;background:#1a1a1a;border-radius:8px;padding:6px 8px}
 .sub-task-panel>summary{cursor:pointer;font-size:12px;color:#bbb;list-style:none}
 .sub-task-panel>summary::-webkit-details-marker{display:none}
@@ -359,6 +453,8 @@ ${!isWorktreeSubview ? `
 </div>
 
 ${isWorktreeSubview ? '<div class="mode-banner">子面板仅保留当前迭代任务操作，不提供高级设置与创建迭代功能。<button class="toolbar-btn" style="margin-left:8px" onclick="openMasterWorkspace()">↩ 回到主工作区</button></div>' : ''}
+
+${isWorktreeSubview && config.autoPoll ? buildAutoPollPanelHtml(config.autoPoll) : ''}
 
 ${visibleTaskViews.map(view => {
     const t = view.task;
@@ -407,6 +503,14 @@ ${visibleTaskViews.map(view => {
         hasBackendStartCmd,
     });
 
+    // User-defined buttons: same visibility rule as 启动服务 (worktree subview always,
+    // main panel only when an iteration worktree exists). Resolved server-side by id.
+    if ((isWorktreeSubview || hasWorktree) && customButtons.length > 0) {
+        for (const b of customButtons) {
+            sideActions.push(`<button class="btn-gray" onclick="runCustomButton('${t.id}','${b.id}')">${escapeHtml(b.name)}</button>`);
+        }
+    }
+
     const actionHtml = `
 <div class="action-stack">
   ${primaryActions.length > 0 ? `<div class="action-label">主流程操作</div><div class="action-group">${primaryActions.join('')}</div>` : ''}
@@ -438,7 +542,7 @@ ${!isWorktreeSubview ? `<details class="task-config">
 <div class="task-config-body">
 <div class="task-status">Worktree：${t.worktreePath || '-'}</div>
 <div class="task-status">拆分模式：${effectiveSplitMode === 'compact' ? '急速模式' : '标准模式'}${config.compactTaskDecomposition ? '（全局配置）' : ''}</div>
-<div class="task-status">基线分支：${t.baseBranchUsed || t.baseSyncBranchUsed || '-'}</div>
+<div class="task-status">基线分支：${t.baseBranchUsed || '-'}</div>
 <div class="task-status">迭代分支：${t.iterationBranch || '-'}</div>
 <div class="health-line"><span class="health-badge ${healthClass}">${healthLabel}</span><span class="task-status">${healthStatus}</span></div>
 <div class="task-status">文档：${artifactStatus}</div>
@@ -516,6 +620,8 @@ function syncMainCode(id){v.postMessage({type:'syncMainCode',id})}
 function openMasterWorkspace(){v.postMessage({type:'openMasterWorkspace'})}
 function startService(id,target){v.postMessage({type:'startService',id,target})}
 function startServices(id){v.postMessage({type:'startServices',id})}
+function runCustomButton(id,buttonId){v.postMessage({type:'runCustomButton',id,buttonId})}
+function toggleAutoPoll(enable){v.postMessage({type:'toggleAutoPoll',enable})}
 function setSubStatus(id,subId,status){v.postMessage({type:'setSubTaskStatus',id,subId,status})}
 function editTaskDesc(id){v.postMessage({type:'requestEditTaskDesc',id})}
 function resetTask(id){v.postMessage({type:'resetTask',id})}
@@ -546,9 +652,9 @@ function openAbnormalTasks(){
 
 export function buildSettingsPageHtml(
     config: Config,
-    selectedPromptKey: string,
-    promptConfigs: PromptConfig[],
-    configMeta: HarnessConfigMeta
+    configMeta: HarnessConfigMeta,
+    scriptFiles: string[],
+    scriptDir: string
 ): string {
     const readOnly = configMeta.readOnly === true;
     const disabled = readOnly ? 'disabled' : '';
@@ -557,9 +663,6 @@ export function buildSettingsPageHtml(
         : configMeta.origin === 'master'
             ? '主窗口配置'
             : '未标记配置';
-    const opts = promptConfigs.map(o =>
-        `<option value="${o.key}" ${o.key === selectedPromptKey ? 'selected' : ''}>${o.name}</option>`
-    ).join('');
 
     return `<!DOCTYPE html>
 <html>
@@ -591,6 +694,13 @@ button{width:100%;padding:10px;border-radius:8px;border:none;color:white;margin-
 .fold>summary{cursor:pointer;color:#d3d3d8;font-size:13px;list-style:none}
 .fold>summary::-webkit-details-marker{display:none}
 .fold[open]>summary{margin-bottom:8px;color:#fff}
+.cb-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.cb-row input{margin:0}
+.cb-name{flex:1}
+.cb-dir{flex:1}
+.cb-cmd{flex:2}
+.cb-del{width:auto;flex:none;margin:0;padding:10px 14px;background:#ff3b30}
+.cb-empty{margin:10px 0;padding:10px;border-radius:8px;background:#2b2308;border:1px solid #7a5d00;color:#ffd56a;font-size:12px}
 </style>
 </head>
 <body>
@@ -613,7 +723,7 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <h5>后端 Git 地址（可选）</h5>
 <input id="bg" value="${config.backendGit || ''}" ${disabled}>
 <h5>基线分支（如 main、master 或 yourname/integration）</h5>
-<input id="bb" value="${config.baseBranch || config.baseSyncBranch || config.mergeTargetBranch || ''}" placeholder="如 main 或 yourname/integration" ${disabled}>
+<input id="bb" value="${config.baseBranch || ''}" placeholder="如 main 或 yourname/integration" ${disabled}>
 <div class="toggle-row">
 <span>合并前 dry-run 冲突检查</span>
 <input id="dr" type="checkbox" ${config.mergeDryRunEnabled ? 'checked' : ''} ${disabled}>
@@ -664,6 +774,10 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <div class="toggle-row">
 <span>CLI 执行器失败时自动降级到手工模式</span>
 <input id="afm" type="checkbox" ${config.aiFallbackToManual !== false ? 'checked' : ''} ${disabled}>
+</div>
+<div class="toggle-row">
+<span>Claude Code (面板) 预填后自动回车发送（仅 macOS，需授予编辑器「辅助功能」权限）</span>
+<input id="pas" type="checkbox" ${config.aiPanelAutoSubmit !== false ? 'checked' : ''} ${disabled}>
 </div>
 <div class="inline-actions">
 <button onclick="saveRuntimeConfig()" style="background:#007aff" ${disabled}>💾 保存运行参数</button>
@@ -722,25 +836,93 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 </div>
 
 <div class="section">
-<div class="section-title">恢复 Agent Prompt</div>
-<select id="sel" onchange="sel()" ${disabled}>${opts}</select>
-<button onclick="init()" style="background:#ff3b30" ${disabled}>恢复选定的 Agent Prompt 出厂设置</button>
+<div class="section-title">自定义按钮</div>
+<div class="hint">脚本统一维护在主目录的 <b>script/</b> 目录下（如 deploy.sh）。为按钮选择「执行目录」（根目录 / frontend / backend）和一个脚本即可；点击按钮时先 cd 到该任务 worktree 迭代目录下的所选文件夹，再运行所选脚本（插件会按你的操作系统自动拼接执行命令）。可配置多个。</div>
+<div class="kv">脚本目录：<b>${escapeHtml(scriptDir)}</b></div>
+<div class="inline-actions" style="margin-top:8px">
+<button onclick="openScriptDir()" style="background:#6d6d72" ${disabled}>📂 打开 script 目录</button>
+<button onclick="p('settings')" style="background:#8e8e93">🔄 刷新脚本列表</button>
+</div>
+${scriptFiles.length === 0 ? '<div class="cb-empty">script/ 目录下暂无脚本文件。请先在上面的脚本目录中创建脚本（如 deploy.sh），然后点「🔄 刷新脚本列表」。</div>' : ''}
+<div id="cbList">
+${(config.customButtons || []).map(b => customButtonRowHtml(b.name, b.command, b.workdir || '', scriptFiles, disabled)).join('')}
+</div>
+<div class="inline-actions">
+<button onclick="addCustomButton()" style="background:#3a3a3f" ${scriptFiles.length === 0 ? 'disabled' : disabled}>➕ 添加按钮</button>
+<button onclick="saveCustomButtons()" style="background:#007aff" ${disabled}>💾 保存自定义按钮</button>
+</div>
+</div>
+
+<div class="section">
+<div class="section-title">自动轮询远程任务</div>
+<div class="hint">设置轮询间隔与拉取脚本后，到任意 worktree 的<b>子面板</b>即可开启自动轮询（同一时间只能开启一个 worktree）。脚本固定放在主目录的 <b>script/</b> 下，约定把拉取到的任务清单<b>打印到 stdout</b>；插件读取后仅当内容非空且与现有 todo.md 不同才覆盖当前 worktree 的 <b>todo.md</b>。</div>
+<h5>轮询间隔（秒，最小 5）</h5>
+<input id="ap_int" type="number" min="5" value="${config.autoPollIntervalSec || 60}" ${disabled}>
+<h5>拉取脚本文件名（位于 script/ 下，推荐 Node 脚本 pullTask.js）</h5>
+<input id="ap_script" value="${escapeHtml(config.autoPollScript || 'pullTask.js')}" placeholder="pullTask.js" ${disabled}>
+<div class="kv" style="margin:6px 0">脚本状态：<b>${scriptFiles.includes(config.autoPollScript || 'pullTask.js') ? '✅ 已存在' : '⚠ 未找到，请点「创建/打开脚本」'}</b></div>
+<h5>自动任务 Prompt（派发给 AI 执行器时，会以「此 Prompt + 换行 + todo.md 内容」拼接后填入）</h5>
+<textarea id="ap_prompt" rows="5" placeholder="${escapeHtml(DEFAULT_AUTO_POLL_PROMPT)}" ${disabled}>${escapeHtml(config.autoPollPrompt || DEFAULT_AUTO_POLL_PROMPT)}</textarea>
+<div class="hint">留空保存则恢复为默认 Prompt。todo.md 内容会附在此 Prompt 之后一并发送（过长会在深链中截断，但完整内容已复制到剪贴板）。</div>
+<h5>无任务跳过标记（每行一个；拉取结果整体 trim 后与某行完全相同，则视为"无任务"，不更新 todo.md 也不派发 AI）</h5>
+<textarea id="ap_skip" rows="3" placeholder="${escapeHtml(DEFAULT_AUTO_POLL_SKIP_MARKERS)}" ${disabled}>${escapeHtml(config.autoPollSkipMarkers ?? DEFAULT_AUTO_POLL_SKIP_MARKERS)}</textarea>
+<div class="hint">例如 get_next_todo_task 无任务时输出「没有未完成的待办任务」。匹配不区分大小写；留空表示不做跳过判断（任何非空输出都会触发执行）。</div>
+<div class="hint">开启自动轮询即「拉取并执行」：每当 todo.md 拉取到新内容，自动把任务派发给「当前迭代任务卡片上选择的 AI 执行器」。选 <b>Claude Code (CLI 终端)</b> 可全自动在终端运行；选 <b>Claude Code (面板)</b> 会打开面板并预填提示词（需手动按回车发送）。在任意 worktree 子面板点「▶ 开启自动轮询远程任务并执行」即可。</div>
+<div class="inline-actions">
+<button onclick="createPollScriptTemplate()" style="background:#30b0c7" ${disabled}>📝 创建/打开脚本</button>
+<button onclick="saveAutoPollConfig()" style="background:#007aff" ${disabled}>💾 保存轮询设置</button>
+</div>
+</div>
+
+<div class="section">
+<div class="section-title">Prompt 出厂设置</div>
+<div class="hint">Prompt 内置于扩展中，默认即用。如需自定义，可点下方按钮把内置 Prompt 写入本项目 <code>.harness/prompts/</code> 后编辑；若改坏了，再次点击即可一键恢复出厂。</div>
+<button onclick="restoreFactoryPrompts()" style="background:#ff3b30" ${disabled}>♻️ 恢复 Prompt 出厂设置（写入 .harness/prompts/）</button>
 </div>
 
 <script>
 const v=acquireVsCodeApi();
 function p(x){v.postMessage({type:'page',page:x})}
-function sel(){v.postMessage({type:'sel',key:document.getElementById('sel').value})}
-function init(){if(confirm('确定恢复选定的 Agent Prompt 出厂设置？'))v.postMessage({type:'initAgent'})}
+function restoreFactoryPrompts(){if(confirm('确定用内置出厂 Prompt 覆盖 .harness/prompts/ 中的副本？此操作会覆盖你在该目录下的修改。'))v.postMessage({type:'restoreFactoryPrompts'})}
 function saveGit(){v.postMessage({type:'saveGit',fg:document.getElementById('fg').value,bg:document.getElementById('bg').value,bb:document.getElementById('bb').value,dr:document.getElementById('dr').checked})}
-function saveDevConfig(){v.postMessage({type:'saveDevConfig',bsc:document.getElementById('bsc').value,bp:parseInt(document.getElementById('bp').value)||8080,fsc:document.getElementById('fsc').value,sm:document.getElementById('sm').value,jp:document.getElementById('jp').value,fst:document.getElementById('fst').value,bst:document.getElementById('bst').value,ts:document.getElementById('ts').value,cs:document.getElementById('cs').value,pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,aa:document.getElementById('aa').checked,ar:document.getElementById('ar').checked,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,ap:'${config.aiProvider}',cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value})}
-function saveRuntimeConfig(){v.postMessage({type:'saveRuntimeConfig',bsc:document.getElementById('bsc').value,bp:parseInt(document.getElementById('bp').value)||8080,fsc:document.getElementById('fsc').value,sm:document.getElementById('sm').value,jp:document.getElementById('jp').value,fst:document.getElementById('fst').value,bst:document.getElementById('bst').value,ap:'${config.aiProvider}',cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked})}
+function saveDevConfig(){v.postMessage({type:'saveDevConfig',bsc:document.getElementById('bsc').value,bp:parseInt(document.getElementById('bp').value)||8080,fsc:document.getElementById('fsc').value,sm:document.getElementById('sm').value,jp:document.getElementById('jp').value,fst:document.getElementById('fst').value,bst:document.getElementById('bst').value,ts:document.getElementById('ts').value,cs:document.getElementById('cs').value,pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,aa:document.getElementById('aa').checked,ar:document.getElementById('ar').checked,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,ap:'${config.aiProvider}',cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value})}
+function saveRuntimeConfig(){v.postMessage({type:'saveRuntimeConfig',bsc:document.getElementById('bsc').value,bp:parseInt(document.getElementById('bp').value)||8080,fsc:document.getElementById('fsc').value,sm:document.getElementById('sm').value,jp:document.getElementById('jp').value,fst:document.getElementById('fst').value,bst:document.getElementById('bst').value,ap:'${config.aiProvider}',cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
 function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',ts:document.getElementById('ts').value,cs:document.getElementById('cs').value,pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,aa:document.getElementById('aa').checked,ar:document.getElementById('ar').checked,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value})}
 function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
 function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
 function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}
 function autoDetectDevEnv(){v.postMessage({type:'autoDetectDevEnv'})}
 function testAiProvider(){v.postMessage({type:'testAiProvider'})}
+function saveAutoPollConfig(){v.postMessage({type:'saveAutoPollConfig',interval:parseInt(document.getElementById('ap_int').value)||60,script:document.getElementById('ap_script').value.trim(),prompt:document.getElementById('ap_prompt').value,skipMarkers:document.getElementById('ap_skip').value})}
+function createPollScriptTemplate(){v.postMessage({type:'createPollScriptTemplate'})}
+const scriptFiles=${JSON.stringify(scriptFiles).replace(/</g, '\\u003c')};
+const cbWorkdirs=${JSON.stringify(CUSTOM_BUTTON_WORKDIRS)};
+function cbEscAttr(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
+function cbScriptOptions(selected){
+  let opts='<option value="">（选择脚本）</option>';
+  scriptFiles.forEach(function(f){opts+='<option value="'+cbEscAttr(f)+'"'+(f===selected?' selected':'')+'>'+cbEscAttr(f)+'</option>';});
+  return opts;
+}
+function cbWorkdirOptions(selected){
+  let opts='<option value="">根目录</option>';
+  cbWorkdirs.forEach(function(d){opts+='<option value="'+cbEscAttr(d)+'"'+(d===selected?' selected':'')+'>'+cbEscAttr(d)+'</option>';});
+  return opts;
+}
+function cbEmptyRow(){return '<div class="cb-row"><input class="cb-name" placeholder="按钮名称（如 部署）"><select class="cb-dir" title="执行目录">'+cbWorkdirOptions('')+'</select><select class="cb-cmd">'+cbScriptOptions('')+'</select><button class="cb-del" onclick="removeCustomButton(this)">✕</button></div>';}
+function addCustomButton(){if(scriptFiles.length===0){alert('请先在 script/ 目录下创建脚本，再点「刷新脚本列表」');return;}document.getElementById('cbList').insertAdjacentHTML('beforeend',cbEmptyRow());}
+function removeCustomButton(btn){const r=btn.closest('.cb-row');if(r)r.remove();}
+function openScriptDir(){v.postMessage({type:'openScriptDir'});}
+function saveCustomButtons(){
+  const rows=document.querySelectorAll('#cbList .cb-row');
+  const buttons=[];
+  rows.forEach(function(r){
+    const name=r.querySelector('.cb-name').value.trim();
+    const command=r.querySelector('.cb-cmd').value.trim();
+    const workdir=r.querySelector('.cb-dir').value.trim();
+    if(name&&command){buttons.push({name:name,command:command,workdir:workdir});}
+  });
+  v.postMessage({type:'saveCustomButtons',buttons:buttons});
+}
 </script>
 </body>
 </html>`;

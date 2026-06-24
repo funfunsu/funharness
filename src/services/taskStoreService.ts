@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { BASE, Config, DEFAULT_CONFIG, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, STAGE, Stage, Task } from '../models';
+import { BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, STAGE, Stage, Task } from '../models';
 
 const STAGE_ORDER: Stage[] = [
     STAGE.INITIALIZING,
@@ -40,7 +40,7 @@ export class TaskStoreService {
     loadTasks(): Task[] {
         const meta = this.getConfigMeta();
         if (meta.origin === 'worktreeSnapshot') {
-            return this.loadLocalTasks();
+            return this.migrateTaskBaselines(this.loadLocalTasks());
         }
 
         const localTasks = this.loadLocalTasks();
@@ -48,7 +48,7 @@ export class TaskStoreService {
 
         const worktreeTasks = this.loadTasksFromWorktrees();
         if (worktreeTasks.length === 0) {
-            return localTasks;
+            return this.migrateTaskBaselines(localTasks);
         }
 
         // Root file is the authoritative task list.
@@ -56,11 +56,29 @@ export class TaskStoreService {
         // so prefer their version, but only for tasks that still exist in the root file.
         if (localIds.size > 0) {
             const worktreeMap = new Map(worktreeTasks.map(t => [t.id, t]));
-            return localTasks.map(t => worktreeMap.get(t.id) || t);
+            return this.migrateTaskBaselines(localTasks.map(t => worktreeMap.get(t.id) || t));
         }
 
         // No root file yet (fresh workspace) — trust worktree scan as-is.
-        return worktreeTasks;
+        return this.migrateTaskBaselines(worktreeTasks);
+    }
+
+    /**
+     * Collapse legacy per-task baseline aliases (baseSyncBranchUsed / mergeTargetBranchUsed) into
+     * the single canonical baseBranchUsed, so the rest of the app only ever reads one field.
+     */
+    private migrateTaskBaselines(tasks: Task[]): Task[] {
+        for (const t of tasks) {
+            if (t.baseBranchUsed) {
+                continue;
+            }
+            const legacyFields = t as unknown as Record<string, unknown>;
+            const legacy = legacyFields.baseSyncBranchUsed ?? legacyFields.mergeTargetBranchUsed;
+            if (typeof legacy === 'string' && legacy.trim()) {
+                t.baseBranchUsed = legacy.trim();
+            }
+        }
+        return tasks;
     }
 
     saveTasks(tasks: Task[]): void {
@@ -166,6 +184,35 @@ export class TaskStoreService {
             return { ...DEFAULT_CONFIG, ...loaded };
         } catch {
             return { ...DEFAULT_CONFIG };
+        }
+    }
+
+    /**
+     * Update only the customButtons field in every existing worktree snapshot's
+     * config.json (preserving each snapshot's other settings). Lets already-created
+     * worktree subview windows pick up newly configured buttons after a reload.
+     * Master-only — callers must guard against the read-only worktree snapshot origin.
+     */
+    syncCustomButtonsToWorktrees(buttons: CustomButton[]): void {
+        const worktreesRoot = path.join(this.workspaceRoot, 'worktrees');
+        if (!fs.existsSync(worktreesRoot)) {
+            return;
+        }
+        for (const entry of fs.readdirSync(worktreesRoot, { withFileTypes: true })) {
+            if (!entry.isDirectory()) {
+                continue;
+            }
+            const cfgFile = path.join(worktreesRoot, entry.name, BASE, 'config.json');
+            if (!fs.existsSync(cfgFile)) {
+                continue;
+            }
+            try {
+                const raw = JSON.parse(fs.readFileSync(cfgFile, 'utf8')) as Record<string, unknown>;
+                raw.customButtons = buttons;
+                fs.writeFileSync(cfgFile, JSON.stringify(raw, null, 2), 'utf8');
+            } catch {
+                // Ignore malformed snapshots; never block the master save.
+            }
         }
     }
 

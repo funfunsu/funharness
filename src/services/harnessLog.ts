@@ -1,0 +1,35 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import { BASE, HARNESS_LOG_FILE } from '../models';
+
+/**
+ * Append one line to the unified per-task harness log at `<baseDir>/.harness/harness.log`.
+ *
+ * `baseDir` should be the task's iteration / worktree directory, so logs are naturally split per
+ * task; pass the master root for non-task operations (e.g. repo initialization). Every subsystem
+ * (git, auto-poll, AI dispatch) logs through here, each line tagged with a short `category` so the
+ * merged file stays readable:
+ *
+ *   [2026-05-28T..Z] [git] OK  [/path/repo] git merge --no-ff feat-x
+ *   [2026-05-28T..Z] [auto-poll] 已拉取到新任务内容，已更新 todo.md
+ *
+ * Best-effort: any failure (missing dir, permissions) is swallowed so logging never breaks the
+ * operation it is recording.
+ */
+export function appendHarnessLog(baseDir: string, category: string, message: string): void {
+    try {
+        const dir = (baseDir || '').trim();
+        if (!dir) {
+            return;
+        }
+        const harnessDir = path.join(dir, BASE);
+        fs.mkdirSync(harnessDir, { recursive: true });
+        fs.appendFileSync(
+            path.join(harnessDir, HARNESS_LOG_FILE),
+            `[${new Date().toISOString()}] [${category}] ${message}\n`,
+            'utf8',
+        );
+    } catch {
+        // logging is best-effort
+    }
+}

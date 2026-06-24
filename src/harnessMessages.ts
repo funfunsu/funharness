@@ -3,11 +3,10 @@ export type HarnessStep = 'req' | 'des' | 'tcs' | 'tsk' | 'dev';
 export type HarnessMessage =
     | { type: 'page'; page: string }
     | { type: 'refresh' }
-    | { type: 'sel'; key: string }
-    | { type: 'initAgent' }
+    | { type: 'restoreFactoryPrompts' }
     | { type: 'saveGit'; fg: string; bg: string; bb: string; dr: boolean }
-    | { type: 'saveDevConfig'; bsc: string; bp: number; fsc: string; sm: 'light' | 'full'; jp: string; fst: string; bst: string; ts: string; cs: string; pc: string; mc: number; aa: boolean; ar: boolean; am: boolean; cm: boolean; ad: boolean; sk: string; ck: string; ap: string; cct: string; afm: boolean; wsd: string; cps: string; prm: 'local' | 'local+ai' }
-    | { type: 'saveRuntimeConfig'; bsc: string; bp: number; fsc: string; sm: 'light' | 'full'; jp: string; fst: string; bst: string; ap: string; cct: string; afm: boolean }
+    | { type: 'saveDevConfig'; bsc: string; bp: number; fsc: string; sm: 'light' | 'full'; jp: string; fst: string; bst: string; ts: string; cs: string; pc: string; mc: number; aa: boolean; ar: boolean; am: boolean; cm: boolean; ad: boolean; sk: string; ck: string; ap: string; cct: string; afm: boolean; pas: boolean; wsd: string; cps: string; prm: 'local' | 'local+ai' }
+    | { type: 'saveRuntimeConfig'; bsc: string; bp: number; fsc: string; sm: 'light' | 'full'; jp: string; fst: string; bst: string; ap: string; cct: string; afm: boolean; pas: boolean }
     | { type: 'saveAdvancedConfig'; ts: string; cs: string; pc: string; mc: number; aa: boolean; ar: boolean; am: boolean; cm: boolean; ad: boolean; sk: string; ck: string; wsd: string; cps: string; prm: 'local' | 'local+ai' }
     | { type: 'initProjectStructure' }
     | { type: 'applyProjectStructurePreview' }
@@ -37,4 +36,10 @@ export type HarnessMessage =
     | { type: 'startServices'; id: string }
     | { type: 'completeDevWithPush'; id: string }
     | { type: 'pushAndNextStage'; id: string }
-    | { type: 'commitToBaseline'; id: string };
+    | { type: 'commitToBaseline'; id: string }
+    | { type: 'saveCustomButtons'; buttons: { name: string; command: string; workdir?: string }[] }
+    | { type: 'runCustomButton'; id: string; buttonId: string }
+    | { type: 'openScriptDir' }
+    | { type: 'saveAutoPollConfig'; interval: number; script: string; prompt: string; skipMarkers: string }
+    | { type: 'createPollScriptTemplate' }
+    | { type: 'toggleAutoPoll'; enable: boolean };

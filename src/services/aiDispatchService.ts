@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { BASE, Config, AiProviderDefinition, getAiProvider } from '../models';
 
 type DispatchSource = 'stage-agent' | 'dev-subtask';
@@ -143,7 +143,39 @@ export class AiDispatchService {
     // ── Panel dispatch (open provider's own panel + clipboard) ───
 
     private async dispatchPanel(query: string, provider: AiProviderDefinition, source: DispatchSource): Promise<void> {
+        // Always keep the full prompt on the clipboard as a safety net (the panel cannot be
+        // auto-submitted programmatically, and deep links cap length).
         await vscode.env.clipboard.writeText(query);
+
+        // 1) Preferred: invoke the provider's prefill command directly with the full prompt.
+        //    For Claude Code this is `claude-vscode.primaryEditor.open(session, prompt)` — the
+        //    same command its deep link forwards to, but with no URI length/encoding limits.
+        if (provider.panelPromptCommand) {
+            try {
+                await vscode.commands.executeCommand(provider.panelPromptCommand, undefined, query);
+                const sent = await this.maybeAutoSubmit(provider);
+                vscode.window.showInformationMessage(
+                    `已唤起 ${provider.label} 并预填提示词${this.autoSubmitTail(sent)}（source=${source}）。`,
+                );
+                return;
+            } catch {
+                // Command unavailable (e.g. extension not installed) — fall through.
+            }
+        }
+
+        // 2) Fallback: a deep-link URI that opens the panel with the prompt pre-filled.
+        if (provider.openUriTemplate) {
+            const opened = await this.openPanelViaUri(query, provider);
+            if (opened) {
+                const sent = await this.maybeAutoSubmit(provider);
+                vscode.window.showInformationMessage(
+                    `已唤起 ${provider.label} 并预填提示词${this.autoSubmitTail(sent)}（source=${source}）。完整提示词已复制到剪贴板。`,
+                );
+                return;
+            }
+        }
+
+        // 3) Last resort: open the panel via command and rely on a manual paste.
         const command = provider.panelCommand;
         if (command) {
             try {
@@ -155,6 +187,118 @@ export class AiDispatchService {
         vscode.window.showInformationMessage(
             `已复制提示词到剪贴板并打开 ${provider.label}，请粘贴执行（source=${source}）`,
         );
+    }
+
+    /**
+     * Open a provider's panel through its deep-link URI with the prompt pre-filled. Caps the
+     * embedded prompt so the resulting URI stays within practical length limits; the full text
+     * remains on the clipboard. Returns false if the URI could not be opened.
+     *
+     * We hand the fully pre-encoded URI to the OS opener (open / start / xdg-open) rather than
+     * vscode.env.openExternal, because openExternal re-encodes the Uri and mangles the
+     * `?prompt=` separator and existing percent-escapes. The OS opener receives the exact bytes,
+     * matching the verified `open "vscode://anthropic.claude-code/open?prompt=..."` command.
+     */
+    private async openPanelViaUri(query: string, provider: AiProviderDefinition): Promise<boolean> {
+        const MAX_URI_PROMPT_CHARS = 1800;
+        const truncated = query.length > MAX_URI_PROMPT_CHARS;
+        const promptForUri = truncated
+            ? `${query.slice(0, MAX_URI_PROMPT_CHARS)}\n\n（提示词较长已截断：完整内容已复制到剪贴板，并可直接读取当前工作区的 todo.md）`
+            : query;
+        const uriString = provider.openUriTemplate!.replace('{prompt}', encodeURIComponent(promptForUri));
+        return this.openUriViaOs(uriString);
+    }
+
+    private openUriViaOs(uriString: string): Promise<boolean> {
+        return new Promise((resolve) => {
+            const platform = process.platform;
+            let command: string;
+            let args: string[];
+            if (platform === 'darwin') {
+                command = 'open';
+                args = [uriString];
+            } else if (platform === 'win32') {
+                // `start` is a cmd builtin; the empty "" is the (required) window-title arg.
+                command = process.env.ComSpec || 'cmd.exe';
+                args = ['/c', 'start', '', uriString];
+            } else {
+                command = 'xdg-open';
+                args = [uriString];
+            }
+            try {
+                const child = spawn(command, args, { windowsHide: true });
+                child.on('error', () => resolve(false));
+                child.on('close', (code) => resolve(code === 0 || code === null));
+            } catch {
+                resolve(false);
+            }
+        });
+    }
+
+    /**
+     * After a panel executor pre-fills its prompt, optionally press Return to submit it. The Claude
+     * Code panel (both the prefill command and the deep link) only pre-fills — it never auto-sends —
+     * so on macOS we drive a keystroke via `osascript`/System Events, matching the verified manual
+     * sequence: open the panel, wait ~1.2s for the input to focus, then `keystroke return`.
+     *
+     * Returns 'sent' (keystroke dispatched), 'failed' (osascript errored — usually the editor lacks
+     * the macOS「辅助功能/Accessibility」permission), or 'skipped' (disabled by config/provider, or a
+     * non-macOS platform). In every case the prompt stays pre-filled and on the clipboard, so the
+     * user can always send it manually.
+     */
+    private maybeAutoSubmit(provider: AiProviderDefinition): Promise<'sent' | 'failed' | 'skipped'> {
+        const enabled = provider.autoSubmit === true && this.getConfig().aiPanelAutoSubmit !== false;
+        if (!enabled || process.platform !== 'darwin') {
+            return Promise.resolve('skipped');
+        }
+        const DELAY_MS = 1200; // give the panel time to open and focus its input before pressing Return
+        return new Promise((resolve) => {
+            setTimeout(() => {
+                try {
+                    let stderr = '';
+                    const child = spawn(
+                        'osascript',
+                        ['-e', 'tell application "System Events" to keystroke return'],
+                        { windowsHide: true },
+                    );
+                    child.stderr?.on('data', (d) => { stderr += d.toString(); });
+                    child.on('error', (err) => {
+                        console.error('[fun-harness] osascript 自动回车启动失败：', err);
+                        resolve('failed');
+                    });
+                    child.on('close', (code) => {
+                        if (code === 0) {
+                            resolve('sent');
+                            return;
+                        }
+                        // Most common: macOS hasn't granted the editor「辅助功能」(Accessibility) and
+                        // 「自动化 → System Events」(Automation) permission, so osascript exits non-zero
+                        // with e.g. error -1719/-1743. Surface the real message to make it actionable.
+                        const detail = stderr.trim();
+                        console.error(`[fun-harness] osascript 自动回车失败 (exit ${code})：${detail}`);
+                        if (detail) {
+                            vscode.window.showWarningMessage(`自动回车发送失败：${detail.slice(0, 300)}`);
+                        }
+                        resolve('failed');
+                    });
+                } catch (err) {
+                    console.error('[fun-harness] osascript 自动回车异常：', err);
+                    resolve('failed');
+                }
+            }, DELAY_MS);
+        });
+    }
+
+    /** Notification suffix describing what happened with auto-submit (see maybeAutoSubmit). */
+    private autoSubmitTail(status: 'sent' | 'failed' | 'skipped'): string {
+        switch (status) {
+            case 'sent':
+                return '，已自动回车发送';
+            case 'failed':
+                return '，自动发送失败（请为编辑器授予「辅助功能」权限，或手动按回车）';
+            default:
+                return '，确认后按回车发送';
+        }
     }
 
     private async testPanel(provider: AiProviderDefinition): Promise<void> {

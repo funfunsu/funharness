@@ -1,10 +1,12 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import { HarnessStep } from '../harnessMessages';
 import {
     BASE,
     Config,
+    CUSTOM_SCRIPT_DIR,
     HARNESS_STATE_FILE,
     HARNESS_STATE_FILE_LEGACY,
     STAGE,
@@ -33,6 +35,8 @@ interface ArtifactIndexFile {
 interface HarnessActionsDeps {
     getTasks: () => Task[];
     getConfig: () => Config;
+    /** Master workspace root (the "主目录"), even when invoked from a worktree subview window. */
+    getMasterRoot: () => string;
     getIterationDir: (task: Task) => string;
     ensureIterationDir: (task: Task) => void;
     saveAndRender: () => void;
@@ -203,7 +207,7 @@ export class HarnessActionsService {
 
         const rendered = this.deps.renderAgentPrompt(step, task.name, task.desc, iterDir);
         if (!rendered.content.trim()) {
-            vscode.window.showErrorMessage(`未找到可用的 ${step} Prompt，请检查 .harness/prompts 或扩展内置 prompts。`);
+            vscode.window.showErrorMessage(`未找到可用的 ${step} Prompt，请检查扩展内置 prompts/ 目录。`);
             return;
         }
 
@@ -594,9 +598,47 @@ export class HarnessActionsService {
             vscode.window.showInformationMessage(mergeResult.message);
         }
 
+        // Only purge the iteration directory when git-level cleanup (worktrees + branches) fully
+        // succeeded. If something failed there, leave the iteration dir on disk so the user can
+        // diagnose without losing local state.
+        if (mergeResult.cleanupComplete) {
+            const isSubview = this.deps.isWorktreeSubview();
+            if (isSubview) {
+                // VSCode still has iterDir as its workspace root. Defer the rm to a detached
+                // child that survives this extension instance, so deletion happens after the
+                // window is closed and file handles are released.
+                this.scheduleDetachedIterDirCleanup(iterDir);
+            } else {
+                try {
+                    fs.rmSync(iterDir, { recursive: true, force: true });
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    vscode.window.showWarningMessage(`迭代目录清理失败，请手动删除：${iterDir}（${message}）`);
+                }
+            }
+        }
+
         if (this.deps.isWorktreeSubview()) {
             await vscode.window.showInformationMessage('当前 worktree 任务已结束，正在关闭窗口...');
             await vscode.commands.executeCommand('workbench.action.closeWindow');
+        }
+    }
+
+    private scheduleDetachedIterDirCleanup(iterDir: string): void {
+        // Sanity: refuse to schedule deletion of suspicious paths (root, cwd of master, etc.).
+        const normalized = path.resolve(iterDir);
+        if (!normalized || normalized === path.sep || normalized.split(path.sep).filter(Boolean).length < 3) {
+            return;
+        }
+        const escaped = normalized.replace(/"/g, '\\"');
+        try {
+            const child = spawn('sh', ['-c', `sleep 3 && rm -rf "${escaped}"`], {
+                detached: true,
+                stdio: 'ignore',
+            });
+            child.unref();
+        } catch {
+            // Best-effort: if scheduling fails, the user can manually delete the dir.
         }
     }
 
@@ -648,6 +690,96 @@ export class HarnessActionsService {
         for (const target of targets) {
             await this.startSingleTarget(task, target, iterDir);
         }
+    }
+
+    /**
+     * Runs a user-defined custom button. Scripts are maintained as a single shared
+     * set under `<masterRoot>/script/` (the "主目录"). Clicking opens a terminal whose
+     * cwd is THIS task's worktree iteration directory and runs the master script there,
+     * so one unified script operates on whichever iteration the button was clicked from.
+     */
+    async runCustomButtonByTaskId(taskId: string, buttonId: string): Promise<void> {
+        const task = this.getTaskById(taskId);
+        if (!task) return;
+
+        const button = (this.deps.getConfig().customButtons || []).find(b => b.id === buttonId);
+        if (!button) {
+            vscode.window.showWarningMessage('未找到对应的自定义按钮，请在「高级设置」中重新配置');
+            return;
+        }
+        const command = (button.command || '').trim();
+        if (!command) {
+            vscode.window.showWarningMessage(`自定义按钮「${button.name}」未配置指令`);
+            return;
+        }
+
+        const iterDir = this.deps.getIterationDir(task);
+        const compensated = await this.ensureIterationCodeBeforeOpen(task, iterDir);
+        if (!compensated) return;
+        if (!fs.existsSync(iterDir)) {
+            vscode.window.showWarningMessage(`迭代目录不存在，无法执行：${iterDir}`);
+            return;
+        }
+
+        // The button may target a subfolder of the worktree (e.g. frontend/backend);
+        // empty = the worktree root. The terminal cwd is set to this folder so the
+        // master script runs against the right project.
+        const workdir = (button.workdir || '').trim();
+        const runDir = workdir ? path.join(iterDir, workdir) : iterDir;
+        if (workdir && !fs.existsSync(runDir)) {
+            vscode.window.showWarningMessage(`执行目录不存在：${runDir}。请确认该 worktree 下存在「${workdir}」文件夹。`);
+            return;
+        }
+
+        // Resolve the script against the shared master script dir. The first token is
+        // the script file (relative to <masterRoot>/script/, leading "./" optional);
+        // anything after it is passed through as arguments.
+        const scriptDir = path.join(this.deps.getMasterRoot(), CUSTOM_SCRIPT_DIR);
+        const firstSpace = command.search(/\s/);
+        const scriptRef = (firstSpace === -1 ? command : command.slice(0, firstSpace)).replace(/^\.\//, '');
+        const extraArgs = firstSpace === -1 ? '' : command.slice(firstSpace);
+        const scriptPath = path.join(scriptDir, scriptRef);
+
+        if (!fs.existsSync(scriptPath)) {
+            vscode.window.showWarningMessage(`脚本不存在：${scriptPath}。请在主目录的 ${CUSTOM_SCRIPT_DIR}/ 目录下维护脚本（如 deploy.sh）。`);
+            return;
+        }
+
+        const runCmd = this.buildCustomButtonCommand(scriptPath, extraArgs);
+        const terminal = vscode.window.createTerminal({
+            name: `Fun Harness ${task.name} ${button.name}`,
+            cwd: runDir,
+        });
+        terminal.show(true);
+        terminal.sendText(runCmd, true);
+        vscode.window.showInformationMessage(`已在 ${task.name} 执行「${button.name}」：${runCmd}`);
+    }
+
+    /**
+     * Build the shell invocation for a master script per the current OS, keeping spaces
+     * in the path safe. The same script file yields a different launch command on
+     * Windows vs. macOS/Linux.
+     */
+    private buildCustomButtonCommand(scriptPath: string, extraArgs: string): string {
+        const quoted = `"${scriptPath}"`;
+        const lower = scriptPath.toLowerCase();
+        const isWin = process.platform === 'win32';
+        if (lower.endsWith('.ps1')) {
+            // Windows ships powershell.exe; elsewhere fall back to PowerShell Core (pwsh).
+            return isWin
+                ? `powershell -ExecutionPolicy Bypass -File ${quoted}${extraArgs}`
+                : `pwsh -File ${quoted}${extraArgs}`;
+        }
+        if (lower.endsWith('.bat') || lower.endsWith('.cmd')) {
+            // Batch files run on Windows shells; invoke by path directly.
+            return `${quoted}${extraArgs}`;
+        }
+        if (lower.endsWith('.sh') || lower.endsWith('.bash')) {
+            // Prefix bash so the script runs even without the executable bit
+            // (and via Git Bash / WSL when on Windows).
+            return `bash ${quoted}${extraArgs}`;
+        }
+        return `${quoted}${extraArgs}`;
     }
 
     private async startSingleTarget(task: Task, target: 'frontend' | 'backend', iterDir: string): Promise<void> {

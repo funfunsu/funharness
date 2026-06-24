@@ -13,3 +13,4 @@ out/**
 *.vsix
 .vscodeignore
 package-lock.json
+.harness/prompts/**

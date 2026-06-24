@@ -2,11 +2,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
 import { Config, Task } from '../models';
+import { appendHarnessLog } from './harnessLog';
 
 export class GitService {
     private config: Config;
     private workspaceRoot: string;
     private lastExecError: string = '';
+    /** Iteration dir of the in-flight task op; git command logs go to its per-task harness.log. */
+    private currentLogDir: string = '';
 
     constructor(config: Config, workspaceRoot: string = '') {
         this.config = config;
@@ -21,7 +24,26 @@ export class GitService {
         this.workspaceRoot = workspaceRoot;
     }
 
+    /**
+     * Single source of truth for an iteration's baseline branch: the base recorded when the
+     * iteration was created (task.baseBranchUsed), else the configured baseline, else 'main'.
+     * All branch / merge / sync paths must resolve through here so there is exactly one notion
+     * of "基线分支".
+     */
+    private resolveBaseBranch(task?: Task): string {
+        return (task?.baseBranchUsed || this.config.baseBranch || 'main').trim();
+    }
+
+    /**
+     * Log a git line to the unified per-task log: the current operation's iteration dir when set
+     * (so logs are split per task), otherwise the master root for task-less ops like repo init.
+     */
+    private logGit(line: string): void {
+        appendHarnessLog(this.currentLogDir || this.workspaceRoot, 'git', line);
+    }
+
     async initializeRepos(): Promise<{ success: boolean; message: string }> {
+        this.currentLogDir = ''; // no single task → log repo init to the master root
         this.lastExecError = '';
         if (!this.config.frontendGit && !this.config.backendGit) {
             return { success: false, message: '请至少填写一个 Git 地址（前端或后端）' };
@@ -50,6 +72,7 @@ export class GitService {
     }
 
     async createIterationBranches(task: Task, iterationDir: string): Promise<{ success: boolean; message?: string; baseBranch?: string; iterationBranch?: string }> {
+        this.currentLogDir = iterationDir;
         this.lastExecError = '';
         const branchName = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
         const baseBranch = (this.config.baseBranch || 'main').trim();
@@ -189,6 +212,7 @@ export class GitService {
     }
 
     async pushAll(task: Task, iterationDir: string): Promise<{ success: boolean; message: string }> {
+        this.currentLogDir = iterationDir;
         const failures: Array<{ repo: string; reason: string }> = [];
         const commitMessage = this.buildCommitMessage(task);
         const expectedBranch = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -263,7 +287,8 @@ export class GitService {
     }
 
     async syncMainCode(task: Task, iterationDir: string): Promise<{ success: boolean; message: string }> {
-        const baseBranch = (task.baseBranchUsed || task.baseSyncBranchUsed || this.config.baseBranch || 'main').trim();
+        this.currentLogDir = iterationDir;
+        const baseBranch = this.resolveBaseBranch(task);
         const expectedBranch = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
         const failures: Array<{ repo: string; reason: string }> = [];
 
@@ -322,14 +347,16 @@ export class GitService {
         return { ok: true };
     }
 
-    async mergeIterationToTarget(task: Task, iterationDir: string, options: { cleanup?: boolean } = {}): Promise<{ success: boolean; message: string }> {
+    async mergeIterationToTarget(task: Task, iterationDir: string, options: { cleanup?: boolean } = {}): Promise<{ success: boolean; message: string; cleanupComplete?: boolean }> {
+        this.currentLogDir = iterationDir;
         const cleanup = options.cleanup !== false;
-        const target = (this.config.baseBranch || '').trim();
-        if (!target) {
-            return { success: true, message: '未配置基线分支，跳过自动合并' };
-        }
+        // Single, consistent baseline resolution (task base → config baseline → main). Previously
+        // this read only config.baseBranch and silently returned success when empty, which is why
+        // "提交代码" sometimes appeared to succeed without merging.
+        const target = this.resolveBaseBranch(task);
 
         const sourceBranch = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
+        this.logGit(`=== 提交代码/合并到基线 开始：task="${task.name}" source=${sourceBranch} target=${target} cleanup=${cleanup} ===`);
         if (!sourceBranch) {
             return { success: false, message: '无法识别迭代分支名' };
         }
@@ -402,13 +429,14 @@ export class GitService {
             const detail = cleanupFailures.map(f => `[${f.repo}] ${f.reason}`).join('\n');
             return {
                 success: true,
+                cleanupComplete: false,
                 message: `✅ 已合并到远程基线 ${target}（已校验远程包含本次提交）。\n` +
                     `但部分清理步骤失败：\n${detail}\n` +
                     `代码本身已安全在远程基线，可手动清理 worktree/迭代分支。`,
             };
         }
 
-        return { success: true, message: `✅ 已合并到远程基线 ${target} 并清理迭代分支 ${sourceBranch}` };
+        return { success: true, cleanupComplete: true, message: `✅ 已合并到远程基线 ${target} 并清理迭代分支 ${sourceBranch}` };
     }
 
     /**
@@ -613,31 +641,45 @@ export class GitService {
             }
         }
 
+        // Run all three cleanup steps independently. Each is idempotent, and the remote target
+        // branch already contains the iteration commits (verified above + in mergeRepoBranch),
+        // so failures here cannot lose the user's work. We want remote branch deletion to still
+        // happen even if worktree removal fails (e.g. VSCode held a file handle in the worktree
+        // when called from a worktree subview).
+        const failures: string[] = [];
+
         const registered = await this.hasRegisteredWorktreeAtPath(mainRepoDir, worktreeDir);
         if (registered) {
-            // Intentionally NOT --force: any lingering uncommitted file in the worktree should
-            // block deletion. prepareIterationForMerge already committed+pushed everything,
-            // so a clean removal should succeed in the happy path.
-            const removed = await this.execCmd(`git worktree remove "${worktreeDir}"`, mainRepoDir);
+            // Use --force because: (1) Phase 1 already pushed all user work to origin/<source>,
+            // (2) Phase 2 verified origin/<target> contains those commits, so any untracked file
+            // left in the worktree at this point is by definition not user work — it's editor
+            // cache, build output, or harness state created between Phase 1 and Phase 3.
+            const removed = await this.execCmd(`git worktree remove --force "${worktreeDir}"`, mainRepoDir);
             if (!removed) {
-                return { ok: false, reason: `移除 worktree 失败（可能存在未提交改动，已停止清理）：${this.lastExecError}` };
+                failures.push(`移除 worktree 失败：${this.lastExecError}`);
             }
         }
+        // Prune stale records so a subsequent run sees a clean worktree list even if the
+        // remove above partially failed.
+        await this.execCmd('git worktree prune', mainRepoDir);
 
-        const deletedLocal = await this.execCmd(`git branch -d ${sourceBranch}`, mainRepoDir);
+        const deletedLocal = await this.execCmd(`git branch -D ${sourceBranch}`, mainRepoDir);
         if (!deletedLocal) {
-            if (!/not found|unknown branch|does not exist/i.test(this.lastExecError)) {
-                return { ok: false, reason: `删除本地分支失败：${this.lastExecError}` };
+            if (!/not found|unknown branch|does not exist|no such branch/i.test(this.lastExecError)) {
+                failures.push(`删除本地分支失败：${this.lastExecError}`);
             }
         }
 
         const deletedRemote = await this.execCmd(`git push origin --delete ${sourceBranch}`, mainRepoDir);
         if (!deletedRemote) {
             if (!/remote ref does not exist|not found|unable to delete/i.test(this.lastExecError)) {
-                return { ok: false, reason: `删除远程分支失败：${this.lastExecError}` };
+                failures.push(`删除远程分支失败：${this.lastExecError}`);
             }
         }
 
+        if (failures.length > 0) {
+            return { ok: false, reason: failures.join('；') };
+        }
         return { ok: true };
     }
 
@@ -810,12 +852,14 @@ export class GitService {
     private async execCmd(cmd: string, cwd: string): Promise<boolean> {
         return new Promise((resolve) => {
             exec(cmd, { cwd }, (err, _stdout, stderr) => {
+                const stderrText = (stderr || '').toString().trim();
                 if (err) {
-                    const stderrText = (stderr || '').toString().trim();
                     this.lastExecError = `命令失败: ${cmd} | 目录: ${cwd}${stderrText ? ` | 错误: ${stderrText}` : ''}`;
                     console.error(`EXEC ERROR: ${this.lastExecError}`);
+                    this.logGit(`ERR (exit ${err.code ?? '?'}) [${cwd}] ${cmd}${stderrText ? ` | ${stderrText}` : ''}`);
                 } else {
                     this.lastExecError = '';
+                    this.logGit(`OK  [${cwd}] ${cmd}`);
                 }
                 resolve(!err);
             });
@@ -830,9 +874,11 @@ export class GitService {
                 if (err) {
                     const compactErr = errText.trim();
                     this.lastExecError = `命令失败: ${cmd} | 目录: ${cwd}${compactErr ? ` | 错误: ${compactErr}` : ''}`;
+                    this.logGit(`ERR (exit ${err.code ?? '?'}) [${cwd}] ${cmd}${compactErr ? ` | ${compactErr}` : ''}`);
                     resolve({ success: false, stdout: out, stderr: errText });
                     return;
                 }
+                this.logGit(`OK  [${cwd}] ${cmd}`);
                 resolve({ success: true, stdout: out, stderr: errText });
             });
         });
