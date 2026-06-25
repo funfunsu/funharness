@@ -37,17 +37,29 @@ export const HARNESS_STATE_FILE = 'iteration-state.json';
 export const HARNESS_STATE_FILE_LEGACY = 'tasks.json';
 
 export const STAGE = {
-    INITIALIZING: '⌛ 初始化中',
-    WRITING_REQUIREMENT: '📝 撰写需求',
-    WRITING_DESIGN: '📘 技术设计',
-    WRITING_TESTCASE: '🧪 测试用例',
-    WRITING_TASKS: '📋 任务拆解',
-    DEVELOPING: '⚙️ 开发中',
-    READY_FOR_REVIEW: '⏳ 待审核',
-    DONE: '✅ 已完成'
+    INITIALIZING: 'initializing',
+    WRITING_REQUIREMENT: 'writing_requirement',
+    WRITING_DESIGN: 'writing_design',
+    WRITING_TESTCASE: 'writing_testcase',
+    WRITING_TASKS: 'writing_tasks',
+    DEVELOPING: 'developing',
+    READY_FOR_REVIEW: 'ready_for_review',
+    DONE: 'done'
 } as const;
 
 export type Stage = typeof STAGE[keyof typeof STAGE];
+
+/** Display labels for stages — used only in UI rendering, never persisted. */
+export const STAGE_LABEL: Record<Stage, string> = {
+    [STAGE.INITIALIZING]: '⌛ 初始化中',
+    [STAGE.WRITING_REQUIREMENT]: '📝 撰写需求',
+    [STAGE.WRITING_DESIGN]: '📘 技术设计',
+    [STAGE.WRITING_TESTCASE]: '🧪 测试用例',
+    [STAGE.WRITING_TASKS]: '📋 任务拆解',
+    [STAGE.DEVELOPING]: '⚙️ 开发中',
+    [STAGE.READY_FOR_REVIEW]: '⏳ 待审核',
+    [STAGE.DONE]: '✅ 已完成',
+};
 
 export interface PromptConfig {
     key: string;
@@ -181,13 +193,6 @@ export interface Config {
     /** The single configured baseline branch (e.g. main / yourname/integration). Iterations branch from it and merge back to it. */
     baseBranch: string;
     mergeDryRunEnabled: boolean;
-    backendStartCmd: string;
-    backendPort: number;
-    frontendStartCmd: string;
-    startupChainMode: 'light' | 'full';
-    javaRuntimeProfile: string;
-    frontendStartupTemplate: string;
-    backendStartupTemplate: string;
     techStack: string;
     codingStandards: string;
     projectConventions: string;
@@ -211,6 +216,8 @@ export interface Config {
     projectStructureRefineMode: 'local' | 'local+ai';
     /** User-defined buttons rendered on task cards (main panel + worktree subview). */
     customButtons: CustomButton[];
+    /** Master toggle for auto-poll config. When off, the detailed settings are collapsed. */
+    autoPollEnabled: boolean;
     /** Interval (seconds) between remote-task pulls when auto-polling is enabled in a worktree. */
     autoPollIntervalSec: number;
     /** Pull-task script file name, resolved under <masterRoot>/script/. */
@@ -256,13 +263,6 @@ export const DEFAULT_CONFIG: Config = {
     backendGit: '',
     baseBranch: '',
     mergeDryRunEnabled: true,
-    backendStartCmd: '',
-    backendPort: 8080,
-    frontendStartCmd: '',
-    startupChainMode: 'full',
-    javaRuntimeProfile: 'dev',
-    frontendStartupTemplate: '{install} && {run}',
-    backendStartupTemplate: '{install} && {offline} && {clean} && {run}',
     techStack: '',
     codingStandards: '',
     projectConventions: '',
@@ -282,6 +282,7 @@ export const DEFAULT_CONFIG: Config = {
     customProjectStructure: '',
     projectStructureRefineMode: 'local+ai',
     customButtons: [],
+    autoPollEnabled: false,
     autoPollIntervalSec: 60,
     autoPollScript: DEFAULT_POLL_SCRIPT,
     autoPollPrompt: DEFAULT_AUTO_POLL_PROMPT,

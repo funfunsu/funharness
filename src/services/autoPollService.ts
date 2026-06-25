@@ -84,6 +84,12 @@ export class AutoPollService {
 
     /** Enable polling in this worktree. Returns false (and shows a warning) if another worktree owns it. */
     enable(taskName: string): boolean {
+        const cfg = this.deps.getConfig();
+        if (!cfg.autoPollEnabled) {
+            vscode.window.showWarningMessage('自动轮询远程任务未启用。请先在主工作区「高级设置 → 自动轮询远程任务」中开启总开关。');
+            return false;
+        }
+
         const here = this.deps.getCurrentWorktreePath();
         if (!here) {
             vscode.window.showWarningMessage('未检测到当前 worktree 路径，无法开启自动轮询。');
