@@ -1,4 +1,4 @@
-import { Config, CustomButton, STAGE, SubTask, Task, TaskStats, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS } from './models';
+import { Config, CustomButton, STAGE, STAGE_LABEL, SubTask, Task, TaskStats, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS } from './models';
 import { HarnessConfigMeta } from './services/taskStoreService';
 import { AutoPollStatus } from './services/autoPollService';
 
@@ -134,8 +134,6 @@ interface TaskActionContext {
     task: Task;
     allSubTasksDone: boolean;
     hasWorktree: boolean;
-    hasFrontendStartCmd: boolean;
-    hasBackendStartCmd: boolean;
 }
 
 interface TaskActionConfig {
@@ -294,18 +292,7 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: 'all',
         when: (ctx) => ctx.hasWorktree,
-        render: (ctx) => `<button class="btn-gray" onclick="syncMainCode('${ctx.task.id}')">🔄 从基线同步代码</button>`,
-    },
-    {
-        key: 'start-services',
-        placement: 'side',
-        panels: ['main', 'worktree'],
-        stages: 'all',
-        // Always show in worktree subview; show in main panel when an iteration worktree exists.
-        // Click handler walks frontend/ + backend/ under the iter dir, runs fun_harness_start.{sh,ps1}
-        // if present, otherwise materializes config cmd or dispatches AI to generate the script.
-        when: (ctx) => ctx.isWorktreeSubview || ctx.hasWorktree,
-        render: (ctx) => `<button class="btn-gray" onclick="startServices('${ctx.task.id}')">▶ 启动服务</button>`,
+        render: (ctx) => `<button class="btn-gray" onclick="syncMainCode('${ctx.task.id}')">🔄 拉取代码</button>`,
     },
     {
         key: 'commit-to-baseline',
@@ -363,7 +350,7 @@ function collectTaskActions(ctx: TaskActionContext): { primaryActions: string[];
 export function buildMainPageHtml(
     taskViews: MainTaskViewModel[],
     dashboard: { activeAutoCount: number; maxConcurrentAutoTasks: number; abnormalCount: number },
-    config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; frontendStartCmd: string; backendStartCmd: string; aiProvider: string; customButtons: CustomButton[]; autoPoll?: AutoPollStatus }
+    config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; autoPoll?: AutoPollStatus }
 ): string {
     const customButtons = config.customButtons || [];
     // 'main' buttons render in a dedicated main-panel area belonging to no iteration;
@@ -509,8 +496,6 @@ ${visibleTaskViews.map(view => {
     const canOperateSubTasks = t.stage === STAGE.DEVELOPING;
     const allSubTasksDone = t.stage === STAGE.DEVELOPING && stats.total > 0 && stats.done >= stats.total;
     const hasWorktree = Boolean(t.worktreePath) || health.worktreeExists || health.frontendExists || health.backendExists;
-    const hasFrontendStartCmd = Boolean((config.frontendStartCmd || '').trim());
-    const hasBackendStartCmd = Boolean((config.backendStartCmd || '').trim());
     const panelMode: PanelMode = isWorktreeSubview ? 'worktree' : 'main';
     const { primaryActions, sideActions } = collectTaskActions({
         panelMode,
@@ -519,11 +504,9 @@ ${visibleTaskViews.map(view => {
         task: t,
         allSubTasksDone,
         hasWorktree,
-        hasFrontendStartCmd,
-        hasBackendStartCmd,
     });
 
-    // User-defined buttons: same visibility rule as 启动服务 (worktree subview always,
+    // User-defined buttons: same visibility rule (worktree subview always,
     // main panel only when an iteration worktree exists). Resolved server-side by id.
     if ((isWorktreeSubview || hasWorktree) && iterationButtons.length > 0) {
         for (const b of iterationButtons) {
@@ -544,7 +527,7 @@ ${visibleTaskViews.map(view => {
 ${!isWorktreeSubview && t.worktreePath ? `<button class="btn-gray" style="flex:none;padding:4px 10px;font-size:11px;min-width:auto" onclick="openFolderLocation('${t.id}','worktree')">📁 Worktree</button>` : ''}
 </div>
 <div class="task-desc">${t.desc}</div>
-<div>阶段：${t.stage}</div>
+<div>阶段：${STAGE_LABEL[t.stage] || t.stage}</div>
 <div class="task-status">原因：${health.summary || '-'}</div>
 ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.latestFailureReason}</div>` : ''}
 <div class="task-status">待办:${stats.todo} 执行中:${stats.doing} 完成:${stats.done}${stats.failed > 0 ? ` 失败:${stats.failed}` : ''}</div>
@@ -638,8 +621,6 @@ function nextTask(id){v.postMessage({type:'nextTask',id})}
 function retry(subId,id){v.postMessage({type:'retryTask',subId,id})}
 function syncMainCode(id){v.postMessage({type:'syncMainCode',id})}
 function openMasterWorkspace(){v.postMessage({type:'openMasterWorkspace'})}
-function startService(id,target){v.postMessage({type:'startService',id,target})}
-function startServices(id){v.postMessage({type:'startServices',id})}
 function runCustomButton(id,buttonId){v.postMessage({type:'runCustomButton',id,buttonId})}
 function runMainCustomButton(buttonId){v.postMessage({type:'runMainCustomButton',buttonId})}
 function toggleAutoPoll(enable){v.postMessage({type:'toggleAutoPoll',enable})}
@@ -754,64 +735,9 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 </div>
 
 <div class="section">
-<div class="section-title">开发环境配置</div>
-<div class="sub-card">
-<div class="sub-title">自动检测结果</div>
-<div class="hint">推荐先自动检测环境配置，再按需手工微调。自动检测会回填前后端启动命令和后端端口。</div>
-<div class="kv">
-<div><b>前端启动命令：</b>${config.frontendStartCmd || '（未配置）'}</div>
-<div><b>后端启动命令：</b>${config.backendStartCmd || '（未配置）'}</div>
-<div><b>后端端口：</b>${config.backendPort || 8080}</div>
-<div><b>启动链模式：</b>${config.startupChainMode === 'light' ? '轻量（更快）' : '完整（更稳）'}</div>
-<div><b>Java Profile：</b>${config.javaRuntimeProfile || '（未配置）'}</div>
-</div>
-<div class="hint">来源说明：自动检测会按项目类型生成基础命令，再套用你配置的启动模板。模板占位符支持 {install} / {offline} / {clean} / {run}。</div>
-<div class="inline-actions">
-<button onclick="autoDetectDevEnv()" style="background:#30b0c7" ${disabled}>🤖 自动检测并回填</button>
-<button onclick="openArtifactsIndex()" style="background:#6d6d72" ${disabled}>📚 打开文档归档索引</button>
-</div>
-</div>
 
-<div class="sub-card">
-<div class="sub-title">手动覆盖（运行参数）</div>
-<h5>前端启动命令（如 npm run dev）</h5>
-<input id="fsc" value="${config.frontendStartCmd || ''}" ${disabled}>
-<h5>后端启动命令（如 mvn spring-boot:run）</h5>
-<input id="bsc" value="${config.backendStartCmd || ''}" ${disabled}>
-<h5>后端端口（默认 8080）</h5>
-<input id="bp" type="number" value="${config.backendPort || 8080}" ${disabled}>
-<h5>启动链模式</h5>
-<select id="sm" ${disabled}>
-<option value="full" ${config.startupChainMode !== 'light' ? 'selected' : ''}>完整模式（安装/预热依赖 + 清理 + 启动）</option>
-<option value="light" ${config.startupChainMode === 'light' ? 'selected' : ''}>轻量模式（尽量直接启动）</option>
-</select>
-<h5>Java 运行 Profile（可选）</h5>
-<input id="jp" value="${config.javaRuntimeProfile || ''}" placeholder="如 dev、sit、local" ${disabled}>
-<h5>前端启动模板</h5>
-<textarea id="fst" rows="2" placeholder="例如：{install} && {run}" ${disabled}>${config.frontendStartupTemplate || '{install} && {run}'}</textarea>
-<h5>后端启动模板</h5>
-<textarea id="bst" rows="2" placeholder="例如：{install} && {offline} && {clean} && {run}" ${disabled}>${config.backendStartupTemplate || '{install} && {offline} && {clean} && {run}'}</textarea>
-<h5>CLI 命令模板（CLI 类执行器可选，AI 执行器在各任务卡片上独立设置）</h5>
-<input id="cct" value="${config.cliCommandTemplate || config.claudeCliCommandTemplate || ''}" placeholder="例如：cat \"{promptFile}\" | claude" ${disabled}>
-<div class="toggle-row">
-<span>CLI 执行器失败时自动降级到手工模式</span>
-<input id="afm" type="checkbox" ${config.aiFallbackToManual !== false ? 'checked' : ''} ${disabled}>
-</div>
-<div class="toggle-row">
-<span>Claude Code (面板) 预填后自动回车发送（仅 macOS，需授予编辑器「辅助功能」权限）</span>
-<input id="pas" type="checkbox" ${config.aiPanelAutoSubmit !== false ? 'checked' : ''} ${disabled}>
-</div>
-<div class="inline-actions">
-<button onclick="saveRuntimeConfig()" style="background:#007aff" ${disabled}>💾 保存运行参数</button>
-</div>
-</div>
-
-<details class="fold">
-<summary>⚙ 高级策略配置（折叠）</summary>
-<h5>技术栈描述</h5>
-<input id="ts" value="${config.techStack || ''}" placeholder="如：前端 Vue3+TS，后端 SpringBoot3" ${disabled}>
-<h5>通用编码规范（简要）</h5>
-<input id="cs" value="${config.codingStandards || ''}" placeholder="如：小驼峰命名，方法加注释" ${disabled}>
+<details class="fold" open>
+<summary>⚙ 高级策略配置</summary>
 <h5>项目自定义约定（多行，完全自定义）</h5>
 <textarea id="pc" rows="6" placeholder="例如：\n1. 前端入口开关必须由后端配置中心下发\n2. 功能入口统一展示在“更多”页\n3. 跳转链接由后端返回并经过白名单校验" ${disabled}>${config.projectConventions || ''}</textarea>
 <h5>最大自动执行并发槽位</h5>
@@ -853,6 +779,16 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <button onclick="initProjectStructure()" style="background:#8e8e93" ${disabled}>🧭 自动检测并初始化项目结构</button>
 <button onclick="applyProjectStructurePreview()" style="background:#5ac8fa" ${disabled}>✅ 应用预览结构</button>
 </div>
+<h5>CLI 命令模板（CLI 类执行器可选，AI 执行器在各任务卡片上独立设置）</h5>
+<input id="cct" value="${config.cliCommandTemplate || config.claudeCliCommandTemplate || ''}" placeholder="例如：cat \"{promptFile}\" | claude" ${disabled}>
+<div class="toggle-row">
+<span>CLI 执行器失败时自动降级到手工模式</span>
+<input id="afm" type="checkbox" ${config.aiFallbackToManual !== false ? 'checked' : ''} ${disabled}>
+</div>
+<div class="toggle-row">
+<span>Claude Code (面板) 预填后自动回车发送（仅 macOS，需授予编辑器「辅助功能」权限）</span>
+<input id="pas" type="checkbox" ${config.aiPanelAutoSubmit !== false ? 'checked' : ''} ${disabled}>
+</div>
 <button onclick="saveAdvancedConfig()" style="background:#007aff" ${disabled}>💾 保存高级策略</button>
 </details>
 </div>
@@ -864,6 +800,7 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <div class="kv">脚本目录：<b>${escapeHtml(scriptDir)}</b></div>
 <div class="inline-actions" style="margin-top:8px">
 <button onclick="openScriptDir()" style="background:#6d6d72" ${disabled}>📂 打开 script 目录</button>
+<button onclick="openHarnessLog()" style="background:#6d6d72" ${disabled}>📋 打开日志</button>
 <button onclick="p('settings')" style="background:#8e8e93">🔄 刷新脚本列表</button>
 </div>
 ${scriptFiles.length === 0 ? '<div class="cb-empty">script/ 目录下暂无脚本文件。请先在上面的脚本目录中创建脚本（如 deploy.sh），然后点「🔄 刷新脚本列表」。</div>' : ''}
@@ -878,7 +815,12 @@ ${(config.customButtons || []).map(b => customButtonRowHtml(b.name, b.command, b
 
 <div class="section">
 <div class="section-title">自动轮询远程任务</div>
-<div class="hint">设置轮询间隔与拉取脚本后，到任意 worktree 的<b>子面板</b>即可开启自动轮询（同一时间只能开启一个 worktree）。脚本固定放在主目录的 <b>script/</b> 下，约定把拉取到的任务清单<b>打印到 stdout</b>；插件读取后仅当内容非空且与现有 todo.md 不同才覆盖当前 worktree 的 <b>todo.md</b>。</div>
+<div class="toggle-row">
+<span>启用自动轮询远程任务</span>
+<input id="ap_enabled" type="checkbox" ${config.autoPollEnabled ? 'checked' : ''} ${disabled} onchange="toggleAutoPollDetails()">
+</div>
+<div class="hint">开启后，到任意 worktree 的<b>子面板</b>即可启动自动轮询（同一时间只能开启一个 worktree）。脚本固定放在主目录的 <b>script/</b> 下，约定把拉取到的任务清单<b>打印到 stdout</b>；插件读取后仅当内容非空且与现有 todo.md 不同才覆盖当前 worktree 的 <b>todo.md</b>。</div>
+<div id="ap_details" style="display:${config.autoPollEnabled ? 'block' : 'none'}">
 <h5>轮询间隔（秒，最小 5）</h5>
 <input id="ap_int" type="number" min="5" value="${config.autoPollIntervalSec || 60}" ${disabled}>
 <h5>拉取脚本文件名（位于 script/ 下，推荐 Node 脚本 pullTask.js）</h5>
@@ -896,6 +838,7 @@ ${(config.customButtons || []).map(b => customButtonRowHtml(b.name, b.command, b
 <button onclick="saveAutoPollConfig()" style="background:#007aff" ${disabled}>💾 保存轮询设置</button>
 </div>
 </div>
+</div>
 
 <div class="section">
 <div class="section-title">Prompt 出厂设置</div>
@@ -906,17 +849,15 @@ ${(config.customButtons || []).map(b => customButtonRowHtml(b.name, b.command, b
 <script>
 const v=acquireVsCodeApi();
 function p(x){v.postMessage({type:'page',page:x})}
-function restoreFactoryPrompts(){if(confirm('确定用内置出厂 Prompt 覆盖 .harness/prompts/ 中的副本？此操作会覆盖你在该目录下的修改。'))v.postMessage({type:'restoreFactoryPrompts'})}
+function restoreFactoryPrompts(){v.postMessage({type:'restoreFactoryPrompts'})}
 function saveGit(){v.postMessage({type:'saveGit',fg:document.getElementById('fg').value,bg:document.getElementById('bg').value,bb:document.getElementById('bb').value,dr:document.getElementById('dr').checked})}
-function saveDevConfig(){v.postMessage({type:'saveDevConfig',bsc:document.getElementById('bsc').value,bp:parseInt(document.getElementById('bp').value)||8080,fsc:document.getElementById('fsc').value,sm:document.getElementById('sm').value,jp:document.getElementById('jp').value,fst:document.getElementById('fst').value,bst:document.getElementById('bst').value,ts:document.getElementById('ts').value,cs:document.getElementById('cs').value,pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,aa:document.getElementById('aa').checked,ar:document.getElementById('ar').checked,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,ap:'${config.aiProvider}',cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value})}
-function saveRuntimeConfig(){v.postMessage({type:'saveRuntimeConfig',bsc:document.getElementById('bsc').value,bp:parseInt(document.getElementById('bp').value)||8080,fsc:document.getElementById('fsc').value,sm:document.getElementById('sm').value,jp:document.getElementById('jp').value,fst:document.getElementById('fst').value,bst:document.getElementById('bst').value,ap:'${config.aiProvider}',cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
-function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',ts:document.getElementById('ts').value,cs:document.getElementById('cs').value,pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,aa:document.getElementById('aa').checked,ar:document.getElementById('ar').checked,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value})}
+function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,aa:document.getElementById('aa').checked,ar:document.getElementById('ar').checked,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
 function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
 function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
 function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}
-function autoDetectDevEnv(){v.postMessage({type:'autoDetectDevEnv'})}
 function testAiProvider(){v.postMessage({type:'testAiProvider'})}
-function saveAutoPollConfig(){v.postMessage({type:'saveAutoPollConfig',interval:parseInt(document.getElementById('ap_int').value)||60,script:document.getElementById('ap_script').value.trim(),prompt:document.getElementById('ap_prompt').value,skipMarkers:document.getElementById('ap_skip').value})}
+function saveAutoPollConfig(){v.postMessage({type:'saveAutoPollConfig',enabled:document.getElementById('ap_enabled').checked,interval:parseInt(document.getElementById('ap_int').value)||60,script:document.getElementById('ap_script').value.trim(),prompt:document.getElementById('ap_prompt').value,skipMarkers:document.getElementById('ap_skip').value})}
+function toggleAutoPollDetails(){const d=document.getElementById('ap_details');if(d)d.style.display=document.getElementById('ap_enabled').checked?'block':'none'}
 function createPollScriptTemplate(){v.postMessage({type:'createPollScriptTemplate'})}
 const scriptFiles=${JSON.stringify(scriptFiles).replace(/</g, '\\u003c')};
 const cbWorkdirs=${JSON.stringify(CUSTOM_BUTTON_WORKDIRS)};
@@ -940,6 +881,7 @@ function cbEmptyRow(){return '<div class="cb-row"><input class="cb-name" placeho
 function addCustomButton(){if(scriptFiles.length===0){alert('请先在 script/ 目录下创建脚本，再点「刷新脚本列表」');return;}document.getElementById('cbList').insertAdjacentHTML('beforeend',cbEmptyRow());}
 function removeCustomButton(btn){const r=btn.closest('.cb-row');if(r)r.remove();}
 function openScriptDir(){v.postMessage({type:'openScriptDir'});}
+function openHarnessLog(){v.postMessage({type:'openHarnessLog'});}
 function saveCustomButtons(){
   const rows=document.querySelectorAll('#cbList .cb-row');
   const buttons=[];

@@ -9,6 +9,7 @@ import {
     DEFAULT_AUTO_POLL_PROMPT,
     DEFAULT_CONFIG,
     DEFAULT_POLL_SCRIPT,
+    HARNESS_LOG_FILE,
     TODO_FILE,
     STAGE,
     SubTask,
@@ -158,14 +159,11 @@ class Harness {
                 render: () => this.render(),
                 restoreFactoryPrompts: () => this.handleRestoreFactoryPrompts(),
                 saveGit: (frontendGit, backendGit, baseBranch, dryRun) => this.handleSaveGit(frontendGit, backendGit, baseBranch, dryRun),
-                saveDevConfig: (msg) => this.handleSaveDevConfig(msg),
-                saveRuntimeConfig: (msg) => this.handleSaveRuntimeConfig(msg),
                 saveAdvancedConfig: (msg) => this.handleSaveAdvancedConfig(msg),
                 initProjectStructure: () => this.handleInitProjectStructure(),
                 applyProjectStructurePreview: () => this.handleApplyProjectStructurePreview(),
                 openArtifactsIndex: () => this.handleOpenArtifactsIndex(),
                 openMasterWorkspace: () => this.handleOpenMasterWorkspace(),
-                autoDetectDevEnv: () => this.handleAutoDetectDevEnv(),
                 testAiProvider: async () => this.aiDispatchService.testConnection(),
                 setSubTaskStatus: async (taskId, subId, status) => this.actionsService.setSubTaskStatusByTaskId(taskId, subId, status),
                 createTask: async (name, desc, quickMode) => this.actionsService.createTask(name, desc, quickMode),
@@ -191,8 +189,6 @@ class Harness {
                 nextStage: async (taskId, step, targetStage) => this.actionsService.nextStageByTaskId(taskId, step, targetStage),
                 pass: async (taskId) => this.actionsService.passByTaskId(taskId),
                 syncMainCode: async (taskId) => this.actionsService.syncMainCodeByTaskId(taskId),
-                startService: async (taskId, target) => this.actionsService.startServiceByTaskId(taskId, target),
-                startServices: async (taskId) => this.actionsService.startServicesByTaskId(taskId),
                 completeDevWithPush: async (taskId) => this.actionsService.completeDevWithPush(taskId),
                 pushAndNextStage: async (taskId) => this.actionsService.pushAndNextStage(taskId),
                 commitToBaseline: async (taskId) => this.actionsService.commitToBaselineByTaskId(taskId),
@@ -200,6 +196,7 @@ class Harness {
                 runCustomButton: async (taskId, buttonId) => this.actionsService.runCustomButtonByTaskId(taskId, buttonId),
                 runMainCustomButton: async (buttonId) => this.actionsService.runStandaloneCustomButton(buttonId),
                 openScriptDir: () => this.handleOpenScriptDir(),
+                openHarnessLog: () => this.handleOpenHarnessLog(),
                 saveAutoPollConfig: (msg) => this.handleSaveAutoPollConfig(msg),
                 createPollScriptTemplate: () => this.handleCreatePollScriptTemplate(),
                 toggleAutoPoll: (enable) => this.handleToggleAutoPoll(enable),
@@ -352,6 +349,21 @@ class Harness {
         this.renderSettings();
     }
 
+    /** Open the unified harness log file in the editor for troubleshooting. */
+    private handleOpenHarnessLog(): void {
+        const masterRoot = this.getMasterRoot();
+        const logPath = path.join(masterRoot, BASE, HARNESS_LOG_FILE);
+        try {
+            fs.mkdirSync(path.dirname(logPath), { recursive: true });
+            if (!fs.existsSync(logPath)) {
+                fs.writeFileSync(logPath, '', 'utf8');
+            }
+        } catch {
+            // best-effort — vscode.open will still try
+        }
+        vscode.commands.executeCommand('vscode.open', vscode.Uri.file(logPath));
+    }
+
     private getTaskStats(task: Task): TaskStats {
         const scheduler = this.getScheduler(task);
         const subTasks = scheduler.parseTasksMd();
@@ -490,8 +502,6 @@ class Harness {
         }, {
             compactTaskDecomposition: this.config.compactTaskDecomposition,
             isWorktreeSubview: this.isWorktreeSubview(),
-            frontendStartCmd: this.config.frontendStartCmd,
-            backendStartCmd: this.config.backendStartCmd,
             aiProvider: this.config.aiProvider,
             customButtons: this.config.customButtons || [],
             autoPoll: this.isWorktreeSubview() ? this.autoPollService.getStatus() : undefined,
@@ -537,9 +547,18 @@ class Harness {
         this.render();
     }
 
-    private handleRestoreFactoryPrompts(): void {
+    private async handleRestoreFactoryPrompts(): Promise<void> {
         if (this.configMeta.readOnly) {
             vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改设置');
+            return;
+        }
+        const answer = await vscode.window.showWarningMessage(
+            '确定用内置出厂 Prompt 覆盖 .harness/prompts/ 中的副本？此操作会覆盖你在该目录下的修改。',
+            { modal: true },
+            '确定覆盖',
+            '取消'
+        );
+        if (answer !== '确定覆盖') {
             return;
         }
         try {
@@ -577,89 +596,12 @@ class Harness {
         }
     }
 
-    private handleSaveDevConfig(msg: Extract<HarnessMessage, { type: 'saveDevConfig' }>): void {
-        if (this.configMeta.readOnly) {
-            vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改设置');
-            return;
-        }
-
-        const customCliTemplate = (msg.cct || '').trim();
-        const selectedProvider = getAiProvider(msg.ap);
-        if (selectedProvider.kind === 'cli' && customCliTemplate && !customCliTemplate.includes('{promptFile}')) {
-            vscode.window.showErrorMessage(
-                'CLI 命令模板必须包含 {promptFile} 占位符，例如：cat "{promptFile}" | claude。已拦截保存。'
-            );
-            return;
-        }
-
-        this.config.backendStartCmd = msg.bsc;
-        this.config.backendPort = msg.bp;
-        this.config.frontendStartCmd = msg.fsc;
-        this.config.startupChainMode = msg.sm === 'light' ? 'light' : 'full';
-        this.config.javaRuntimeProfile = (msg.jp || '').trim();
-        this.config.frontendStartupTemplate = ((msg.fst || '').trim() || '{install} && {run}');
-        this.config.backendStartupTemplate = ((msg.bst || '').trim() || '{install} && {offline} && {clean} && {run}');
-        this.config.techStack = msg.ts;
-        this.config.codingStandards = msg.cs;
-        this.config.projectConventions = msg.pc;
-        this.config.maxConcurrentAutoTasks = Math.max(1, msg.mc || 1);
-        this.config.autoAdvanceEnabled = msg.aa;
-        this.config.autoRepairEnabled = msg.ar;
-        this.config.autoContinueAfterManualDone = msg.am;
-        this.config.compactTaskDecomposition = msg.cm;
-        this.config.autoDetectTaskSplitMode = msg.ad;
-        this.config.simpleTaskKeywords = msg.sk;
-        this.config.complexTaskKeywords = msg.ck;
-        this.config.aiProvider = msg.ap;
-        this.config.cliCommandTemplate = msg.cct;
-        this.config.aiFallbackToManual = msg.afm;
-        this.config.aiPanelAutoSubmit = msg.pas;
-        this.config.worktreeSyncPaths = msg.wsd;
-        this.config.customProjectStructure = msg.cps;
-        this.config.projectStructureRefineMode = msg.prm === 'local' ? 'local' : 'local+ai';
-        this.saveConfig();
-        this.ensureProjectStructureBaseline();
-        vscode.window.showInformationMessage('✅ 开发配置已保存');
-    }
-
-    private handleSaveRuntimeConfig(msg: Extract<HarnessMessage, { type: 'saveRuntimeConfig' }>): void {
-        if (this.configMeta.readOnly) {
-            vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改设置');
-            return;
-        }
-
-        const customCliTemplate = (msg.cct || '').trim();
-        const selectedProvider = getAiProvider(msg.ap);
-        if (selectedProvider.kind === 'cli' && customCliTemplate && !customCliTemplate.includes('{promptFile}')) {
-            vscode.window.showErrorMessage(
-                'CLI 命令模板必须包含 {promptFile} 占位符，例如：cat "{promptFile}" | claude。已拦截保存。'
-            );
-            return;
-        }
-
-        this.config.backendStartCmd = msg.bsc;
-        this.config.backendPort = msg.bp;
-        this.config.frontendStartCmd = msg.fsc;
-        this.config.startupChainMode = msg.sm === 'light' ? 'light' : 'full';
-        this.config.javaRuntimeProfile = (msg.jp || '').trim();
-        this.config.frontendStartupTemplate = ((msg.fst || '').trim() || '{install} && {run}');
-        this.config.backendStartupTemplate = ((msg.bst || '').trim() || '{install} && {offline} && {clean} && {run}');
-        this.config.aiProvider = msg.ap;
-        this.config.cliCommandTemplate = msg.cct;
-        this.config.aiFallbackToManual = msg.afm;
-        this.config.aiPanelAutoSubmit = msg.pas;
-        this.saveConfig();
-        vscode.window.showInformationMessage('✅ 运行参数已保存');
-    }
-
     private handleSaveAdvancedConfig(msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>): void {
         if (this.configMeta.readOnly) {
             vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改设置');
             return;
         }
 
-        this.config.techStack = msg.ts;
-        this.config.codingStandards = msg.cs;
         this.config.projectConventions = msg.pc;
         this.config.maxConcurrentAutoTasks = Math.max(1, msg.mc || 1);
         this.config.autoAdvanceEnabled = msg.aa;
@@ -672,6 +614,9 @@ class Harness {
         this.config.worktreeSyncPaths = msg.wsd;
         this.config.customProjectStructure = msg.cps;
         this.config.projectStructureRefineMode = msg.prm === 'local' ? 'local' : 'local+ai';
+        this.config.cliCommandTemplate = msg.cct;
+        this.config.aiFallbackToManual = msg.afm;
+        this.config.aiPanelAutoSubmit = msg.pas;
         this.saveConfig();
         this.ensureProjectStructureBaseline();
         vscode.window.showInformationMessage('✅ 高级策略已保存');
@@ -714,8 +659,10 @@ class Harness {
             vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，自动轮询设置请在主窗口修改');
             return;
         }
+        const enabled = msg.enabled === true;
         const interval = Math.max(5, Math.floor(Number(msg.interval) || 0));
         const script = (msg.script || '').trim() || DEFAULT_POLL_SCRIPT;
+        this.config.autoPollEnabled = enabled;
         this.config.autoPollIntervalSec = interval;
         this.config.autoPollScript = script;
         this.config.autoPollPrompt = (msg.prompt || '').trim() || DEFAULT_AUTO_POLL_PROMPT;
@@ -724,14 +671,17 @@ class Harness {
         this.config.autoPollSkipMarkers = msg.skipMarkers ?? '';
         this.saveConfig();
         // Ensure the shared script dir exists so the user has somewhere to put the script.
-        try {
-            fs.mkdirSync(path.join(this.getMasterRoot(), CUSTOM_SCRIPT_DIR), { recursive: true });
-        } catch {
-            // best-effort
+        if (enabled) {
+            try {
+                fs.mkdirSync(path.join(this.getMasterRoot(), CUSTOM_SCRIPT_DIR), { recursive: true });
+            } catch {
+                // best-effort
+            }
         }
         this.renderSettings();
+        const statusText = enabled ? '已启用' : '已关闭';
         vscode.window.showInformationMessage(
-            `✅ 自动轮询设置已保存（间隔 ${interval}s，脚本 ${script}）。开启后将「拉取并执行」：拉到新内容即派发给当前任务的 AI 执行器。`
+            `✅ 自动轮询${statusText}（间隔 ${interval}s，脚本 ${script}）。${enabled ? '开启后将「拉取并执行」：拉到新内容即派发给当前任务的 AI 执行器。' : ''}`
         );
     }
 
@@ -943,617 +893,6 @@ class Harness {
             return;
         }
         await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(masterRoot), false);
-    }
-
-    private async handleAutoDetectDevEnv(): Promise<void> {
-        if (this.configMeta.readOnly) {
-            vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此自动回填环境配置');
-            return;
-        }
-
-        const frontendRoot = this.detectFrontendRoot();
-        const backendRoot = this.detectBackendRoot();
-
-        const frontendDetection = frontendRoot ? await this.detectOrGenerateFrontendStartCommand(frontendRoot) : { command: '', generated: false, note: '' };
-        const frontendCmd = frontendDetection.command;
-        const backendDetection = backendRoot ? await this.detectOrGenerateBackendStartCommand(backendRoot) : { command: '', generated: false, note: '' };
-        const backendCmd = backendDetection.command;
-        const backendPort = backendRoot ? this.detectBackendPort(backendRoot) : 0;
-
-        const changes: string[] = [];
-        if (frontendCmd) {
-            this.config.frontendStartCmd = frontendCmd;
-            changes.push(`前端启动命令=${frontendCmd}${frontendDetection.generated ? '（已自动补全 scripts.dev）' : ''}${frontendDetection.note ? `（${frontendDetection.note}）` : ''}`);
-        }
-        if (backendCmd) {
-            this.config.backendStartCmd = backendCmd;
-            changes.push(`后端启动命令=${backendCmd}${backendDetection.generated ? '（已自动补全 scripts.dev）' : ''}${backendDetection.note ? `（${backendDetection.note}）` : ''}`);
-        }
-        if (backendPort > 0) {
-            this.config.backendPort = backendPort;
-            changes.push(`后端端口=${backendPort}`);
-        }
-
-        this.saveConfig();
-        this.render();
-
-        if (changes.length === 0) {
-            vscode.window.showInformationMessage('未检测到可回填的环境配置，已保留现有设置。');
-            return;
-        }
-
-        vscode.window.showInformationMessage(`已自动回填环境配置：${changes.join('；')}`);
-    }
-
-    private async detectOrGenerateFrontendStartCommand(frontendRoot: string): Promise<{ command: string; generated: boolean; note: string }> {
-        const mode = this.resolveStartupChainMode(this.config.startupChainMode);
-        const template = (this.config.frontendStartupTemplate || '{install} && {run}').trim();
-        const detected = this.detectFrontendStartCommand(frontendRoot);
-        if (detected) {
-            return {
-                command: this.buildEnhancedNodeStartCommand(frontendRoot, detected, mode, template),
-                generated: false,
-                note: `增强启动链（${mode === 'full' ? '完整模式' : '轻量模式'}）`,
-            };
-        }
-
-        const generatedScript = this.suggestFrontendDevScript(frontendRoot);
-        if (!generatedScript) {
-            return { command: '', generated: false, note: '' };
-        }
-
-        const action = await vscode.window.showInformationMessage(
-            `未检测到 scripts.dev。是否按项目依赖自动生成 scripts.dev = \"${generatedScript}\"？`,
-            '生成并回填',
-            '仅本次使用',
-            '跳过'
-        );
-
-        if (action === '生成并回填') {
-            const updated = this.writeDevScriptToPackageJson(frontendRoot, generatedScript);
-            if (updated) {
-                return {
-                    command: this.buildEnhancedNodeStartCommand(frontendRoot, 'npm run dev', mode, template),
-                    generated: true,
-                    note: `增强启动链（${mode === 'full' ? '完整模式' : '轻量模式'}）`,
-                };
-            }
-        }
-
-        if (action === '仅本次使用') {
-            return {
-                command: this.buildEnhancedNodeStartCommand(frontendRoot, generatedScript, mode, template),
-                generated: false,
-                note: `增强启动链（${mode === 'full' ? '完整模式' : '轻量模式'}）`,
-            };
-        }
-
-        return { command: '', generated: false, note: '' };
-    }
-
-    private async detectOrGenerateBackendStartCommand(backendRoot: string): Promise<{ command: string; generated: boolean; note: string }> {
-        const mode = this.resolveStartupChainMode(this.config.startupChainMode);
-        const profile = (this.config.javaRuntimeProfile || '').trim();
-        const template = (this.config.backendStartupTemplate || '{install} && {offline} && {clean} && {run}').trim();
-        const javaCommand = this.detectEnhancedJavaBackendStartCommand(backendRoot, mode, profile, template);
-        if (javaCommand) {
-            return {
-                command: javaCommand,
-                generated: false,
-                note: `增强启动链（Java ${mode === 'full' ? '完整模式' : '轻量模式'}${profile ? `，profile=${profile}` : ''}）`,
-            };
-        }
-
-        const detectedNode = this.detectBackendNodeStartCommand(backendRoot);
-        if (detectedNode) {
-            return {
-                command: this.buildEnhancedNodeStartCommand(backendRoot, detectedNode, mode, template),
-                generated: false,
-                note: `增强启动链（Node ${mode === 'full' ? '完整模式' : '轻量模式'}）`,
-            };
-        }
-
-        const generatedScript = this.suggestBackendDevScript(backendRoot);
-        if (!generatedScript) {
-            return { command: '', generated: false, note: '' };
-        }
-
-        const action = await vscode.window.showInformationMessage(
-            `未检测到后端可用启动脚本。是否按项目依赖自动生成 scripts.dev = "${generatedScript}"？`,
-            '生成并回填',
-            '仅本次使用',
-            '跳过'
-        );
-
-        if (action === '生成并回填') {
-            const updated = this.writeDevScriptToPackageJson(backendRoot, generatedScript);
-            if (updated) {
-                return {
-                    command: this.buildEnhancedNodeStartCommand(backendRoot, 'npm run dev', mode, template),
-                    generated: true,
-                    note: `增强启动链（Node ${mode === 'full' ? '完整模式' : '轻量模式'}）`,
-                };
-            }
-        }
-
-        if (action === '仅本次使用') {
-            return {
-                command: this.buildEnhancedNodeStartCommand(backendRoot, generatedScript, mode, template),
-                generated: false,
-                note: `增强启动链（Node ${mode === 'full' ? '完整模式' : '轻量模式'}）`,
-            };
-        }
-
-        return { command: '', generated: false, note: '' };
-    }
-
-    private detectFrontendRoot(): string {
-        const candidates = [
-            path.join(workspaceRoot, 'repos', 'frontend-main'),
-            path.join(workspaceRoot, 'frontend'),
-            workspaceRoot,
-        ];
-        for (const candidate of candidates) {
-            const pkgPath = path.join(candidate, 'package.json');
-            const srcPath = path.join(candidate, 'src');
-            if (fs.existsSync(pkgPath) && fs.existsSync(srcPath)) {
-                return candidate;
-            }
-        }
-        return '';
-    }
-
-    private detectBackendRoot(): string {
-        const candidates = [
-            path.join(workspaceRoot, 'repos', 'backend-main'),
-            path.join(workspaceRoot, 'backend'),
-            workspaceRoot,
-        ];
-        for (const candidate of candidates) {
-            if (fs.existsSync(path.join(candidate, 'pom.xml')) || fs.existsSync(path.join(candidate, 'build.gradle'))) {
-                return candidate;
-            }
-            if (fs.existsSync(path.join(candidate, 'package.json')) && fs.existsSync(path.join(candidate, 'src'))) {
-                return candidate;
-            }
-        }
-        return '';
-    }
-
-    private detectFrontendStartCommand(frontendRoot: string): string {
-        const pkgPath = path.join(frontendRoot, 'package.json');
-        if (!fs.existsSync(pkgPath)) {
-            return '';
-        }
-        try {
-            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { scripts?: Record<string, string> };
-            const scripts = pkg.scripts || {};
-            if (scripts.dev) return 'npm run dev';
-            if (scripts['start:dev']) return 'npm run start:dev';
-            if (scripts.start) return 'npm run start';
-            if (scripts.serve) return 'npm run serve';
-
-            const inferred = this.inferRunScriptFromPackageScripts(
-                scripts,
-                ['watch', 'start:local', 'start-local', 'preview', 'compile'],
-                [
-                    /\bvite\b/i,
-                    /next\s+dev/i,
-                    /nuxt\s+dev/i,
-                    /webpack\s+serve/i,
-                    /react-scripts\s+start/i,
-                    /astro\s+dev/i,
-                    /vue-cli-service\s+serve/i,
-                ]
-            );
-            if (inferred) return `npm run ${inferred}`;
-        } catch {
-            // ignore malformed package json.
-        }
-        return '';
-    }
-
-    private suggestFrontendDevScript(frontendRoot: string): string {
-        const pkgPath = path.join(frontendRoot, 'package.json');
-        if (!fs.existsSync(pkgPath)) {
-            return '';
-        }
-
-        try {
-            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
-                dependencies?: Record<string, string>;
-                devDependencies?: Record<string, string>;
-                scripts?: Record<string, string>;
-            };
-            const deps = {
-                ...(pkg.dependencies || {}),
-                ...(pkg.devDependencies || {}),
-            };
-
-            if (deps.vite) return 'vite';
-            if (deps.next) return 'next dev';
-            if (deps.nuxt || deps['nuxt3']) return 'nuxt dev';
-            if (deps['@vue/cli-service']) return 'vue-cli-service serve';
-            if (deps['react-scripts']) return 'react-scripts start';
-            if (deps.astro) return 'astro dev';
-            if (deps['webpack-dev-server']) return 'webpack serve';
-            if (deps.parcel) return 'parcel src/index.html';
-        } catch {
-            // ignore malformed package json.
-        }
-
-        return '';
-    }
-
-    private suggestBackendDevScript(backendRoot: string): string {
-        const pkgPath = path.join(backendRoot, 'package.json');
-        if (!fs.existsSync(pkgPath)) {
-            return '';
-        }
-
-        try {
-            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
-                dependencies?: Record<string, string>;
-                devDependencies?: Record<string, string>;
-            };
-            const deps = {
-                ...(pkg.dependencies || {}),
-                ...(pkg.devDependencies || {}),
-            };
-
-            if (deps['@nestjs/core']) return 'nest start --watch';
-            if (deps.tsx) return 'tsx watch src/index.ts';
-            if (deps.nodemon) return 'nodemon src/index.js';
-            if (deps['ts-node-dev']) return 'ts-node-dev --respawn src/index.ts';
-            if (deps.express || deps.fastify || deps.koa || deps.hapi) return 'node src/index.js';
-        } catch {
-            // ignore malformed package json.
-        }
-
-        return '';
-    }
-
-    private buildEnhancedNodeStartCommand(
-        projectRoot: string,
-        runCommand: string,
-        mode: 'light' | 'full',
-        template: string
-    ): string {
-        const packageManager = this.detectNodePackageManager(projectRoot);
-        const installCommand = mode === 'full' ? this.getNodeInstallCommand(packageManager) : '';
-        const normalizedRun = this.normalizeNodeRunCommand(runCommand.trim(), packageManager);
-        const defaultTemplate = mode === 'full' ? '{install} && {run}' : '{run}';
-        return this.applyStartupTemplate(template || defaultTemplate, {
-            install: installCommand,
-            run: normalizedRun,
-            offline: '',
-            clean: '',
-        }, defaultTemplate);
-    }
-
-    private detectNodePackageManager(projectRoot: string): 'npm' | 'pnpm' | 'yarn' | 'bun' {
-        if (fs.existsSync(path.join(projectRoot, 'pnpm-lock.yaml'))) return 'pnpm';
-        if (fs.existsSync(path.join(projectRoot, 'yarn.lock'))) return 'yarn';
-        if (fs.existsSync(path.join(projectRoot, 'bun.lockb')) || fs.existsSync(path.join(projectRoot, 'bun.lock'))) return 'bun';
-        return 'npm';
-    }
-
-    private getNodeInstallCommand(packageManager: 'npm' | 'pnpm' | 'yarn' | 'bun'): string {
-        if (packageManager === 'pnpm') return 'pnpm install';
-        if (packageManager === 'yarn') return 'yarn install';
-        if (packageManager === 'bun') return 'bun install';
-        return 'npm install';
-    }
-
-    private normalizeNodeRunCommand(command: string, packageManager: 'npm' | 'pnpm' | 'yarn' | 'bun'): string {
-        if (!command) {
-            return '';
-        }
-        const match = command.match(/^npm\s+run\s+(.+)$/);
-        if (!match) {
-            return command;
-        }
-        const scriptName = match[1].trim();
-        if (!scriptName) {
-            return command;
-        }
-        if (packageManager === 'pnpm') {
-            return `pnpm ${scriptName}`;
-        }
-        if (packageManager === 'yarn') {
-            return `yarn ${scriptName}`;
-        }
-        if (packageManager === 'bun') {
-            return `bun run ${scriptName}`;
-        }
-        return command;
-    }
-
-    private writeDevScriptToPackageJson(frontendRoot: string, devScript: string): boolean {
-        const pkgPath = path.join(frontendRoot, 'package.json');
-        if (!fs.existsSync(pkgPath)) {
-            return false;
-        }
-
-        try {
-            const raw = fs.readFileSync(pkgPath, 'utf8');
-            const pkg = JSON.parse(raw) as { scripts?: Record<string, string> };
-            const scripts = pkg.scripts || {};
-            if (!scripts.dev) {
-                scripts.dev = devScript;
-                pkg.scripts = scripts;
-                fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
-                vscode.window.showInformationMessage(`已写入 ${path.join(frontendRoot, 'package.json')} 的 scripts.dev=${devScript}`);
-            }
-            return true;
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            vscode.window.showWarningMessage(`自动写入 scripts.dev 失败：${message}`);
-            return false;
-        }
-    }
-
-    private detectEnhancedJavaBackendStartCommand(
-        backendRoot: string,
-        mode: 'light' | 'full',
-        profile: string,
-        template: string
-    ): string {
-        const profileArgs = (runner: 'maven' | 'gradle'): string => {
-            if (!profile) {
-                return '';
-            }
-            if (runner === 'maven') {
-                return ` -Dspring-boot.run.profiles=${profile}`;
-            }
-            return ` --args='--spring.profiles.active=${profile}'`;
-        };
-
-        const mavenSelector = this.resolveMavenBootRunSelector(backendRoot);
-
-        if (fs.existsSync(path.join(backendRoot, 'mvnw'))) {
-            const run = `./mvnw${mavenSelector} spring-boot:run${profileArgs('maven')}`;
-            const fallback = mode === 'full' ? '{offline} && {clean} && {run}' : '{run}';
-            const offline = mode === 'full' ? `./mvnw${mavenSelector} -DskipTests dependency:go-offline` : '';
-            const clean = mode === 'full' ? `./mvnw${mavenSelector} -DskipTests clean` : '';
-            return this.applyStartupTemplate(template, {
-                install: '',
-                offline,
-                clean,
-                run,
-            }, fallback);
-        }
-        if (fs.existsSync(path.join(backendRoot, 'pom.xml'))) {
-            const run = `mvn${mavenSelector} spring-boot:run${profileArgs('maven')}`;
-            const fallback = mode === 'full' ? '{offline} && {clean} && {run}' : '{run}';
-            const offline = mode === 'full' ? `mvn${mavenSelector} -DskipTests dependency:go-offline` : '';
-            const clean = mode === 'full' ? `mvn${mavenSelector} -DskipTests clean` : '';
-            return this.applyStartupTemplate(template, {
-                install: '',
-                offline,
-                clean,
-                run,
-            }, fallback);
-        }
-        if (fs.existsSync(path.join(backendRoot, 'gradlew'))) {
-            const run = `./gradlew bootRun${profileArgs('gradle')}`;
-            const fallback = mode === 'full' ? '{offline} && {clean} && {run}' : '{run}';
-            const offline = mode === 'full' ? './gradlew --refresh-dependencies' : '';
-            const clean = mode === 'full' ? './gradlew clean' : '';
-            return this.applyStartupTemplate(template, {
-                install: '',
-                offline,
-                clean,
-                run,
-            }, fallback);
-        }
-        if (fs.existsSync(path.join(backendRoot, 'build.gradle'))) {
-            const run = `gradle bootRun${profileArgs('gradle')}`;
-            const fallback = mode === 'full' ? '{offline} && {clean} && {run}' : '{run}';
-            const offline = mode === 'full' ? 'gradle --refresh-dependencies' : '';
-            const clean = mode === 'full' ? 'gradle clean' : '';
-            return this.applyStartupTemplate(template, {
-                install: '',
-                offline,
-                clean,
-                run,
-            }, fallback);
-        }
-        return '';
-    }
-
-    private resolveMavenBootRunSelector(backendRoot: string): string {
-        const rootPom = path.join(backendRoot, 'pom.xml');
-        if (!fs.existsSync(rootPom)) {
-            return '';
-        }
-
-        let rootPomRaw = '';
-        try {
-            rootPomRaw = fs.readFileSync(rootPom, 'utf8');
-        } catch {
-            return '';
-        }
-
-        const moduleMatches = Array.from(rootPomRaw.matchAll(/<module>\s*([^<\n\r]+)\s*<\/module>/gi));
-        const modulePaths = moduleMatches
-            .map((match) => (match[1] || '').trim())
-            .filter(Boolean);
-        const hasModules = modulePaths.length > 0;
-        const rootIsPomPackaging = /<packaging>\s*pom\s*<\/packaging>/i.test(rootPomRaw);
-        const rootHasBootPlugin = /spring-boot-maven-plugin/i.test(rootPomRaw);
-
-        // Single-module executable project: run directly from backend root.
-        if (!hasModules && rootHasBootPlugin) {
-            return '';
-        }
-
-        // Aggregator root without modules fallback.
-        if (!hasModules) {
-            return '';
-        }
-
-        const scored: Array<{ modulePath: string; score: number }> = [];
-
-        for (const modulePath of modulePaths) {
-            const modulePom = path.join(backendRoot, modulePath, 'pom.xml');
-            if (!fs.existsSync(modulePom)) {
-                continue;
-            }
-
-            try {
-                const raw = fs.readFileSync(modulePom, 'utf8');
-                const hasBootPlugin = /spring-boot-maven-plugin/i.test(raw);
-                const hasBootStarter = /spring-boot-starter/i.test(raw);
-                const isPomPack = /<packaging>\s*pom\s*<\/packaging>/i.test(raw);
-                if (!hasBootPlugin && (!hasBootStarter || isPomPack)) {
-                    continue;
-                }
-
-                const name = modulePath.toLowerCase();
-                let score = 0;
-                if (hasBootPlugin) score += 100;
-                if (hasBootStarter) score += 30;
-                if (/start|boot|app|web/.test(name)) score += 20;
-                if (/service/.test(name)) score += 10;
-                scored.push({ modulePath, score });
-            } catch {
-                // Ignore malformed child pom and keep scanning.
-            }
-        }
-
-        if (scored.length === 0) {
-            // If root is not an aggregator and has boot plugin, keep root execution.
-            if (!rootIsPomPackaging && rootHasBootPlugin) {
-                return '';
-            }
-            return '';
-        }
-
-        scored.sort((a, b) => b.score - a.score);
-        const target = scored[0].modulePath;
-        const normalizedTarget = target.replace(/\\/g, '/').replace(/"/g, '\\"');
-        return ` -f "${normalizedTarget}/pom.xml"`;
-    }
-
-    private resolveStartupChainMode(mode: string): 'light' | 'full' {
-        return mode === 'light' ? 'light' : 'full';
-    }
-
-    private applyStartupTemplate(
-        template: string,
-        vars: { install: string; offline: string; clean: string; run: string },
-        fallbackTemplate: string
-    ): string {
-        const effective = (template || fallbackTemplate || '{run}').trim() || '{run}';
-        const rendered = effective
-            .replace(/\{install\}/g, vars.install)
-            .replace(/\{offline\}/g, vars.offline)
-            .replace(/\{clean\}/g, vars.clean)
-            .replace(/\{run\}/g, vars.run);
-
-        const segments = rendered
-            .split(/&&|\n/)
-            .map(seg => seg.trim())
-            .filter(Boolean);
-
-        if (segments.length > 0) {
-            return segments.join(' && ');
-        }
-
-        const fallbackRendered = fallbackTemplate
-            .replace(/\{install\}/g, vars.install)
-            .replace(/\{offline\}/g, vars.offline)
-            .replace(/\{clean\}/g, vars.clean)
-            .replace(/\{run\}/g, vars.run);
-
-        return fallbackRendered
-            .split(/&&|\n/)
-            .map(seg => seg.trim())
-            .filter(Boolean)
-            .join(' && ');
-    }
-
-    private detectBackendNodeStartCommand(backendRoot: string): string {
-        const pkgPath = path.join(backendRoot, 'package.json');
-        if (!fs.existsSync(pkgPath)) {
-            return '';
-        }
-        try {
-            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { scripts?: Record<string, string> };
-            const scripts = pkg.scripts || {};
-            if (scripts.dev) return 'npm run dev';
-            if (scripts['start:dev']) return 'npm run start:dev';
-            if (scripts.start) return 'npm run start';
-
-            const inferred = this.inferRunScriptFromPackageScripts(
-                scripts,
-                ['watch', 'serve', 'preview', 'compile'],
-                [
-                    /nest\s+start\s+--watch/i,
-                    /nodemon\b/i,
-                    /tsx\s+watch/i,
-                    /ts-node-dev\b/i,
-                    /node\s+.+/i,
-                ]
-            );
-            if (inferred) return `npm run ${inferred}`;
-        } catch {
-            // ignore malformed package json.
-        }
-        return '';
-    }
-
-    private inferRunScriptFromPackageScripts(
-        scripts: Record<string, string>,
-        preferredKeys: string[],
-        commandMatchers: RegExp[]
-    ): string {
-        for (const key of preferredKeys) {
-            if (scripts[key]) {
-                return key;
-            }
-        }
-
-        for (const [key, cmd] of Object.entries(scripts)) {
-            if (/(^|[:_-])(dev|start|serve|watch|local)([:_-]|$)/i.test(key) && cmd.trim()) {
-                return key;
-            }
-        }
-
-        for (const [key, cmd] of Object.entries(scripts)) {
-            if (commandMatchers.some((matcher) => matcher.test(cmd))) {
-                return key;
-            }
-        }
-
-        return '';
-    }
-
-    private detectBackendPort(backendRoot: string): number {
-        const files = [
-            path.join(backendRoot, 'src', 'main', 'resources', 'application.yml'),
-            path.join(backendRoot, 'src', 'main', 'resources', 'application.yaml'),
-            path.join(backendRoot, 'src', 'main', 'resources', 'application.properties'),
-            path.join(backendRoot, '.env'),
-        ];
-
-        for (const file of files) {
-            if (!fs.existsSync(file)) {
-                continue;
-            }
-            const raw = fs.readFileSync(file, 'utf8');
-            const yamlMatch = raw.match(/server\s*:\s*[\s\S]*?port\s*:\s*(\d{2,5})/m);
-            if (yamlMatch) {
-                return Number(yamlMatch[1]);
-            }
-            const propMatch = raw.match(/(?:server\.port|PORT)\s*[=:]\s*(\d{2,5})/m);
-            if (propMatch) {
-                return Number(propMatch[1]);
-            }
-        }
-
-        return this.config.backendPort || 8080;
     }
 
     createPanel(): void {

@@ -6,16 +6,13 @@ interface HarnessMessageControllerDeps {
     setPage: (page: string) => void;
     reloadTasks: () => void;
     render: () => void;
-    restoreFactoryPrompts: () => void;
+    restoreFactoryPrompts: () => Promise<void>;
     saveGit:(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean) => Promise<void>;
-    saveDevConfig: (msg: Extract<HarnessMessage, { type: 'saveDevConfig' }>) => void;
-    saveRuntimeConfig: (msg: Extract<HarnessMessage, { type: 'saveRuntimeConfig' }>) => void;
     saveAdvancedConfig: (msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>) => void;
     initProjectStructure: () => Promise<void>;
     applyProjectStructurePreview: () => Promise<void>;
     openArtifactsIndex: () => Promise<void>;
     openMasterWorkspace: () => Promise<void>;
-    autoDetectDevEnv: () => Promise<void>;
     testAiProvider: () => Promise<void>;
     createTask: (name: string, desc: string, quickMode?: boolean) => Promise<void>;
     requestEditTaskDesc: (taskId: string) => Promise<void>;
@@ -35,8 +32,6 @@ interface HarnessMessageControllerDeps {
     nextStage: (taskId: string, step: Extract<HarnessMessage, { type: 'next' }>['step'], targetStage?: Extract<HarnessMessage, { type: 'next' }>['targetStage']) => Promise<void>;
     pass: (taskId: string) => Promise<void>;
     syncMainCode: (taskId: string) => Promise<void>;
-    startService: (taskId: string, target: 'frontend' | 'backend') => Promise<void>;
-    startServices: (taskId: string) => Promise<void>;
     completeDevWithPush: (taskId: string) => Promise<void>;
     pushAndNextStage: (taskId: string) => Promise<void>;
     commitToBaseline: (taskId: string) => Promise<void>;
@@ -44,6 +39,7 @@ interface HarnessMessageControllerDeps {
     runCustomButton: (taskId: string, buttonId: string) => Promise<void>;
     runMainCustomButton: (buttonId: string) => Promise<void>;
     openScriptDir: () => Promise<void>;
+    openHarnessLog: () => void;
     saveAutoPollConfig: (msg: Extract<HarnessMessage, { type: 'saveAutoPollConfig' }>) => void;
     createPollScriptTemplate: () => Promise<void>;
     toggleAutoPoll: (enable: boolean) => void;
@@ -71,8 +67,6 @@ export class HarnessMessageController {
             case 'next':
             case 'pass':
             case 'syncMainCode':
-            case 'startService':
-            case 'startServices':
             case 'pushAll':
             case 'completeDevWithPush':
             case 'pushAndNextStage':
@@ -107,16 +101,10 @@ export class HarnessMessageController {
                 this.deps.render();
                 return;
             case 'restoreFactoryPrompts':
-                this.deps.restoreFactoryPrompts();
+                await this.deps.restoreFactoryPrompts();
                 return;
             case 'saveGit':
                 await this.deps.saveGit(msg.fg, msg.bg, msg.bb, msg.dr);
-                return;
-            case 'saveDevConfig':
-                this.deps.saveDevConfig(msg);
-                return;
-            case 'saveRuntimeConfig':
-                this.deps.saveRuntimeConfig(msg);
                 return;
             case 'saveAdvancedConfig':
                 this.deps.saveAdvancedConfig(msg);
@@ -132,9 +120,6 @@ export class HarnessMessageController {
                 return;
             case 'openMasterWorkspace':
                 await this.deps.openMasterWorkspace();
-                return;
-            case 'autoDetectDevEnv':
-                await this.deps.autoDetectDevEnv();
                 return;
             case 'testAiProvider':
                 await this.deps.testAiProvider();
@@ -194,12 +179,6 @@ export class HarnessMessageController {
             case 'syncMainCode':
                 await this.deps.syncMainCode(msg.id);
                 return;
-            case 'startService':
-                await this.deps.startService(msg.id, msg.target);
-                return;
-            case 'startServices':
-                await this.deps.startServices(msg.id);
-                return;
             case 'completeDevWithPush':
                 await this.deps.completeDevWithPush(msg.id);
                 return;
@@ -220,6 +199,9 @@ export class HarnessMessageController {
                 return;
             case 'openScriptDir':
                 await this.deps.openScriptDir();
+                return;
+            case 'openHarnessLog':
+                this.deps.openHarnessLog();
                 return;
             case 'saveAutoPollConfig':
                 this.deps.saveAutoPollConfig(msg);

@@ -5,14 +5,11 @@ export type HarnessMessage =
     | { type: 'refresh' }
     | { type: 'restoreFactoryPrompts' }
     | { type: 'saveGit'; fg: string; bg: string; bb: string; dr: boolean }
-    | { type: 'saveDevConfig'; bsc: string; bp: number; fsc: string; sm: 'light' | 'full'; jp: string; fst: string; bst: string; ts: string; cs: string; pc: string; mc: number; aa: boolean; ar: boolean; am: boolean; cm: boolean; ad: boolean; sk: string; ck: string; ap: string; cct: string; afm: boolean; pas: boolean; wsd: string; cps: string; prm: 'local' | 'local+ai' }
-    | { type: 'saveRuntimeConfig'; bsc: string; bp: number; fsc: string; sm: 'light' | 'full'; jp: string; fst: string; bst: string; ap: string; cct: string; afm: boolean; pas: boolean }
-    | { type: 'saveAdvancedConfig'; ts: string; cs: string; pc: string; mc: number; aa: boolean; ar: boolean; am: boolean; cm: boolean; ad: boolean; sk: string; ck: string; wsd: string; cps: string; prm: 'local' | 'local+ai' }
+    | { type: 'saveAdvancedConfig'; pc: string; mc: number; aa: boolean; ar: boolean; am: boolean; cm: boolean; ad: boolean; sk: string; ck: string; wsd: string; cps: string; prm: 'local' | 'local+ai'; cct: string; afm: boolean; pas: boolean }
     | { type: 'initProjectStructure' }
     | { type: 'applyProjectStructurePreview' }
     | { type: 'openArtifactsIndex' }
     | { type: 'openMasterWorkspace' }
-    | { type: 'autoDetectDevEnv' }
     | { type: 'testAiProvider' }
     | { type: 'create'; name: string; desc: string; quickMode?: boolean }
     | { type: 'requestEditTaskDesc'; id: string }
@@ -32,8 +29,6 @@ export type HarnessMessage =
     | { type: 'next'; id: string; step: HarnessStep; targetStage?: HarnessStep }
     | { type: 'pass'; id: string }
     | { type: 'syncMainCode'; id: string }
-    | { type: 'startService'; id: string; target: 'frontend' | 'backend' }
-    | { type: 'startServices'; id: string }
     | { type: 'completeDevWithPush'; id: string }
     | { type: 'pushAndNextStage'; id: string }
     | { type: 'commitToBaseline'; id: string }
@@ -41,6 +36,7 @@ export type HarnessMessage =
     | { type: 'runCustomButton'; id: string; buttonId: string }
     | { type: 'runMainCustomButton'; buttonId: string }
     | { type: 'openScriptDir' }
-    | { type: 'saveAutoPollConfig'; interval: number; script: string; prompt: string; skipMarkers: string }
+    | { type: 'openHarnessLog' }
+    | { type: 'saveAutoPollConfig'; interval: number; script: string; prompt: string; skipMarkers: string; enabled: boolean }
     | { type: 'createPollScriptTemplate' }
     | { type: 'toggleAutoPoll'; enable: boolean };
