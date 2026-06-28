@@ -126,10 +126,10 @@ npm run publish:remote   # 编译后通过 vsce 发布到市场
 
 每次发布到 VS Code 市场前，按固定三步走，确保 marketplace 的 Changelog 页有内容：
 
-1. **写更新日志** — 在 [CHANGELOG.md](CHANGELOG.md) **顶部**新增一节 `## [新版本号] - YYYY-MM-DD`，按 `新增 / 修复 / 变更` 分类描述本次改动（最新版本永远在最上面）。
+1. **写更新日志** — 在 `CHANGELOG.md` **顶部**新增一节 `## [新版本号] - YYYY-MM-DD`，按 `新增 / 修复 / 变更` 分类描述本次改动（最新版本永远在最上面）。
 2. **升版本号 + 打 tag** — 运行 `npm run release:patch`（或 `release:minor`）：
    - 先执行 `changelog:check`，校验 `CHANGELOG.md` 里确实有当前要发布版本号对应的小节，没有就直接报错中止；
-   - 通过后用 `npm version` 升级 [package.json](package.json) 版本号、提交、打 git tag；
+   - 通过后用 `npm version` 升级 `package.json` 版本号、提交、打 git tag；
    - `version` / `postversion` 钩子会自动 `git add CHANGELOG.md package.json` 并 `git push --tags`。
 3. **发布** — 运行 `npm run publish:remote`，编译后通过 `vsce publish` 推送到市场。
 
@@ -161,4 +161,4 @@ npm run publish:remote   # 编译 + vsce publish 发布到市场
 - ✅ 允许个人学习、研究、教学、内部评估等**非商业**用途，可自由阅读、修改、分发源码
 - ❌ **禁止**以营利为目的的商业使用（包括但不限于：作为商业产品销售、内嵌商业 SaaS、商业咨询服务交付等）
 
-完整条款见项目根目录 [LICENSE](LICENSE)。如需商业授权，请联系作者另行洽谈。
+完整条款见项目根目录 `LICENSE` 文件。如需商业授权，请联系作者另行洽谈。

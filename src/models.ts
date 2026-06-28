@@ -167,10 +167,19 @@ export interface CustomButton {
     name: string;
     command: string;
     /**
-     * Subfolder of the worktree iteration dir to run the script in
-     * (e.g. 'frontend' | 'backend'). Empty/undefined = worktree root.
+     * Subfolder to run the script in (e.g. 'frontend' | 'backend'). Empty/undefined = root.
+     * For 'iteration' buttons the root is the task's worktree dir; for 'main' buttons it is
+     * the master workspace root.
      */
     workdir?: string;
+    /**
+     * Where the button is rendered:
+     * - 'iteration' (default): on each task card (worktree subview always; main panel when an
+     *   iteration worktree exists). Runs against that task's worktree iteration dir.
+     * - 'main': in a dedicated area on the main panel that belongs to no task iteration. Runs
+     *   against the master workspace root.
+     */
+    placement?: 'iteration' | 'main';
 }
 
 // ── Config ─────────────────────────────────────────────────────────

@@ -198,6 +198,7 @@ class Harness {
                 commitToBaseline: async (taskId) => this.actionsService.commitToBaselineByTaskId(taskId),
                 saveCustomButtons: (buttons) => this.handleSaveCustomButtons(buttons),
                 runCustomButton: async (taskId, buttonId) => this.actionsService.runCustomButtonByTaskId(taskId, buttonId),
+                runMainCustomButton: async (buttonId) => this.actionsService.runStandaloneCustomButton(buttonId),
                 openScriptDir: () => this.handleOpenScriptDir(),
                 saveAutoPollConfig: (msg) => this.handleSaveAutoPollConfig(msg),
                 createPollScriptTemplate: () => this.handleCreatePollScriptTemplate(),
@@ -676,7 +677,7 @@ class Harness {
         vscode.window.showInformationMessage('✅ 高级策略已保存');
     }
 
-    private handleSaveCustomButtons(buttons: { name: string; command: string; workdir?: string }[]): void {
+    private handleSaveCustomButtons(buttons: { name: string; command: string; workdir?: string; placement?: 'iteration' | 'main' }[]): void {
         if (this.configMeta.readOnly) {
             vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改自定义按钮');
             return;
@@ -688,6 +689,7 @@ class Harness {
                 name: (b.name || '').trim(),
                 command: (b.command || '').trim(),
                 workdir: (b.workdir || '').trim(),
+                placement: b.placement === 'main' ? 'main' as const : 'iteration' as const,
             }))
             .filter(b => b.name && b.command);
 

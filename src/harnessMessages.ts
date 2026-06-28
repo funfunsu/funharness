@@ -37,8 +37,9 @@ export type HarnessMessage =
     | { type: 'completeDevWithPush'; id: string }
     | { type: 'pushAndNextStage'; id: string }
     | { type: 'commitToBaseline'; id: string }
-    | { type: 'saveCustomButtons'; buttons: { name: string; command: string; workdir?: string }[] }
+    | { type: 'saveCustomButtons'; buttons: { name: string; command: string; workdir?: string; placement?: 'iteration' | 'main' }[] }
     | { type: 'runCustomButton'; id: string; buttonId: string }
+    | { type: 'runMainCustomButton'; buttonId: string }
     | { type: 'openScriptDir' }
     | { type: 'saveAutoPollConfig'; interval: number; script: string; prompt: string; skipMarkers: string }
     | { type: 'createPollScriptTemplate' }

@@ -51,9 +51,16 @@ function buildWorkdirOptions(selected: string): string {
     return opts.join('');
 }
 
-function customButtonRowHtml(name: string, command: string, workdir: string, scriptFiles: string[], disabled: string): string {
+function buildPlacementOptions(selected: string): string {
+    const place = selected === 'main' ? 'main' : 'iteration';
+    return `<option value="iteration"${place === 'iteration' ? ' selected' : ''}>子面板（迭代）</option>` +
+        `<option value="main"${place === 'main' ? ' selected' : ''}>主面板</option>`;
+}
+
+function customButtonRowHtml(name: string, command: string, workdir: string, placement: string, scriptFiles: string[], disabled: string): string {
     return `<div class="cb-row">
 <input class="cb-name" placeholder="按钮名称（如 部署）" value="${escapeHtml(name)}" ${disabled}>
+<select class="cb-place" ${disabled} title="显示位置">${buildPlacementOptions(placement)}</select>
 <select class="cb-dir" ${disabled} title="执行目录">${buildWorkdirOptions(workdir)}</select>
 <select class="cb-cmd" ${disabled}>${buildScriptOptions(command, scriptFiles)}</select>
 <button class="cb-del" onclick="removeCustomButton(this)" ${disabled}>✕</button>
@@ -359,6 +366,10 @@ export function buildMainPageHtml(
     config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; frontendStartCmd: string; backendStartCmd: string; aiProvider: string; customButtons: CustomButton[]; autoPoll?: AutoPollStatus }
 ): string {
     const customButtons = config.customButtons || [];
+    // 'main' buttons render in a dedicated main-panel area belonging to no iteration;
+    // everything else (incl. legacy buttons without a placement) stays on task cards.
+    const iterationButtons = customButtons.filter(b => b.placement !== 'main');
+    const mainButtons = customButtons.filter(b => b.placement === 'main');
     const isWorktreeSubview = config.isWorktreeSubview === true;
     const visibleTaskViews = isWorktreeSubview
         ? taskViews.slice(0, 1)
@@ -420,6 +431,10 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .stage-more-actions button{flex:1;padding:8px;border-radius:8px;border:none;font-size:11px;min-width:120px}
 .task-hidden{display:none}
 .mode-banner{margin:10px 0 12px;padding:8px 10px;background:#1d2e3b;border:1px solid #2f556f;border-radius:8px;color:#9ecff0;font-size:12px}
+.main-actions-card{margin:0 0 12px;padding:10px 12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
+.main-actions-title{font-weight:600;font-size:13px;margin-bottom:8px}
+.main-actions{display:flex;gap:6px;flex-wrap:wrap}
+.main-actions button{flex:1;padding:8px;border-radius:8px;border:none;font-size:11px;min-width:80px}
 .autopoll-card{margin:0 0 12px;padding:10px 12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
 .autopoll-card.on{border-color:#1f6b3a;background:#13251a}
 .autopoll-title{font-weight:600;font-size:13px;margin-bottom:6px}
@@ -453,6 +468,11 @@ ${!isWorktreeSubview ? `
 </div>
 
 ${isWorktreeSubview ? '<div class="mode-banner">子面板仅保留当前迭代任务操作，不提供高级设置与创建迭代功能。<button class="toolbar-btn" style="margin-left:8px" onclick="openMasterWorkspace()">↩ 回到主工作区</button></div>' : ''}
+
+${!isWorktreeSubview && mainButtons.length > 0 ? `<div class="main-actions-card">
+<div class="main-actions-title">🛠 自定义操作（主面板）</div>
+<div class="main-actions">${mainButtons.map(b => `<button class="btn-gray" onclick="runMainCustomButton('${b.id}')">${escapeHtml(b.name)}</button>`).join('')}</div>
+</div>` : ''}
 
 ${isWorktreeSubview && config.autoPoll ? buildAutoPollPanelHtml(config.autoPoll) : ''}
 
@@ -505,8 +525,8 @@ ${visibleTaskViews.map(view => {
 
     // User-defined buttons: same visibility rule as 启动服务 (worktree subview always,
     // main panel only when an iteration worktree exists). Resolved server-side by id.
-    if ((isWorktreeSubview || hasWorktree) && customButtons.length > 0) {
-        for (const b of customButtons) {
+    if ((isWorktreeSubview || hasWorktree) && iterationButtons.length > 0) {
+        for (const b of iterationButtons) {
             sideActions.push(`<button class="btn-gray" onclick="runCustomButton('${t.id}','${b.id}')">${escapeHtml(b.name)}</button>`);
         }
     }
@@ -621,6 +641,7 @@ function openMasterWorkspace(){v.postMessage({type:'openMasterWorkspace'})}
 function startService(id,target){v.postMessage({type:'startService',id,target})}
 function startServices(id){v.postMessage({type:'startServices',id})}
 function runCustomButton(id,buttonId){v.postMessage({type:'runCustomButton',id,buttonId})}
+function runMainCustomButton(buttonId){v.postMessage({type:'runMainCustomButton',buttonId})}
 function toggleAutoPoll(enable){v.postMessage({type:'toggleAutoPoll',enable})}
 function setSubStatus(id,subId,status){v.postMessage({type:'setSubTaskStatus',id,subId,status})}
 function editTaskDesc(id){v.postMessage({type:'requestEditTaskDesc',id})}
@@ -694,12 +715,13 @@ button{width:100%;padding:10px;border-radius:8px;border:none;color:white;margin-
 .fold>summary{cursor:pointer;color:#d3d3d8;font-size:13px;list-style:none}
 .fold>summary::-webkit-details-marker{display:none}
 .fold[open]>summary{margin-bottom:8px;color:#fff}
-.cb-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
-.cb-row input{margin:0}
-.cb-name{flex:1}
-.cb-dir{flex:1}
-.cb-cmd{flex:2}
-.cb-del{width:auto;flex:none;margin:0;padding:10px 14px;background:#ff3b30}
+.cb-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
+.cb-row input,.cb-row select{margin:0;min-width:0;box-sizing:border-box}
+.cb-name{flex:1 1 140px}
+.cb-place{flex:1 1 110px}
+.cb-dir{flex:1 1 130px}
+.cb-cmd{flex:2 1 160px}
+.cb-del{width:auto;flex:0 0 auto;margin:0;padding:10px 14px;background:#ff3b30}
 .cb-empty{margin:10px 0;padding:10px;border-radius:8px;background:#2b2308;border:1px solid #7a5d00;color:#ffd56a;font-size:12px}
 </style>
 </head>
@@ -837,7 +859,8 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 
 <div class="section">
 <div class="section-title">自定义按钮</div>
-<div class="hint">脚本统一维护在主目录的 <b>script/</b> 目录下（如 deploy.sh）。为按钮选择「执行目录」（根目录 / frontend / backend）和一个脚本即可；点击按钮时先 cd 到该任务 worktree 迭代目录下的所选文件夹，再运行所选脚本（插件会按你的操作系统自动拼接执行命令）。可配置多个。</div>
+<div class="hint">脚本统一维护在主目录的 <b>script/</b> 目录下（如 deploy.sh）。为按钮选择「显示位置」「执行目录」（根目录 / frontend / backend）和一个脚本即可；插件会按你的操作系统自动拼接执行命令。可配置多个。</div>
+<div class="hint">显示位置：<b>子面板（迭代）</b>会显示在每个迭代任务卡片上，点击时 cd 到该任务 worktree 迭代目录下的所选文件夹再运行；<b>主面板</b>会显示在主面板顶部的独立区域，不属于任何任务迭代，点击时 cd 到主工作区根目录下的所选文件夹再运行。</div>
 <div class="kv">脚本目录：<b>${escapeHtml(scriptDir)}</b></div>
 <div class="inline-actions" style="margin-top:8px">
 <button onclick="openScriptDir()" style="background:#6d6d72" ${disabled}>📂 打开 script 目录</button>
@@ -845,7 +868,7 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 </div>
 ${scriptFiles.length === 0 ? '<div class="cb-empty">script/ 目录下暂无脚本文件。请先在上面的脚本目录中创建脚本（如 deploy.sh），然后点「🔄 刷新脚本列表」。</div>' : ''}
 <div id="cbList">
-${(config.customButtons || []).map(b => customButtonRowHtml(b.name, b.command, b.workdir || '', scriptFiles, disabled)).join('')}
+${(config.customButtons || []).map(b => customButtonRowHtml(b.name, b.command, b.workdir || '', b.placement || 'iteration', scriptFiles, disabled)).join('')}
 </div>
 <div class="inline-actions">
 <button onclick="addCustomButton()" style="background:#3a3a3f" ${scriptFiles.length === 0 ? 'disabled' : disabled}>➕ 添加按钮</button>
@@ -908,7 +931,12 @@ function cbWorkdirOptions(selected){
   cbWorkdirs.forEach(function(d){opts+='<option value="'+cbEscAttr(d)+'"'+(d===selected?' selected':'')+'>'+cbEscAttr(d)+'</option>';});
   return opts;
 }
-function cbEmptyRow(){return '<div class="cb-row"><input class="cb-name" placeholder="按钮名称（如 部署）"><select class="cb-dir" title="执行目录">'+cbWorkdirOptions('')+'</select><select class="cb-cmd">'+cbScriptOptions('')+'</select><button class="cb-del" onclick="removeCustomButton(this)">✕</button></div>';}
+function cbPlacementOptions(selected){
+  const place=selected==='main'?'main':'iteration';
+  return '<option value="iteration"'+(place==='iteration'?' selected':'')+'>子面板（迭代）</option>'+
+    '<option value="main"'+(place==='main'?' selected':'')+'>主面板</option>';
+}
+function cbEmptyRow(){return '<div class="cb-row"><input class="cb-name" placeholder="按钮名称（如 部署）"><select class="cb-place" title="显示位置">'+cbPlacementOptions('')+'</select><select class="cb-dir" title="执行目录">'+cbWorkdirOptions('')+'</select><select class="cb-cmd">'+cbScriptOptions('')+'</select><button class="cb-del" onclick="removeCustomButton(this)">✕</button></div>';}
 function addCustomButton(){if(scriptFiles.length===0){alert('请先在 script/ 目录下创建脚本，再点「刷新脚本列表」');return;}document.getElementById('cbList').insertAdjacentHTML('beforeend',cbEmptyRow());}
 function removeCustomButton(btn){const r=btn.closest('.cb-row');if(r)r.remove();}
 function openScriptDir(){v.postMessage({type:'openScriptDir'});}
@@ -919,7 +947,9 @@ function saveCustomButtons(){
     const name=r.querySelector('.cb-name').value.trim();
     const command=r.querySelector('.cb-cmd').value.trim();
     const workdir=r.querySelector('.cb-dir').value.trim();
-    if(name&&command){buttons.push({name:name,command:command,workdir:workdir});}
+    const placeEl=r.querySelector('.cb-place');
+    const placement=(placeEl&&placeEl.value==='main')?'main':'iteration';
+    if(name&&command){buttons.push({name:name,command:command,workdir:workdir,placement:placement});}
   });
   v.postMessage({type:'saveCustomButtons',buttons:buttons});
 }

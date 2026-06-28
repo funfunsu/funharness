@@ -40,8 +40,9 @@ interface HarnessMessageControllerDeps {
     completeDevWithPush: (taskId: string) => Promise<void>;
     pushAndNextStage: (taskId: string) => Promise<void>;
     commitToBaseline: (taskId: string) => Promise<void>;
-    saveCustomButtons: (buttons: { name: string; command: string; workdir?: string }[]) => void;
+    saveCustomButtons: (buttons: { name: string; command: string; workdir?: string; placement?: 'iteration' | 'main' }[]) => void;
     runCustomButton: (taskId: string, buttonId: string) => Promise<void>;
+    runMainCustomButton: (buttonId: string) => Promise<void>;
     openScriptDir: () => Promise<void>;
     saveAutoPollConfig: (msg: Extract<HarnessMessage, { type: 'saveAutoPollConfig' }>) => void;
     createPollScriptTemplate: () => Promise<void>;
@@ -213,6 +214,9 @@ export class HarnessMessageController {
                 return;
             case 'runCustomButton':
                 await this.deps.runCustomButton(msg.id, msg.buttonId);
+                return;
+            case 'runMainCustomButton':
+                await this.deps.runMainCustomButton(msg.buttonId);
                 return;
             case 'openScriptDir':
                 await this.deps.openScriptDir();

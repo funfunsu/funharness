@@ -6,6 +6,7 @@ import { HarnessStep } from '../harnessMessages';
 import {
     BASE,
     Config,
+    CustomButton,
     CUSTOM_SCRIPT_DIR,
     HARNESS_STATE_FILE,
     HARNESS_STATE_FILE_LEGACY,
@@ -722,12 +723,44 @@ export class HarnessActionsService {
         }
 
         // The button may target a subfolder of the worktree (e.g. frontend/backend);
-        // empty = the worktree root. The terminal cwd is set to this folder so the
-        // master script runs against the right project.
+        // empty = the worktree root.
+        this.launchCustomButton(button, iterDir, `执行目录不存在：{dir}。请确认该 worktree 下存在「{workdir}」文件夹。`, task.name);
+    }
+
+    /**
+     * Runs a 'main' placement custom button — one that belongs to no task iteration. It is
+     * rendered in the main panel's dedicated area and runs against the master workspace root
+     * (optionally a `workdir` subfolder), not any worktree.
+     */
+    async runStandaloneCustomButton(buttonId: string): Promise<void> {
+        const button = (this.deps.getConfig().customButtons || []).find(b => b.id === buttonId);
+        if (!button) {
+            vscode.window.showWarningMessage('未找到对应的自定义按钮，请在「高级设置」中重新配置');
+            return;
+        }
+        if (!(button.command || '').trim()) {
+            vscode.window.showWarningMessage(`自定义按钮「${button.name}」未配置指令`);
+            return;
+        }
+
+        const masterRoot = this.deps.getMasterRoot();
+        if (!fs.existsSync(masterRoot)) {
+            vscode.window.showWarningMessage(`主工作区目录不存在，无法执行：${masterRoot}`);
+            return;
+        }
+        this.launchCustomButton(button, masterRoot, `执行目录不存在：{dir}。请确认主工作区下存在「{workdir}」文件夹。`, '主面板');
+    }
+
+    /**
+     * Shared launcher for custom buttons. Resolves the workdir against `baseDir`, resolves the
+     * script against the shared master script dir, then opens a terminal there and runs it.
+     */
+    private launchCustomButton(button: CustomButton, baseDir: string, missingDirTpl: string, label: string): void {
+        const command = (button.command || '').trim();
         const workdir = (button.workdir || '').trim();
-        const runDir = workdir ? path.join(iterDir, workdir) : iterDir;
+        const runDir = workdir ? path.join(baseDir, workdir) : baseDir;
         if (workdir && !fs.existsSync(runDir)) {
-            vscode.window.showWarningMessage(`执行目录不存在：${runDir}。请确认该 worktree 下存在「${workdir}」文件夹。`);
+            vscode.window.showWarningMessage(missingDirTpl.replace('{dir}', runDir).replace('{workdir}', workdir));
             return;
         }
 
@@ -747,12 +780,12 @@ export class HarnessActionsService {
 
         const runCmd = this.buildCustomButtonCommand(scriptPath, extraArgs);
         const terminal = vscode.window.createTerminal({
-            name: `Fun Harness ${task.name} ${button.name}`,
+            name: `Fun Harness ${label} ${button.name}`,
             cwd: runDir,
         });
         terminal.show(true);
         terminal.sendText(runCmd, true);
-        vscode.window.showInformationMessage(`已在 ${task.name} 执行「${button.name}」：${runCmd}`);
+        vscode.window.showInformationMessage(`已在 ${label} 执行「${button.name}」：${runCmd}`);
     }
 
     /**
