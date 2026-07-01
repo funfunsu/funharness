@@ -65,6 +65,50 @@ export class HarnessActionsService {
         tsk: 'tasks',
     } as const;
 
+    private replaceTemplateVars(template: string, vars: Record<string, string>): string {
+        let rendered = template;
+        for (const [key, value] of Object.entries(vars)) {
+            const safeKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            rendered = rendered.replace(new RegExp(`{{\\s*${safeKey}\\s*}}`, 'g'), value ?? '');
+        }
+        return rendered;
+    }
+
+    private renderQuickDevPrompt(template: string, task: Task, iterDir: string): string {
+        const signalsDir = path.join(iterDir, 'signals');
+        const techStack = (this.deps.getConfig().techStack || '').trim();
+        const codingStandards = (this.deps.getConfig().codingStandards || '').trim();
+        const vars: Record<string, string> = {
+            currentWorkSpace: iterDir,
+            signalsDir,
+            taskName: task.name || '',
+            taskDesc: task.desc || '',
+            subTaskId: task.id,
+            subTaskName: task.name || '',
+            subTaskOwner: 'FullStack',
+            techStack,
+            codingStandards,
+            designContext: task.desc || '',
+            outputFiles: '- (快捷模式未拆分子任务，请按任务描述输出实现文件)',
+            acceptanceCriteria: '- 代码可正常编译运行并满足任务描述',
+            taskSplitMode: this.resolveTaskSplitMode(task),
+            'current ISO timestamp': new Date().toISOString(),
+            'list each file you created, one per line': '请按实际创建文件填写',
+            'real Task ID from the instruction': task.id,
+            'signals directory from the instruction': signalsDir,
+        };
+        const rendered = this.replaceTemplateVars(template, vars);
+        // Final fallback: clear any unreplaced handlebars token so the dispatched prompt
+        // never leaks literal {{token}} to the AI when users add custom placeholders.
+        return rendered.replace(/{{\s*([^{}]+?)\s*}}/g, (_m, key) => vars[String(key).trim()] ?? '');
+    }
+
+    private hasTaskPlan(iterDir: string): boolean {
+        const preferred = path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/'));
+        const legacy = path.join(iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/'));
+        return fs.existsSync(preferred) || fs.existsSync(legacy);
+    }
+
     async createTask(name: string, desc: string, quickMode?: boolean): Promise<void> {
         const id = `task_${Date.now()}`;
         const cfg = this.deps.getConfig();
@@ -204,6 +248,16 @@ export class HarnessActionsService {
         if (!task) return;
 
         const iterDir = this.deps.getIterationDir(task);
+        const shouldUseSchedulerForDev = step === 'dev' && this.hasTaskPlan(iterDir);
+
+        if (step === 'dev' && (!task.quickMode || shouldUseSchedulerForDev)) {
+            const scheduler = this.deps.getScheduler(task);
+            await scheduler.startAuto(task);
+            this.deps.saveAndRender();
+            vscode.window.showInformationMessage('已按 tasks.md 子任务链启动开发调度（自动检查并继续下一个）。');
+            return;
+        }
+
         this.reconcileStageArtifactPath(task, step);
 
         const rendered = this.deps.renderAgentPrompt(step, task.name, task.desc, iterDir);
@@ -213,7 +267,8 @@ export class HarnessActionsService {
         }
 
         const splitMode = this.resolveTaskSplitMode(task);
-        const query = `${rendered.content}\n\n---\n运行参数：taskSplitMode=${splitMode}`;
+        const promptContent = step === 'dev' ? this.renderQuickDevPrompt(rendered.content, task, iterDir) : rendered.content;
+        const query = `${promptContent}\n\n---\n运行参数：taskSplitMode=${splitMode}`;
         await this.deps.dispatchAi(query, iterDir, 'stage-agent', task.aiProvider);
         vscode.window.showInformationMessage(`已派发 ${step.toUpperCase()} Agent（Prompt来源: ${rendered.source}）`);
         this.startArtifactRepairWatch(task, step);
@@ -742,10 +797,14 @@ export class HarnessActionsService {
         }
 
         const runCmd = this.buildCustomButtonCommand(scriptPath, extraArgs);
-        const terminal = vscode.window.createTerminal({
-            name: `Fun Harness ${label} ${button.name}`,
-            cwd: runDir,
-        });
+        const terminalName = `Fun Harness ${label} ${button.name}`;
+        let terminal = vscode.window.terminals.find(t => t.name === terminalName);
+        if (!terminal) {
+            terminal = vscode.window.createTerminal({
+                name: terminalName,
+                cwd: runDir,
+            });
+        }
         terminal.show(true);
         terminal.sendText(runCmd, true);
         vscode.window.showInformationMessage(`已在 ${label} 执行「${button.name}」：${runCmd}`);

@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { execSync, spawn } from 'child_process';
 import { BASE, Config, AiProviderDefinition, getAiProvider } from '../models';
+import { appendHarnessLog } from './harnessLog';
 
 type DispatchSource = 'stage-agent' | 'dev-subtask';
 
@@ -12,6 +13,12 @@ export class AiDispatchService {
     async dispatch(query: string, iterDir: string, source: DispatchSource, providerOverride?: string): Promise<void> {
         const cfg = this.getConfig();
         const provider = getAiProvider(providerOverride || cfg.aiProvider || 'copilot-chat');
+        const snapshot = this.writeDispatchSnapshot(query, iterDir, source, provider.label);
+        appendHarnessLog(
+            iterDir,
+            'ai-dispatch',
+            `source=${source} provider=${provider.label} bytes=${Buffer.byteLength(query, 'utf8')} promptFile=${snapshot || '(write-failed)'}`,
+        );
 
         if (provider.kind === 'manual') {
             await this.dispatchManual(query, source);
@@ -336,6 +343,24 @@ export class AiDispatchService {
     }
 
     // ── Shared helpers ─────────────────────────────────────────────
+
+    /**
+     * Persist the final prompt dispatched to AI so users can audit exact runtime content.
+     * Returns the absolute snapshot file path, or empty string on best-effort failure.
+     */
+    private writeDispatchSnapshot(query: string, iterDir: string, source: DispatchSource, providerLabel: string): string {
+        try {
+            const folder = path.join(iterDir, BASE, 'dispatch-prompts');
+            fs.mkdirSync(folder, { recursive: true });
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const provider = providerLabel.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase() || 'unknown';
+            const file = path.join(folder, `${source}-${provider}-${stamp}.md`);
+            fs.writeFileSync(file, query, 'utf8');
+            return file;
+        } catch {
+            return '';
+        }
+    }
 
     private writePromptFile(query: string, iterDir: string, source: DispatchSource): string {
         const folder = path.join(iterDir, BASE, 'dispatch-prompts');

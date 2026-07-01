@@ -10,7 +10,7 @@ export class SchedulerRegistry {
         private readonly getConfig: () => Config,
         private readonly dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string) => Promise<void>,
         private readonly onStatusChange: () => void,
-        private readonly getDevSystemPrompt: () => string,
+        private readonly getDevSystemPrompt: (task: Task, subTaskName?: string) => string,
     ) {}
 
     get(task: Task): TaskScheduler {
@@ -21,7 +21,7 @@ export class SchedulerRegistry {
                 this.getConfig(),
                 this.dispatchAi,
                 this.onStatusChange,
-                this.getDevSystemPrompt,
+                (subTask, iterTask) => this.getDevSystemPrompt(iterTask, subTask.name),
             );
             this.schedulers.set(task.id, scheduler);
         }

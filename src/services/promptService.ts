@@ -52,6 +52,26 @@ export class PromptService {
     }
 
     /**
+     * In a worktree window, user-customized prompts are typically maintained in the
+     * master workspace's .harness/prompts. We keep local override priority, then
+     * fall back to the master prompts dir derived from ".../worktrees/<name>".
+     */
+    private getCandidatePromptDirs(): string[] {
+        const dirs = [this.getProjectPromptsDir()];
+        const normalized = this.workspaceRoot.replace(/\\/g, '/');
+        const marker = '/worktrees/';
+        const idx = normalized.indexOf(marker);
+        if (idx > 0) {
+            const masterRoot = this.workspaceRoot.slice(0, idx);
+            const masterDir = path.join(masterRoot, BASE, PROMPTS_DIR);
+            if (!dirs.includes(masterDir)) {
+                dirs.push(masterDir);
+            }
+        }
+        return dirs;
+    }
+
+    /**
      * 「恢复出厂」：把内置 prompts/ 覆盖写入项目级 .harness/prompts/。
      * 首次调用得到一份可编辑副本；改坏后再次调用即一键修复。返回被写入的文件名列表。
      */
@@ -74,9 +94,16 @@ export class PromptService {
         if (!item) {
             return { source: 'bundled-default', path: '' };
         }
-        const override = path.join(this.getProjectPromptsDir(), item.file);
-        if (fs.existsSync(override)) {
-            return { source: 'project-override', path: override };
+        // Dev prompt dynamic task context is assembled by runtime code; to avoid
+        // user-level prompt overrides breaking placeholders, dev always uses bundled template.
+        if (step === 'dev') {
+            return { source: 'bundled-default', path: this.getBundledPromptFile(step) };
+        }
+        for (const dir of this.getCandidatePromptDirs()) {
+            const override = path.join(dir, item.file);
+            if (fs.existsSync(override)) {
+                return { source: 'project-override', path: override };
+            }
         }
         return { source: 'bundled-default', path: this.getBundledPromptFile(step) };
     }

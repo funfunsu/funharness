@@ -134,7 +134,13 @@ class Harness {
                 () => this.config,
                 async (query, iterDir, source, providerOverride) => this.aiDispatchService.dispatch(query, iterDir, source, providerOverride),
                 () => this.render(),
-                () => this.promptService.getRenderedPrompt('dev', '', '', workspaceRoot, this.config),
+                (task, subTaskName) => this.promptService.getRenderedPrompt(
+                    'dev',
+                    (subTaskName || task.name || '').trim(),
+                    (task.desc || '').trim(),
+                    this.getIterationDir(task),
+                    this.config,
+                ),
             );
             this.actionsService = new HarnessActionsService({
                 getTasks: () => this.tasks,

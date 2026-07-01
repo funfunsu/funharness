@@ -15,7 +15,7 @@ export class TaskScheduler {
     private onStatusChange: () => void;
     private config: Config;
     private readonly dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string) => Promise<void>;
-    private readonly getDevSystemPrompt: () => string;
+    private readonly getDevSystemPrompt: (subTask: SubTask, iterTask: Task) => string;
 
     constructor(
         iterDir: string,
@@ -23,7 +23,7 @@ export class TaskScheduler {
         config: Config,
         dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask') => Promise<void>,
         onStatusChange: () => void,
-        getDevSystemPrompt: () => string,
+        getDevSystemPrompt: (subTask: SubTask, iterTask: Task) => string,
     ) {
         this.iterDir = iterDir;
         this.workspaceRoot = workspaceRoot;
@@ -32,6 +32,15 @@ export class TaskScheduler {
         this.dispatchAi = dispatchAi;
         this.onStatusChange = onStatusChange;
         this.getDevSystemPrompt = getDevSystemPrompt;
+    }
+
+    private fillTemplateVars(template: string, vars: Record<string, string>): string {
+        let rendered = template;
+        for (const [key, value] of Object.entries(vars)) {
+            const safeKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            rendered = rendered.replace(new RegExp(`{{\\s*${safeKey}\\s*}}`, 'g'), value);
+        }
+        return rendered;
     }
 
     parseTasksMd(): SubTask[] {
@@ -154,15 +163,13 @@ export class TaskScheduler {
         fs.writeFileSync(file, content, 'utf8');
     }
 
-    buildDispatchQuery(subTask: SubTask, _iterTask: Task): string {
+    buildDispatchQuery(subTask: SubTask, iterTask: Task): string {
         const signalsDir = path.join(this.iterDir, 'signals');
-        const testsDir = path.join(this.iterDir, 'tests');
-        const testScriptSuffix = process.platform === 'win32' ? 'ps1' : 'sh';
+        const windowsTestScriptPath = path.join(this.iterDir, 'tests', `test-${subTask.id}.ps1`).replace(/\\/g, '/');
+        const nonWindowsTestScriptPath = path.join(this.iterDir, 'tests', `test-${subTask.id}.sh`).replace(/\\/g, '/');
 
         const designFile = path.join(this.docsDir, 'design.md');
-        const designContext = fs.existsSync(designFile)
-            ? fs.readFileSync(designFile, 'utf8').substring(0, 1800)
-            : '(无设计文档)';
+        const designContext = this.buildDesignContext(subTask);
         const requirementsContext = this.buildRequirementsContext(subTask);
         const testcaseContext = this.buildTestcaseContext(subTask);
         const manifestContext = this.buildManifestContext(subTask);
@@ -218,7 +225,21 @@ export class TaskScheduler {
             dependencySection = `\n## 前置依赖任务及其产出物\n\n**以下是本任务依赖的前置任务。它们的输出文件（如 API 协议、接口定义、数据模型等）是本任务的输入约束，请严格遵循。**\n\n${depParts.join('\n\n')}\n`;
         }
 
-        const devSystemPrompt = this.getDevSystemPrompt().trim();
+        const devSystemPrompt = this.fillTemplateVars(this.getDevSystemPrompt(subTask, iterTask), {
+            taskName: subTask.name,
+            taskDesc: iterTask.desc || '',
+            subTaskId: subTask.id,
+            subTaskName: subTask.name,
+            subTaskOwner: subTask.owner,
+            currentWorkSpace: this.iterDir,
+            signalsDir,
+            designContext: subTask.input || designContext,
+            outputFiles,
+            acceptanceCriteria,
+            techStack,
+            codingStandards,
+            taskSplitMode: iterTask.taskSplitMode || 'standard',
+        }).trim();
         const systemPromptSection = devSystemPrompt
             ? `${devSystemPrompt}\n\n=====================================================================\n# 当前要执行的具体任务（请严格按以下指令完成本次编码）\n\n`
             : '';
@@ -227,11 +248,12 @@ export class TaskScheduler {
 
 - 任务ID：${subTask.id}
 - 任务名称：${subTask.name}
+- 任务描述：${iterTask.desc || '(无任务描述)'}
 - 任务类型：${subTask.owner}
 - 技术栈：${techStack}
 - 当前工作空间（currentWorkSpace）：${this.iterDir}${subTask.depends.length > 0 ? `\n- 前置依赖任务：${subTask.depends.join(', ')}` : ''}
 
-**重要：所有依赖的上下文文件（docs/design.md、docs/requirements.md、doc/task.md；兼容历史 docs/tasks.md）均位于当前工作空间目录下，请优先在当前迭代目录内查找，不要去 workspace 根目录查找。**
+**重要：所有依赖的上下文文件（docs/design.md、docs/requirements.md、 docs/tasks.md）均位于当前工作空间目录下，请优先在当前迭代目录内查找，不要去 workspace 根目录查找。**
 ${dependencySection}
 ## 输入依据
 文件路径：\`${designFile}\`
@@ -269,7 +291,7 @@ timestamp: {当前时间}
 files:
   - {实际创建的文件路径列表}
 \`\`\`
-${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，请在 \`${testsDir}/\` 目录下生成验收脚本 \`test-${subTask.id}.${testScriptSuffix}\`（Windows 生成 .ps1，其他系统生成 .sh）。脚本仅供人工触发验证，不自动执行。` : ''}`;
+${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，请生成验收脚本（平台差异如下）：\n- Windows: \`${windowsTestScriptPath}\`\n- Non-Windows: \`${nonWindowsTestScriptPath}\`\n脚本仅供人工触发验证，不自动执行。` : ''}`;
     }
 
     private buildRequirementsContext(subTask: SubTask): string {
@@ -278,7 +300,111 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             return '(无 docs/requirements.md)';
         }
         const content = fs.readFileSync(reqFile, 'utf8');
+        const machineReadable = this.extractRequirementsMachineReadableContext(content, subTask.requirementIds, 1800);
+        if (machineReadable) {
+            return machineReadable;
+        }
         return this.extractContextByKeywords(content, subTask.requirementIds, 1200);
+    }
+
+    private extractRequirementsMachineReadableContext(content: string, requirementIds: string[], maxLen: number): string {
+        const sectionIdx = content.indexOf('## 机器可读区');
+        const scanText = sectionIdx >= 0 ? content.slice(sectionIdx) : content;
+        const fenceMatch = scanText.match(/```ya?ml\s*([\s\S]*?)```/i);
+        if (!fenceMatch) {
+            return '';
+        }
+
+        const yamlBody = fenceMatch[1].trim();
+        if (!yamlBody) {
+            return '';
+        }
+
+        const lines = yamlBody.split('\n');
+        const reqHeaderIdx = lines.findIndex(line => /^\s*requirements\s*:\s*$/.test(line));
+        if (reqHeaderIdx < 0) {
+            const raw = `\`\`\`yaml\n${yamlBody}\n\`\`\``;
+            return raw.length > maxLen ? raw.substring(0, maxLen) : raw;
+        }
+
+        const reqSet = new Set((requirementIds || []).map(id => id.trim()).filter(Boolean));
+        if (reqSet.size === 0) {
+            const raw = `\`\`\`yaml\n${yamlBody}\n\`\`\``;
+            return raw.length > maxLen ? raw.substring(0, maxLen) : raw;
+        }
+
+        const metaLines = lines.slice(0, reqHeaderIdx);
+        const reqLine = lines[reqHeaderIdx];
+        const selectedBlocks: string[] = [];
+
+        let currentId = '';
+        let currentBlock: string[] = [];
+        const flushBlock = () => {
+            if (currentId && reqSet.has(currentId) && currentBlock.length > 0) {
+                selectedBlocks.push(currentBlock.join('\n'));
+            }
+            currentId = '';
+            currentBlock = [];
+        };
+
+        for (let i = reqHeaderIdx + 1; i < lines.length; i++) {
+            const line = lines[i];
+            const idMatch = line.match(/^\s*-\s*id\s*:\s*([^\s#]+)\s*$/i);
+            if (idMatch) {
+                flushBlock();
+                currentId = idMatch[1].trim();
+                currentBlock = [line];
+                continue;
+            }
+            if (currentBlock.length > 0) {
+                currentBlock.push(line);
+            }
+        }
+        flushBlock();
+
+        if (selectedBlocks.length === 0) {
+            return '';
+        }
+
+        const selectedYaml = [
+            ...metaLines,
+            reqLine,
+            ...selectedBlocks,
+        ].join('\n').trim();
+
+        const wrapped = `\`\`\`yaml\n${selectedYaml}\n\`\`\``;
+        return wrapped.length > maxLen ? wrapped.substring(0, maxLen) : wrapped;
+    }
+
+    private buildDesignContext(subTask: SubTask): string {
+        const designFile = path.join(this.docsDir, 'design.md');
+        if (!fs.existsSync(designFile)) {
+            return '(无设计文档)';
+        }
+
+        const content = fs.readFileSync(designFile, 'utf8');
+        const yamlBody = this.extractMachineReadableYamlBody(content);
+        const keywordIds = Array.from(new Set([...(subTask.requirementIds || []), ...(subTask.propertyIds || [])]));
+
+        if (yamlBody) {
+            const idSet = new Set(keywordIds.map(id => id.trim()).filter(Boolean));
+            const apiBlocks = this.extractYamlListBlocksForIds(yamlBody, 'apiContracts', idSet, ['requirementIds', 'requirementId', 'id']);
+            const invariantBlocks = this.extractYamlListBlocksForIds(yamlBody, 'invariants', idSet, ['requirementIds', 'requirementId', 'propertyIds', 'propertyId', 'id']);
+            const selectedYaml = this.composeSelectedYaml(yamlBody, [
+                { key: 'apiContracts', blocks: apiBlocks },
+                { key: 'invariants', blocks: invariantBlocks },
+            ]);
+
+            if (selectedYaml) {
+                const wrapped = `\`\`\`yaml\n${selectedYaml}\n\`\`\``;
+                return wrapped.length > 1800 ? wrapped.substring(0, 1800) : wrapped;
+            }
+
+            const raw = `\`\`\`yaml\n${yamlBody}\n\`\`\``;
+            return raw.length > 1800 ? raw.substring(0, 1800) : raw;
+        }
+
+        return this.extractContextByKeywords(content, keywordIds, 1200);
     }
 
     private buildTestcaseContext(subTask: SubTask): string {
@@ -287,7 +413,115 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             return '(无 docs/testcase.md)';
         }
         const content = fs.readFileSync(testcaseFile, 'utf8');
+        const yamlBody = this.extractMachineReadableYamlBody(content);
+        if (yamlBody) {
+            const reqSet = new Set((subTask.requirementIds || []).map(id => id.trim()).filter(Boolean));
+            const testBlocks = this.extractYamlListBlocksForIds(yamlBody, 'testCases', reqSet, ['requirementIds', 'requirementId', 'id']);
+            const selectedYaml = this.composeSelectedYaml(yamlBody, [{ key: 'testCases', blocks: testBlocks }]);
+            if (selectedYaml) {
+                const wrapped = `\`\`\`yaml\n${selectedYaml}\n\`\`\``;
+                return wrapped.length > 1600 ? wrapped.substring(0, 1600) : wrapped;
+            }
+            const raw = `\`\`\`yaml\n${yamlBody}\n\`\`\``;
+            return raw.length > 1600 ? raw.substring(0, 1600) : raw;
+        }
         return this.extractContextByKeywords(content, subTask.requirementIds, 1200);
+    }
+
+    private extractMachineReadableYamlBody(content: string): string {
+        const sectionIdx = content.indexOf('## 机器可读区');
+        const scanText = sectionIdx >= 0 ? content.slice(sectionIdx) : content;
+        const fenceMatch = scanText.match(/```ya?ml\s*([\s\S]*?)```/i);
+        return fenceMatch ? fenceMatch[1].trim() : '';
+    }
+
+    private extractYamlListBlocksForIds(
+        yamlBody: string,
+        listKey: string,
+        ids: Set<string>,
+        candidateFields: string[],
+    ): string[] {
+        const lines = yamlBody.split('\n');
+        const headerIdx = lines.findIndex(line => new RegExp(`^\\s*${listKey}\\s*:\\s*$`).test(line));
+        if (headerIdx < 0) {
+            return [];
+        }
+
+        const blocks: string[] = [];
+        let currentBlock: string[] = [];
+        const flush = () => {
+            if (currentBlock.length === 0) {
+                return;
+            }
+            const blockText = currentBlock.join('\n');
+            if (this.blockMatchesIds(blockText, ids, candidateFields)) {
+                blocks.push(blockText);
+            }
+            currentBlock = [];
+        };
+
+        for (let i = headerIdx + 1; i < lines.length; i++) {
+            const line = lines[i];
+
+            // End when reaching the next top-level yaml key.
+            if (/^[A-Za-z_][\w-]*\s*:\s*$/.test(line)) {
+                break;
+            }
+
+            if (/^\s*-\s+/.test(line)) {
+                flush();
+                currentBlock = [line];
+                continue;
+            }
+
+            if (currentBlock.length > 0) {
+                currentBlock.push(line);
+            }
+        }
+        flush();
+        return blocks;
+    }
+
+    private blockMatchesIds(block: string, ids: Set<string>, candidateFields: string[]): boolean {
+        if (ids.size === 0) {
+            return true;
+        }
+        for (const id of ids) {
+            const idEscaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const direct = new RegExp(`\\b${idEscaped}\\b`);
+            if (!direct.test(block)) {
+                continue;
+            }
+            // Prefer matches that appear in known id-related fields.
+            for (const field of candidateFields) {
+                const fieldEscaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const inField = new RegExp(`${fieldEscaped}\\s*:\\s*(\\[[^\\]]*${idEscaped}[^\\]]*\\]|${idEscaped})`, 'i');
+                if (inField.test(block)) {
+                    return true;
+                }
+            }
+            // Fallback: id appears in block text.
+            return true;
+        }
+        return false;
+    }
+
+    private composeSelectedYaml(yamlBody: string, sections: Array<{ key: string; blocks: string[] }>): string {
+        const pickedSections = sections.filter(section => section.blocks.length > 0);
+        if (pickedSections.length === 0) {
+            return '';
+        }
+
+        const lines = yamlBody.split('\n');
+        const meta = lines.filter(line => /^\s*(artifactType|taskName)\s*:/.test(line));
+        const out: string[] = [...meta];
+
+        for (const section of pickedSections) {
+            out.push(`${section.key}:`);
+            out.push(...section.blocks);
+        }
+
+        return out.join('\n').trim();
     }
 
     private buildManifestContext(subTask: SubTask): string {

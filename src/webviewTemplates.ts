@@ -564,12 +564,15 @@ ${showSubTasks ? `
 ${subTasks.map(st => {
     const icon = st.status === 'done' ? '✅' : st.status === 'doing' ? '⏳' : st.status === 'failed' ? '❌' : '⬜';
     const cls = `st-${st.status}`;
+    const redoAction = canOperateSubTasks && st.status === 'doing'
+        ? ` <button class="btn-gray" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="retry('${st.id}','${t.id}')">重做</button>`
+        : '';
     const actions = !canOperateSubTasks
         ? ''
         : st.status === 'failed'
-        ? ` <button class="btn-red" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="retry('${st.id}','${t.id}')">重试</button> <button class="btn-green" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="setSubStatus('${t.id}','${st.id}','done')">标记完成</button>`
+        ? ` <button class="btn-green" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="setSubStatus('${t.id}','${st.id}','done')">标记完成</button>`
         : st.status === 'doing'
-            ? ` <button class="btn-green" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="setSubStatus('${t.id}','${st.id}','done')">标记完成</button>`
+            ? `${redoAction} <button class="btn-green" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="setSubStatus('${t.id}','${st.id}','done')">标记完成</button>`
             : '';
     return `<div class="sub-task"><span class="${cls}">${icon} ${st.id}</span> <span>${st.name}</span>${actions}</div>`;
 }).join('')}
