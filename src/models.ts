@@ -260,11 +260,11 @@ export interface SubTask {
 }
 
 export const PROMPT_CONFIGS: PromptConfig[] = [
-    { key: 'req', name: '需求生成 Agent', file: 'requirements_agent.md' },
-    { key: 'des', name: '技术设计 Agent', file: 'design_agent.md' },
-    { key: 'tcs', name: '测试用例 Agent', file: 'testcase_agent.md' },
-    { key: 'tsk', name: '任务拆解 Agent', file: 'tasks_agent.md' },
-    { key: 'dev', name: '全栈开发 Agent', file: 'dev_agent.md' }
+    { key: 'req', name: '需求生成 Agent', file: 'requirements_custom_prompt.md' },
+    { key: 'des', name: '技术设计 Agent', file: 'design_custom_prompt.md' },
+    { key: 'tcs', name: '测试用例 Agent', file: 'testcase_custom_prompt.md' },
+    { key: 'tsk', name: '任务拆解 Agent', file: 'tasks_custom_prompt.md' },
+    { key: 'dev', name: '全栈开发 Agent', file: 'dev_custom_prompt.md' }
 ];
 
 export const DEFAULT_CONFIG: Config = {

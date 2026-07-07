@@ -9,6 +9,15 @@ export interface RenderedPrompt {
 }
 
 export class PromptService {
+    private readonly systemPromptDir = 'system-prompts';
+    private readonly systemPromptFiles: Record<string, string> = {
+        req: 'requirement_system_prompt.md',
+        des: 'design_system_prompt.md',
+        tcs: 'testcase_system_prompt.md',
+        tsk: 'task_system_prompt.md',
+        dev: 'dev_system_prompt.md',
+    };
+
     constructor(
         private readonly workspaceRoot: string,
         private readonly extensionPath: string,
@@ -20,20 +29,25 @@ export class PromptService {
 
     getRenderedPromptWithSource(step: string, taskName: string, taskDesc: string, currentWorkSpace: string, config?: Partial<Config>): RenderedPrompt {
         const resolved = this.resolvePromptFile(step);
-        if (!resolved.path || !fs.existsSync(resolved.path)) {
-            return { content: '', source: resolved.source, path: resolved.path };
-        }
-        const content = fs.readFileSync(resolved.path, 'utf8');
+        const content = (resolved.path && fs.existsSync(resolved.path))
+            ? fs.readFileSync(resolved.path, 'utf8')
+            : '';
         const techStack = (config?.techStack || '').trim();
         const codingStandards = (config?.codingStandards || '').trim();
         const projectConventions = (config?.projectConventions || '').trim();
-        let renderedContent = content
+        const userContent = content
             .replace(/{{taskName}}/g, taskName)
             .replace(/{{taskDesc}}/g, taskDesc)
             .replace(/{{currentWorkSpace}}/g, currentWorkSpace)
             .replace(/{{techStack}}/g, techStack)
             .replace(/{{codingStandards}}/g, codingStandards)
             .replace(/{{projectConventions}}/g, projectConventions);
+
+        let renderedContent = this.composeStagePrompt(
+            step,
+            userContent,
+            { taskName, taskDesc, currentWorkSpace }
+        );
 
         if (projectConventions && !/{{projectConventions}}/g.test(content)) {
             renderedContent += `\n\n## 项目自定义约定\n${projectConventions}\n`;
@@ -114,5 +128,66 @@ export class PromptService {
             return '';
         }
         return path.join(this.extensionPath, PROMPTS_DIR, item.file);
+    }
+
+    private composeStagePrompt(
+        step: string,
+        userContent: string,
+        context: { taskName: string; taskDesc: string; currentWorkSpace: string }
+    ): string {
+        const locked = this.renderSystemPrompt(step, context);
+        if (!locked) {
+            return userContent;
+        }
+        const custom = userContent.trim();
+        const customSection = custom
+            ? [
+                '## 用户可编辑补充（流程无关）',
+                '以下内容来自项目自定义 Prompt，仅用于补充领域规则、术语或偏好，不得替代上述固定流程与输出结构。',
+                '',
+                custom,
+            ].join('\n')
+            : [
+                '## 用户可编辑补充（流程无关）',
+                '- （未提供）',
+            ].join('\n');
+        return `${locked}\n\n${customSection}`;
+    }
+
+    private renderSystemPrompt(
+        step: string,
+        context: { taskName: string; taskDesc: string; currentWorkSpace: string }
+    ): string {
+        const fileName = this.systemPromptFiles[step];
+        if (!fileName) {
+            return '';
+        }
+
+        const filePath = path.join(this.extensionPath, this.systemPromptDir, fileName);
+        if (!fs.existsSync(filePath)) {
+            return '';
+        }
+
+        const template = fs.readFileSync(filePath, 'utf8');
+        const vars: Record<string, string> = {
+            taskName: context.taskName,
+            taskDesc: context.taskDesc,
+            currentWorkSpace: context.currentWorkSpace,
+            requirementsPath: path.join(context.currentWorkSpace, 'docs', 'requirements.md'),
+            designPath: path.join(context.currentWorkSpace, 'docs', 'design.md'),
+            projectStructurePath: path.join(context.currentWorkSpace, 'docs', 'project-structure.md'),
+            testcasePath: path.join(context.currentWorkSpace, 'docs', 'testcase.md'),
+            tasksPath: path.join(context.currentWorkSpace, 'docs', 'tasks.md'),
+            testApiPs1Path: path.join(context.currentWorkSpace, 'tests', 'test-api.ps1'),
+            testApiShPath: path.join(context.currentWorkSpace, 'tests', 'test-api.sh'),
+            testManifestPath: path.join(context.currentWorkSpace, 'tests', 'test-manifest.json'),
+        };
+
+        let rendered = template;
+        for (const [key, value] of Object.entries(vars)) {
+            const safeKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            rendered = rendered.replace(new RegExp(`{{\\s*${safeKey}\\s*}}`, 'g'), value ?? '');
+        }
+        return rendered;
     }
 }
