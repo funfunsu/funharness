@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, STAGE, Stage, Task } from '../models';
+import { safeRemovePath } from './fileOps';
 
 const STAGE_ORDER: Stage[] = [
     STAGE.INITIALIZING,
@@ -130,7 +131,7 @@ export class TaskStoreService {
             fs.writeFileSync(file, JSON.stringify([taskToSave], null, 2), 'utf8');
             const legacy = path.join(harnessDir, HARNESS_STATE_FILE_LEGACY);
             if (fs.existsSync(legacy)) {
-                fs.rmSync(legacy, { force: true });
+                safeRemovePath(legacy);
             }
         }
     }
@@ -248,7 +249,7 @@ export class TaskStoreService {
             const tasks = JSON.parse(fs.readFileSync(legacy, 'utf8')) as Task[];
             fs.mkdirSync(path.dirname(file), { recursive: true });
             fs.writeFileSync(file, JSON.stringify(tasks, null, 2), 'utf8');
-            fs.rmSync(legacy, { force: true });
+            safeRemovePath(legacy);
             return tasks;
         } catch {
             return [];
@@ -273,7 +274,7 @@ export class TaskStoreService {
         fs.writeFileSync(file, JSON.stringify(tasks, null, 2), 'utf8');
         const legacy = this.getLegacyTaskFile();
         if (fs.existsSync(legacy)) {
-            fs.rmSync(legacy, { force: true });
+            safeRemovePath(legacy);
         }
     }
 
@@ -336,7 +337,7 @@ export class TaskStoreService {
                 const list = JSON.parse(fs.readFileSync(taskFile, 'utf8')) as Task[];
                 if (taskFile === legacyFile) {
                     fs.writeFileSync(currentFile, JSON.stringify(list, null, 2), 'utf8');
-                    fs.rmSync(legacyFile, { force: true });
+                    safeRemovePath(legacyFile);
                 }
                 for (const task of list) {
                     if (task && task.id) {

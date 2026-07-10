@@ -6,7 +6,7 @@ interface HarnessMessageControllerDeps {
     setPage: (page: string) => void;
     reloadTasks: () => void;
     render: () => void;
-    restoreFactoryPrompts: () => Promise<void>;
+    openCustomPrompt: (step: 'req' | 'des' | 'tcs' | 'tsk' | 'dev') => Promise<void>;
     saveGit:(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean) => Promise<void>;
     saveAdvancedConfig: (msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>) => void;
     initProjectStructure: () => Promise<void>;
@@ -15,6 +15,7 @@ interface HarnessMessageControllerDeps {
     openMasterWorkspace: () => Promise<void>;
     testAiProvider: () => Promise<void>;
     createTask: (name: string, desc: string, quickMode?: boolean) => Promise<void>;
+    logWebviewEvent: (taskId: string, event: string, detail?: string) => void;
     requestEditTaskDesc: (taskId: string) => Promise<void>;
     updateTaskDesc: (taskId: string, desc: string) => void;
     resetTask: (taskId: string) => Promise<void>;
@@ -55,12 +56,17 @@ export class HarnessMessageController {
 
         switch (msg.type) {
             case 'refresh':
+            case 'logWebviewEvent':
+            case 'requestEditTaskDesc':
+            case 'updateTaskDesc':
+            case 'resetTask':
             case 'runAgent':
             case 'startAuto':
             case 'pauseAuto':
             case 'nextTask':
             case 'retryTask':
             case 'setSubTaskStatus':
+            case 'setTaskAutomation':
             case 'setTaskAiProvider':
             case 'openArtifact':
             case 'openFolderLocation':
@@ -74,6 +80,7 @@ export class HarnessMessageController {
             case 'runCustomButton':
             case 'openMasterWorkspace':
             case 'toggleAutoPoll':
+            case 'openCustomPrompt':
                 return true;
             case 'page':
                 if (msg.page === 'main') {
@@ -100,8 +107,8 @@ export class HarnessMessageController {
                 this.deps.reloadTasks();
                 this.deps.render();
                 return;
-            case 'restoreFactoryPrompts':
-                await this.deps.restoreFactoryPrompts();
+            case 'openCustomPrompt':
+                await this.deps.openCustomPrompt(msg.step);
                 return;
             case 'saveGit':
                 await this.deps.saveGit(msg.fg, msg.bg, msg.bb, msg.dr);
@@ -127,6 +134,9 @@ export class HarnessMessageController {
             case 'create':
                 await this.deps.createTask(msg.name, msg.desc, msg.quickMode);
                 return;
+            case 'logWebviewEvent':
+                this.deps.logWebviewEvent(msg.id, msg.event, msg.detail);
+                return;
             case 'requestEditTaskDesc':
                 await this.deps.requestEditTaskDesc(msg.id);
                 return;
@@ -134,7 +144,6 @@ export class HarnessMessageController {
                 this.deps.updateTaskDesc(msg.id, msg.desc);
                 return;
             case 'resetTask':
-                vscode.window.showInformationMessage('已收到重置任务请求，正在执行...');
                 await this.deps.resetTask(msg.id);
                 return;
             case 'pushAll':

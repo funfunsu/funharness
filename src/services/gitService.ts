@@ -3,6 +3,7 @@ import * as path from 'path';
 import { exec } from 'child_process';
 import { Config, Task } from '../models';
 import { appendHarnessLog } from './harnessLog';
+import { clearDirChildrenPreserving, safeRemovePath } from './fileOps';
 
 export class GitService {
     private config: Config;
@@ -146,6 +147,68 @@ export class GitService {
         };
     }
 
+    /**
+     * Best-effort cleanup used by task reset: detach iteration frontend/backend worktrees
+     * from their main repos first, then remove their directories from disk.
+     */
+    async detachIterationWorktrees(iterationDir: string): Promise<{ success: boolean; errors: string[] }> {
+        this.currentLogDir = iterationDir;
+        const errors: string[] = [];
+        const repos: Array<{ kind: 'frontend' | 'backend'; mainDir: string; worktreeDir: string }> = [];
+
+        if (this.config.frontendGit) {
+            repos.push({
+                kind: 'frontend',
+                mainDir: this.getMainRepoDir('frontend'),
+                worktreeDir: path.join(iterationDir, 'frontend'),
+            });
+        }
+        if (this.config.backendGit) {
+            repos.push({
+                kind: 'backend',
+                mainDir: this.getMainRepoDir('backend'),
+                worktreeDir: path.join(iterationDir, 'backend'),
+            });
+        }
+
+        for (const repo of repos) {
+            const escapedWorktree = repo.worktreeDir.replace(/"/g, '\\"');
+            try {
+                if (fs.existsSync(repo.mainDir)) {
+                    const registered = await this.hasRegisteredWorktreeAtPath(repo.mainDir, repo.worktreeDir);
+                    if (registered) {
+                        const removed = await this.execCmd(`git worktree remove --force "${escapedWorktree}"`, repo.mainDir);
+                        if (!removed && !/not a working tree/i.test(this.lastExecError || '')) {
+                            errors.push(`[${repo.kind}] git worktree remove 失败：${this.lastExecError}`);
+                        }
+                    }
+                    await this.execCmd('git worktree prune', repo.mainDir);
+                }
+
+                this.safeRemovePath(repo.worktreeDir, { recursive: true });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                errors.push(`[${repo.kind}] 删除目录失败：${message}`);
+            }
+        }
+
+        return { success: errors.length === 0, errors };
+    }
+
+    /**
+     * Unified safe deletion for files/directories with retry semantics for Windows file locks.
+     */
+    safeRemovePath(targetPath: string, options?: { recursive?: boolean }): void {
+        safeRemovePath(targetPath, options);
+    }
+
+    /**
+     * Remove all direct children under a directory while preserving specific entry names.
+     */
+    clearDirChildrenPreserving(dirPath: string, preserveNames: string[] = []): void {
+        clearDirChildrenPreserving(dirPath, preserveNames);
+    }
+
     private getMainRepoDir(kind: 'frontend' | 'backend'): string {
         return path.join(this.workspaceRoot, 'repos', `${kind}-main`);
     }
@@ -177,7 +240,7 @@ export class GitService {
                     return false;
                 }
             }
-            fs.rmSync(worktreeDir, { recursive: true, force: true });
+            this.safeRemovePath(worktreeDir, { recursive: true });
         }
 
         // Clean stale worktree records before creating a new one.
@@ -834,6 +897,10 @@ export class GitService {
 
     private hasGitWorktree(worktreeDir: string): boolean {
         return fs.existsSync(worktreeDir) && fs.existsSync(path.join(worktreeDir, '.git'));
+    }
+
+    private removeDirRobustly(targetDir: string): void {
+        this.safeRemovePath(targetDir, { recursive: true });
     }
 
     private async hasRegisteredWorktreeAtPath(mainRepoDir: string, worktreeDir: string): Promise<boolean> {

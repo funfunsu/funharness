@@ -179,14 +179,14 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_DESIGN],
-        render: (ctx) => `<button class="btn-blue" onclick="next('des','${ctx.task.id}','tcs')">✅ 确认设计并进入测试</button>`,
+        render: (ctx) => `<button class="btn-blue" onclick="next('des','${ctx.task.id}','tcs')">✅ 确认设计并进入 Testcase</button>`,
     },
     {
         key: 'des-skip-tsk',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_DESIGN],
-        render: (ctx) => `<button class="btn-blue" onclick="next('des','${ctx.task.id}','tsk')">⏭ 跳过测试直达任务</button>`,
+        render: (ctx) => `<button class="btn-blue" onclick="next('des','${ctx.task.id}','tsk')">✅ 确认设计并进入任务（跳过 Testcase）</button>`,
     },
     {
         key: 'des-view',
@@ -306,14 +306,14 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
     {
         key: 'edit-desc',
         placement: 'side',
-        panels: ['main'],
+        panels: ['main', 'worktree'],
         stages: 'all',
-        render: (ctx) => `<button class="btn-gray" onclick="editTaskDesc('${ctx.task.id}')">📝 编辑需求描述</button>`,
+        render: () => '',
     },
     {
         key: 'reset-task',
         placement: 'side',
-        panels: ['main'],
+        panels: ['main', 'worktree'],
         stages: 'all',
         render: (ctx) => `<button class="btn-red" onclick="resetTask('${ctx.task.id}')">♻ 重置任务</button>`,
     },
@@ -378,7 +378,17 @@ body{background:#111;color:#eee;padding:14px;font-family:-apple-system;padding-b
 .toolbar-btn{background:#2c2c2e;color:#eee;border:none;padding:6px 10px;border-radius:8px;font-size:12px}
 .task-item{background:#222;border-radius:10px;padding:12px;margin-bottom:10px}
 .task-name{font-weight:600;margin-bottom:6px}
-.task-desc{font-size:12px;color:#999}
+.task-desc-wrap{margin-top:4px}
+.task-desc-view{display:flex;align-items:flex-start;gap:8px}
+.task-desc{flex:1;font-size:12px;color:#999;white-space:pre-wrap;line-height:1.55;word-break:break-word}
+.task-desc-edit-btn{flex:none;width:24px;height:24px;border:none;border-radius:6px;background:#34343a;color:#d7d7dc;font-size:12px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+.task-desc-edit-btn:hover{background:#45454d}
+.task-desc-wrap.editing .task-desc-view{display:none}
+.task-desc-editor-wrap{display:none}
+.task-desc-wrap.editing .task-desc-editor-wrap{display:block}
+.task-desc-editor{width:100%;min-height:108px;max-height:260px;overflow-y:auto;padding:10px;border-radius:8px;background:#232326;border:1px solid #3a3a42;color:#f4f4f6;font-size:12px;line-height:1.6;white-space:pre-wrap;outline:none;resize:vertical;margin:0}
+.task-desc-editor-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:6px}
+.task-desc-editor-actions button{width:auto;min-width:72px;padding:7px 12px;border-radius:8px;border:none;font-size:11px;color:#fff;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
 .task-progress{height:6px;background:#333;border-radius:3px;margin:6px 0}
 .progress-bar{height:100%;background:#34c759;border-radius:3px}
 .task-status{font-size:12px;color:#ccc;margin-top:4px}
@@ -526,13 +536,35 @@ ${visibleTaskViews.map(view => {
 <div class="task-name">${t.name}</div>
 ${!isWorktreeSubview && t.worktreePath ? `<button class="btn-gray" style="flex:none;padding:4px 10px;font-size:11px;min-width:auto" onclick="openFolderLocation('${t.id}','worktree')">📁 Worktree</button>` : ''}
 </div>
-<div class="task-desc">${t.desc}</div>
+<div class="task-desc-wrap" id="task-desc-wrap-${t.id}">
+<div class="task-desc-view" id="task-desc-view-${t.id}">
+<div class="task-desc" id="task-desc-${t.id}">${escapeHtml(t.desc || '')}</div>
+<button type="button" class="task-desc-edit-btn" onclick="openTaskDescEditor('${t.id}')" title="编辑需求描述">✎</button>
+</div>
+<div class="task-desc-editor-wrap" id="task-desc-editor-wrap-${t.id}">
+<textarea
+class="task-desc-editor"
+id="task-desc-editor-${t.id}"
+oninput="autoGrowTaskDescEditor('${t.id}')"
+placeholder="请输入需求描述"
+>${escapeHtml(t.desc || '')}</textarea>
+<div class="task-desc-editor-actions">
+<button type="button" class="btn-gray" onclick="cancelTaskDescEditor('${t.id}')">取消</button>
+<button type="button" class="btn-blue" onclick="commitTaskDescEditor('${t.id}')">保存</button>
+</div>
+</div>
+</div>
 <div>阶段：${STAGE_LABEL[t.stage] || t.stage}</div>
 <div class="task-status">原因：${health.summary || '-'}</div>
 ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.latestFailureReason}</div>` : ''}
 <div class="task-status">待办:${stats.todo} 执行中:${stats.doing} 完成:${stats.done}${stats.failed > 0 ? ` 失败:${stats.failed}` : ''}</div>
 <div class="task-progress"><div class="progress-bar" style="width:${view.pct}%"></div></div>
 <div style="font-size:12px">进度：${view.pct}%</div>
+${isWorktreeSubview ? `<div class="config-actions" style="margin-top:6px">
+<button class="btn-gray" onclick="setTaskAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
+<button class="btn-gray" onclick="setTaskAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
+</div>
+<div class="task-status">任务自动化：推进 ${taskAutoAdvance ? '开' : '关'} / 回修 ${taskAutoRepair ? '开' : '关'}</div>` : ''}
 <div class="toggle-row" style="margin:6px 0">
 <span style="font-size:12px">AI 执行器</span>
 <select style="width:auto;margin:0;padding:4px 6px;font-size:11px;background:#2c2c2e;color:#fff;border:none;border-radius:6px" onchange="setTaskAiProvider('${t.id}',this.value)">
@@ -570,7 +602,7 @@ ${subTasks.map(st => {
     const actions = !canOperateSubTasks
         ? ''
         : st.status === 'failed'
-        ? ` <button class="btn-green" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="setSubStatus('${t.id}','${st.id}','done')">标记完成</button>`
+        ? ` <button class="btn-gray" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="retry('${st.id}','${t.id}')">重跑</button> <button class="btn-green" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="setSubStatus('${t.id}','${st.id}','done')">标记完成</button>`
         : st.status === 'doing'
             ? `${redoAction} <button class="btn-green" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="setSubStatus('${t.id}','${st.id}','done')">标记完成</button>`
             : '';
@@ -628,7 +660,77 @@ function runCustomButton(id,buttonId){v.postMessage({type:'runCustomButton',id,b
 function runMainCustomButton(buttonId){v.postMessage({type:'runMainCustomButton',buttonId})}
 function toggleAutoPoll(enable){v.postMessage({type:'toggleAutoPoll',enable})}
 function setSubStatus(id,subId,status){v.postMessage({type:'setSubTaskStatus',id,subId,status})}
-function editTaskDesc(id){v.postMessage({type:'requestEditTaskDesc',id})}
+function logWebviewEvent(id,event,detail){
+    try{v.postMessage({type:'logWebviewEvent',id,event,detail});}catch{}
+}
+function getTaskDescNodes(id){
+    return {
+        root:document.getElementById('task-desc-wrap-'+id),
+        wrap:document.getElementById('task-desc-editor-wrap-'+id),
+        editor:document.getElementById('task-desc-editor-'+id),
+        desc:document.getElementById('task-desc-'+id),
+    };
+}
+function setTaskDescEditing(id,editing){
+    const nodes=getTaskDescNodes(id);
+    if(nodes.root){nodes.root.classList.toggle('editing',editing);}
+}
+function autoGrowTaskDescEditor(id){
+    const nodes=getTaskDescNodes(id);
+    const editor=nodes.editor;
+    if(!editor){return;}
+    editor.style.height='auto';
+    editor.style.height=Math.min(Math.max(editor.scrollHeight,108),260)+'px';
+}
+function openTaskDescEditor(id){
+    const {root,editor,desc}=getTaskDescNodes(id);
+    if(!root||!editor||!desc){logWebviewEvent(id,'taskDescEditor.open.missingNodes');return;}
+    logWebviewEvent(id,'taskDescEditor.open');
+    setTaskDescEditing(id,true);
+    editor.value=desc.innerText;
+    autoGrowTaskDescEditor(id);
+    editor.focus();
+    if(typeof editor.selectionStart==='number'){
+        const len=editor.value.length;
+        editor.selectionStart=len;
+        editor.selectionEnd=len;
+    }
+}
+function cancelTaskDescEditor(id){
+    const {root,editor,desc}=getTaskDescNodes(id);
+    if(!root||!editor||!desc){logWebviewEvent(id,'taskDescEditor.cancel.missingNodes');return;}
+    logWebviewEvent(id,'taskDescEditor.cancel');
+    setTaskDescEditing(id,false);
+    editor.value=desc.innerText;
+    autoGrowTaskDescEditor(id);
+}
+function commitTaskDescEditor(id){
+    try{
+        var nodes=getTaskDescNodes(id);
+        var root=nodes.root;
+        var editor=nodes.editor;
+        var desc=nodes.desc;
+        if(!editor||!desc){
+            logWebviewEvent(id,'taskDescEditor.save.missingNodes');
+            alert('保存失败：未找到编辑器节点');
+            return;
+        }
+        var nextDesc=String(editor.value||'').trim();
+        logWebviewEvent(id,'taskDescEditor.save.click','len='+nextDesc.length);
+        if(!nextDesc){
+            alert('需求描述不能为空');
+            return;
+        }
+        desc.innerText=nextDesc;
+        if(root){root.classList.remove('editing');}
+        v.postMessage({type:'updateTaskDesc',id:id,desc:nextDesc});
+        logWebviewEvent(id,'taskDescEditor.save.postMessage','len='+nextDesc.length);
+    }catch(error){
+        var message=error&&error.message?error.message:String(error);
+        try{logWebviewEvent(id,'taskDescEditor.save.error',message);}catch{}
+        alert('保存失败：'+message);
+    }
+}
 function resetTask(id){v.postMessage({type:'resetTask',id})}
 function openArtifact(id,artifact){v.postMessage({type:'openArtifact',id,artifact})}
 function openFolderLocation(id,location){v.postMessage({type:'openFolderLocation',id,location})}
@@ -650,6 +752,19 @@ function openAbnormalTasks(){
         if(id){openFolderLocation(id,'worktree');}
     });
 }
+document.addEventListener('DOMContentLoaded',()=>{
+    const taskItems=document.querySelectorAll('.task-item[data-task-id]');
+    taskItems.forEach((item)=>{
+        const id=item.getAttribute('data-task-id');
+        if(id){logWebviewEvent(id,'taskDescEditor.boot','dom-ready');}
+    });
+});
+window.addEventListener('error',(event)=>{
+    try{v.postMessage({type:'logWebviewEvent',id:'__global__',event:'webview.error',detail:String(event.message||'unknown')});}catch{}
+});
+window.addEventListener('unhandledrejection',(event)=>{
+    try{v.postMessage({type:'logWebviewEvent',id:'__global__',event:'webview.unhandledrejection',detail:String(event.reason||'unknown')});}catch{}
+});
 </script>
 </body>
 </html>`;
@@ -695,6 +810,10 @@ button{width:100%;padding:10px;border-radius:8px;border:none;color:white;margin-
 .kv b{color:#fff}
 .inline-actions{display:flex;gap:8px;flex-wrap:wrap}
 .inline-actions button{flex:1;min-width:160px}
+.custom-prompt-actions{display:flex;gap:6px;flex-wrap:nowrap;align-items:stretch}
+.custom-prompt-more{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.custom-prompt-btn{flex:1 1 0;min-width:0;height:28px;padding:0 8px;border-radius:8px;border:none;font-size:10px;line-height:1;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box}
+.custom-prompt-more-toggle{flex:0 0 28px;width:28px;height:28px;padding:0;border-radius:999px;border:none;color:#fff;font-size:12px;line-height:1;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box}
 .fold{margin-top:10px;background:#1a1a1e;border:1px solid #323238;border-radius:8px;padding:8px}
 .fold>summary{cursor:pointer;color:#d3d3d8;font-size:13px;list-style:none}
 .fold>summary::-webkit-details-marker{display:none}
@@ -745,14 +864,6 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <textarea id="pc" rows="6" placeholder="例如：\n1. 前端入口开关必须由后端配置中心下发\n2. 功能入口统一展示在“更多”页\n3. 跳转链接由后端返回并经过白名单校验" ${disabled}>${config.projectConventions || ''}</textarea>
 <h5>最大自动执行并发槽位</h5>
 <input id="mc" type="number" min="1" value="${config.maxConcurrentAutoTasks || 2}" ${disabled}>
-<div class="toggle-row">
-<span>自动阶段推进</span>
-<input id="aa" type="checkbox" ${config.autoAdvanceEnabled ? 'checked' : ''} ${disabled}>
-</div>
-<div class="toggle-row">
-<span>校验失败自动回修</span>
-<input id="ar" type="checkbox" ${config.autoRepairEnabled ? 'checked' : ''} ${disabled}>
-</div>
 <div class="toggle-row">
 <span>人工修正为完成后自动继续</span>
 <input id="am" type="checkbox" ${config.autoContinueAfterManualDone !== false ? 'checked' : ''} ${disabled}>
@@ -844,17 +955,34 @@ ${(config.customButtons || []).map(b => customButtonRowHtml(b.name, b.command, b
 </div>
 
 <div class="section">
-<div class="section-title">Prompt 出厂设置</div>
-<div class="hint">Prompt 内置于扩展中，默认即用。如需自定义，可点下方按钮把内置 Prompt 写入本项目 <code>.harness/prompts/</code> 后编辑；若改坏了，再次点击即可一键恢复出厂。</div>
-<button onclick="restoreFactoryPrompts()" style="background:#ff3b30" ${disabled}>♻️ 恢复 Prompt 出厂设置（写入 .harness/prompts/）</button>
+<div class="section-title">自定义 Prompt</div>
+<div class="hint">点击即可打开对应的 custom prompt 文档。</div>
+<div class="custom-prompt-actions">
+<button class="custom-prompt-btn" onclick="openCustomPrompt('req')" style="background:#007aff" ${disabled}>需求</button>
+<button class="custom-prompt-btn" onclick="openCustomPrompt('des')" style="background:#007aff" ${disabled}>设计</button>
+<button class="custom-prompt-btn" onclick="openCustomPrompt('dev')" style="background:#007aff" ${disabled}>开发</button>
+<button class="custom-prompt-more-toggle" id="customPromptMoreToggle" onclick="toggleCustomPromptMore()" style="background:#444" aria-label="更多 custom prompt" title="更多" ${disabled}>⋯</button>
+</div>
+<div class="custom-prompt-more" id="customPromptMore" style="display:none">
+<button class="custom-prompt-btn" onclick="openCustomPrompt('tcs')" style="background:#007aff" ${disabled}>测试用例</button>
+<button class="custom-prompt-btn" onclick="openCustomPrompt('tsk')" style="background:#007aff" ${disabled}>任务拆解</button>
+</div>
 </div>
 
 <script>
 const v=acquireVsCodeApi();
 function p(x){v.postMessage({type:'page',page:x})}
-function restoreFactoryPrompts(){v.postMessage({type:'restoreFactoryPrompts'})}
+function openCustomPrompt(step){v.postMessage({type:'openCustomPrompt',step})}
+function toggleCustomPromptMore(){
+    const more=document.getElementById('customPromptMore');
+    const toggle=document.getElementById('customPromptMoreToggle');
+    if(!more||!toggle)return;
+    const open=more.style.display==='none';
+    more.style.display=open?'flex':'none';
+    toggle.textContent=open?'收起':'更多';
+}
 function saveGit(){v.postMessage({type:'saveGit',fg:document.getElementById('fg').value,bg:document.getElementById('bg').value,bb:document.getElementById('bb').value,dr:document.getElementById('dr').checked})}
-function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,aa:document.getElementById('aa').checked,ar:document.getElementById('ar').checked,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
+function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
 function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
 function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
 function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}

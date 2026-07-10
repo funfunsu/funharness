@@ -17,6 +17,8 @@ import {
 } from '../models';
 import { TaskScheduler } from '../taskScheduler';
 import { GitService } from './gitService';
+import { appendHarnessLog } from './harnessLog';
+import { safeRemovePath } from './fileOps';
 
 interface ArtifactIndexItem {
     taskId: string;
@@ -147,29 +149,79 @@ export class HarnessActionsService {
     async resetTaskByTaskId(taskId: string): Promise<void> {
         const task = this.getTaskById(taskId);
         if (!task) return;
+        const iterDir = this.deps.getIterationDir(task);
+        this.logTaskReset(task, `收到重置请求，当前阶段=${task.stage}`);
+
+        const confirmLabel = '确认重置';
+        const answer = await vscode.window.showWarningMessage(
+            `重置任务「${task.name}」是不可回滚操作。将清空当前迭代代码与阶段进度，并回到需求阶段起点。是否继续？`,
+            { modal: true, detail: '该操作会尝试移除当前迭代 worktree、重建代码目录，并重新从基线初始化。' },
+            confirmLabel,
+        );
+        if (answer !== confirmLabel) {
+            this.logTaskReset(task, '用户取消重置');
+            return;
+        }
+
         try {
+            this.logTaskReset(task, '用户已确认，开始执行重置');
             vscode.window.showInformationMessage(`正在重置任务：${task.name}`);
 
             this.deps.stopScheduler(task.id);
+            this.logTaskReset(task, '已停止自动调度器');
 
-            const iterDir = this.deps.getIterationDir(task);
+            const detachResult = await this.deps.gitService.detachIterationWorktrees(iterDir);
+            if (!detachResult.success && detachResult.errors.length > 0) {
+                this.logTaskReset(task, `worktree 清理告警：${detachResult.errors.join('；')}`);
+                vscode.window.showWarningMessage(`重置前 worktree 清理存在告警：${detachResult.errors.join('；')}`);
+            }
+
             if (fs.existsSync(iterDir)) {
-                fs.rmSync(iterDir, { recursive: true, force: true });
+                if (this.deps.isWorktreeSubview()) {
+                    this.logTaskReset(task, '当前为子面板模式，保留 .harness 并清空其余内容');
+                    this.clearIterationDirContentsForSubview(iterDir);
+                } else {
+                    this.logTaskReset(task, `删除迭代目录：${iterDir}`);
+                    this.deps.gitService.safeRemovePath(iterDir, { recursive: true });
+                }
             }
 
             task.iterationBranch = undefined;
             task.baseBranchUsed = undefined;
             task.stage = STAGE.INITIALIZING;
+            this.logTaskReset(task, '任务状态已重置为 initializing，准备重建目录与基线代码');
 
             this.deps.ensureIterationDir(task);
             this.deps.copyProjectStructureToIteration(this.deps.getIterationDir(task));
             this.deps.saveAndRender();
+            this.logTaskReset(task, '目录骨架已恢复，开始重新初始化 Git/worktree');
             await this.initializeTaskGit(task);
+            this.logTaskReset(task, `重置完成，当前阶段=${task.stage}`);
             vscode.window.showInformationMessage(`任务已重置：${task.name}`);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
+            appendHarnessLog(iterDir, 'reset', `重置失败：${message}`);
             vscode.window.showErrorMessage(`重置任务失败：${message}`);
         }
+    }
+
+    /**
+     * In a worktree subview the iteration dir is the current VS Code workspace root,
+     * so deleting the folder itself is unsafe. Clear child entries and preserve .harness.
+     */
+    private clearIterationDirContentsForSubview(iterDir: string): void {
+        this.deps.gitService.clearDirChildrenPreserving(iterDir, [BASE]);
+    }
+
+    private logTaskReset(task: Task, message: string): void {
+        appendHarnessLog(this.deps.getIterationDir(task), 'reset', `[${task.id}] ${message}`);
+    }
+
+    logUiEventByTaskId(taskId: string, event: string, detail?: string): void {
+        const task = this.getTaskById(taskId);
+        if (!task) return;
+        const suffix = detail ? ` | ${detail}` : '';
+        appendHarnessLog(this.deps.getIterationDir(task), 'webview', `[${task.id}] ${event}${suffix}`);
     }
 
     updateTaskDescByTaskId(taskId: string, desc: string): void {
@@ -177,11 +229,14 @@ export class HarnessActionsService {
         if (!task) return;
         const trimmed = desc.trim();
         if (!trimmed) {
+            this.logUiEventByTaskId(taskId, 'updateTaskDesc.rejected', 'empty description');
             vscode.window.showWarningMessage('需求描述不能为空');
             return;
         }
+        const oldLen = (task.desc || '').length;
         task.desc = trimmed;
         this.deps.saveAndRender();
+        this.logUiEventByTaskId(taskId, 'updateTaskDesc.saved', `oldLen=${oldLen};newLen=${trimmed.length}`);
         vscode.window.showInformationMessage(`已更新任务需求描述：${task.name}`);
     }
 
@@ -256,6 +311,10 @@ export class HarnessActionsService {
             this.deps.saveAndRender();
             vscode.window.showInformationMessage('已按 tasks.md 子任务链启动开发调度（自动检查并继续下一个）。');
             return;
+        }
+
+        if (step === 'des') {
+            this.deps.copyProjectStructureToIteration(iterDir);
         }
 
         this.reconcileStageArtifactPath(task, step);
@@ -372,7 +431,7 @@ export class HarnessActionsService {
                 }
 
                 if (fs.existsSync(targetPath)) {
-                    fs.rmSync(targetPath, { recursive: true, force: true });
+                    this.deps.gitService.safeRemovePath(targetPath, { recursive: true });
                 }
 
                 fs.mkdirSync(path.dirname(targetPath), { recursive: true });
@@ -450,7 +509,7 @@ export class HarnessActionsService {
             fs.writeFileSync(taskPath, JSON.stringify([snapshot], null, 2), 'utf8');
             const legacyTaskPath = path.join(harnessDir, HARNESS_STATE_FILE_LEGACY);
             if (fs.existsSync(legacyTaskPath)) {
-                fs.rmSync(legacyTaskPath, { force: true });
+                safeRemovePath(legacyTaskPath);
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -666,7 +725,7 @@ export class HarnessActionsService {
                 this.scheduleDetachedIterDirCleanup(iterDir);
             } else {
                 try {
-                    fs.rmSync(iterDir, { recursive: true, force: true });
+                    this.deps.gitService.safeRemovePath(iterDir, { recursive: true });
                 } catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
                     vscode.window.showWarningMessage(`迭代目录清理失败，请手动删除：${iterDir}（${message}）`);
@@ -688,7 +747,8 @@ export class HarnessActionsService {
         }
         const escaped = normalized.replace(/"/g, '\\"');
         try {
-            const child = spawn('sh', ['-c', `sleep 3 && rm -rf "${escaped}"`], {
+            const command = this.buildDetachedCleanupCommand(escaped);
+            const child = spawn(command.bin, command.args, {
                 detached: true,
                 stdio: 'ignore',
             });
@@ -696,6 +756,14 @@ export class HarnessActionsService {
         } catch {
             // Best-effort: if scheduling fails, the user can manually delete the dir.
         }
+    }
+
+    private buildDetachedCleanupCommand(escapedPath: string): { bin: string; args: string[] } {
+        if (process.platform === 'win32') {
+            const script = `Start-Sleep -Seconds 3; Remove-Item -LiteralPath \"${escapedPath}\" -Recurse -Force -ErrorAction SilentlyContinue`;
+            return { bin: 'powershell', args: ['-NoProfile', '-Command', script] };
+        }
+        return { bin: 'sh', args: ['-c', `sleep 3 && rm -rf "${escapedPath}"`] };
     }
 
     async syncMainCodeByTaskId(taskId: string): Promise<void> {
@@ -798,13 +866,15 @@ export class HarnessActionsService {
 
         const runCmd = this.buildCustomButtonCommand(scriptPath, extraArgs);
         const terminalName = `Fun Harness ${label} ${button.name}`;
-        let terminal = vscode.window.terminals.find(t => t.name === terminalName);
-        if (!terminal) {
-            terminal = vscode.window.createTerminal({
-                name: terminalName,
-                cwd: runDir,
-            });
+        const existing = vscode.window.terminals.find(t => t.name === terminalName);
+        if (existing) {
+            // Force-stop any currently running process in this named terminal, then run fresh.
+            existing.dispose();
         }
+        const terminal = vscode.window.createTerminal({
+            name: terminalName,
+            cwd: runDir,
+        });
         terminal.show(true);
         terminal.sendText(runCmd, true);
         vscode.window.showInformationMessage(`已在 ${label} 执行「${button.name}」：${runCmd}`);
@@ -1241,7 +1311,7 @@ export class HarnessActionsService {
             }
             fs.writeFileSync(canonicalAbs, content, 'utf8');
             try {
-                fs.rmSync(candidate, { force: true });
+                safeRemovePath(candidate);
             } catch {
                 // ignore delete errors and keep canonical copy.
             }

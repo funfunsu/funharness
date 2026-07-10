@@ -10,6 +10,7 @@ import {
     DEFAULT_CONFIG,
     DEFAULT_POLL_SCRIPT,
     HARNESS_LOG_FILE,
+    PROMPTS_DIR,
     TODO_FILE,
     STAGE,
     SubTask,
@@ -155,7 +156,7 @@ class Harness {
                 onPass: (task) => vscode.window.showInformationMessage(`✅ ${task.name} 完成`),
                 isWorktreeSubview: () => this.isWorktreeSubview(),
                 dispatchAi: async (query, iterDir, source, providerOverride) => this.aiDispatchService.dispatch(query, iterDir, source, providerOverride),
-                copyProjectStructureToIteration: (iterDir) => this.projectStructureService.copyRootStructureToIteration(iterDir),
+                copyProjectStructureToIteration: (iterDir) => this.copyProjectStructureToIteration(iterDir),
                 renderAgentPrompt: (step, taskName, taskDesc, iterDir) => this.promptService.getRenderedPromptWithSource(step, taskName, taskDesc, iterDir, this.config),
             });
             this.messageController = new HarnessMessageController({
@@ -163,7 +164,7 @@ class Harness {
                 setPage: (page) => { this.currentPage = page; },
                 reloadTasks: () => this.loadTasks(),
                 render: () => this.render(),
-                restoreFactoryPrompts: () => this.handleRestoreFactoryPrompts(),
+                openCustomPrompt: (step) => this.handleOpenCustomPrompt(step),
                 saveGit: (frontendGit, backendGit, baseBranch, dryRun) => this.handleSaveGit(frontendGit, backendGit, baseBranch, dryRun),
                 saveAdvancedConfig: (msg) => this.handleSaveAdvancedConfig(msg),
                 initProjectStructure: () => this.handleInitProjectStructure(),
@@ -173,6 +174,7 @@ class Harness {
                 testAiProvider: async () => this.aiDispatchService.testConnection(),
                 setSubTaskStatus: async (taskId, subId, status) => this.actionsService.setSubTaskStatusByTaskId(taskId, subId, status),
                 createTask: async (name, desc, quickMode) => this.actionsService.createTask(name, desc, quickMode),
+                logWebviewEvent: (taskId, event, detail) => this.actionsService.logUiEventByTaskId(taskId, event, detail),
                 requestEditTaskDesc: async (taskId) => this.actionsService.promptUpdateTaskDescByTaskId(taskId),
                 updateTaskDesc: (taskId, desc) => this.actionsService.updateTaskDescByTaskId(taskId, desc),
                 resetTask: async (taskId) => this.actionsService.resetTaskByTaskId(taskId),
@@ -279,18 +281,15 @@ class Harness {
             }
             const iterDir = this.getIterationDir(task);
             const docsDir = path.join(iterDir, 'docs');
-            const hasRequirements = this.hasMeaningfulArtifactContent(path.join(docsDir, 'requirements.md'));
-            const hasDesign = this.hasMeaningfulArtifactContent(path.join(docsDir, 'design.md'));
+            const hasTestcase = this.hasMeaningfulArtifactContent(path.join(docsDir, 'testcase.md'));
             const hasTaskPlan = fs.existsSync(path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/')))
                 || fs.existsSync(path.join(iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/')));
 
             let target = task.stage;
             if (hasTaskPlan) {
                 target = STAGE.DEVELOPING;
-            } else if (hasDesign) {
+            } else if (hasTestcase) {
                 target = STAGE.WRITING_TASKS;
-            } else if (hasRequirements) {
-                target = STAGE.WRITING_DESIGN;
             }
 
             // Only advance, never regress
@@ -553,26 +552,31 @@ class Harness {
         this.render();
     }
 
-    private async handleRestoreFactoryPrompts(): Promise<void> {
-        if (this.configMeta.readOnly) {
-            vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改设置');
-            return;
-        }
-        const answer = await vscode.window.showWarningMessage(
-            '确定用内置出厂 Prompt 覆盖 .harness/prompts/ 中的副本？此操作会覆盖你在该目录下的修改。',
-            { modal: true },
-            '确定覆盖',
-            '取消'
-        );
-        if (answer !== '确定覆盖') {
-            return;
-        }
+    private async handleOpenCustomPrompt(step: 'req' | 'des' | 'tcs' | 'tsk' | 'dev'): Promise<void> {
+        const promptFileMap: Record<typeof step, string> = {
+            req: 'requirements_custom_prompt.md',
+            des: 'design_custom_prompt.md',
+            tcs: 'testcase_custom_prompt.md',
+            tsk: 'tasks_custom_prompt.md',
+            dev: 'dev_custom_prompt.md',
+        };
+        const fileName = promptFileMap[step];
+        const promptPath = path.join(this.getMasterRoot(), BASE, PROMPTS_DIR, fileName);
+        const legacyPromptPath = path.join(this.getMasterRoot(), PROMPTS_DIR, fileName);
         try {
-            const restored = this.promptService.restoreFactoryPrompts();
-            vscode.window.showInformationMessage(`✅ 已将 ${restored.length} 个 Prompt 恢复为出厂设置（写入 .harness/prompts/）`);
+            fs.mkdirSync(path.dirname(promptPath), { recursive: true });
+            if (!fs.existsSync(promptPath) && fs.existsSync(legacyPromptPath)) {
+                // Auto-migrate legacy root-level prompts/<file> to .harness/prompts/<file>.
+                fs.renameSync(legacyPromptPath, promptPath);
+            }
+            if (!fs.existsSync(promptPath)) {
+                fs.writeFileSync(promptPath, '', 'utf8');
+            }
+            const document = await vscode.workspace.openTextDocument(promptPath);
+            await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            vscode.window.showErrorMessage(`恢复 Prompt 出厂设置失败：${message}`);
+            vscode.window.showErrorMessage(`打开 custom prompt 失败：${message}`);
         }
     }
 
@@ -610,8 +614,6 @@ class Harness {
 
         this.config.projectConventions = msg.pc;
         this.config.maxConcurrentAutoTasks = Math.max(1, msg.mc || 1);
-        this.config.autoAdvanceEnabled = msg.aa;
-        this.config.autoRepairEnabled = msg.ar;
         this.config.autoContinueAfterManualDone = msg.am;
         this.config.compactTaskDecomposition = msg.cm;
         this.config.autoDetectTaskSplitMode = msg.ad;
@@ -764,6 +766,35 @@ class Harness {
             return;
         }
         this.projectStructureService.ensureBaseline(this.config.customProjectStructure || '');
+    }
+
+    /**
+     * Ensure iteration docs/project-structure.md is copied from master workspace baseline
+     * even when this window is opened on a worktree subview.
+     */
+    private copyProjectStructureToIteration(iterDir: string): void {
+        const masterRoot = this.getMasterRoot();
+        const masterService = new ProjectStructureService(masterRoot, extensionPath);
+        masterService.copyRootStructureToIteration(iterDir);
+
+        // Fallback to current-window service in case master baseline is empty.
+        const target = path.join(iterDir, 'docs', 'project-structure.md');
+        if (!fs.existsSync(target)) {
+            this.projectStructureService.copyRootStructureToIteration(iterDir);
+        }
+
+        // Preferred fallback: if both copies missed, seed MASTER baseline first so
+        // future worktrees can reuse one shared docs/project-structure.md.
+        if (!fs.existsSync(target)) {
+            masterService.ensureBaseline('');
+            masterService.copyRootStructureToIteration(iterDir);
+        }
+
+        // Final fallback: still guarantee current iteration has usable context.
+        if (!fs.existsSync(target)) {
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.writeFileSync(target, `${masterService.getDefaultStructure()}\n`, 'utf8');
+        }
     }
 
     private async handleInitProjectStructure(): Promise<void> {

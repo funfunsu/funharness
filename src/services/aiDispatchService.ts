@@ -349,15 +349,19 @@ export class AiDispatchService {
      * Returns the absolute snapshot file path, or empty string on best-effort failure.
      */
     private writeDispatchSnapshot(query: string, iterDir: string, source: DispatchSource, providerLabel: string): string {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const provider = providerLabel.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase() || 'unknown';
+        const fileName = `${source}-${provider}-${stamp}.md`;
         try {
             const folder = path.join(iterDir, BASE, 'dispatch-prompts');
             fs.mkdirSync(folder, { recursive: true });
-            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const provider = providerLabel.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase() || 'unknown';
-            const file = path.join(folder, `${source}-${provider}-${stamp}.md`);
+            const file = path.join(folder, fileName);
             fs.writeFileSync(file, query, 'utf8');
+            this.writeWorkspaceMirrorSnapshot(query, fileName, file);
             return file;
-        } catch {
+        } catch (error) {
+            this.writeWorkspaceMirrorSnapshot(query, fileName);
+            console.warn('[fun-harness] writeDispatchSnapshot failed:', error);
             return '';
         }
     }
@@ -365,9 +369,31 @@ export class AiDispatchService {
     private writePromptFile(query: string, iterDir: string, source: DispatchSource): string {
         const folder = path.join(iterDir, BASE, 'dispatch-prompts');
         fs.mkdirSync(folder, { recursive: true });
-        const file = path.join(folder, `${source}-${Date.now()}.md`);
+        const fileName = `${source}-${Date.now()}.md`;
+        const file = path.join(folder, fileName);
         fs.writeFileSync(file, query, 'utf8');
+        this.writeWorkspaceMirrorSnapshot(query, fileName, file);
         return file;
+    }
+
+    private writeWorkspaceMirrorSnapshot(query: string, fileName: string, primaryFile?: string): void {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) {
+            return;
+        }
+
+        const mirrorFolder = path.join(workspaceRoot, BASE, 'dispatch-prompts');
+        const mirrorFile = path.join(mirrorFolder, fileName);
+        if (primaryFile && path.resolve(primaryFile) === path.resolve(mirrorFile)) {
+            return;
+        }
+
+        try {
+            fs.mkdirSync(mirrorFolder, { recursive: true });
+            fs.writeFileSync(mirrorFile, query, 'utf8');
+        } catch (error) {
+            console.warn('[fun-harness] writeWorkspaceMirrorSnapshot failed:', error);
+        }
     }
 
     private getEffectiveCliTemplate(cfg: Config): string {

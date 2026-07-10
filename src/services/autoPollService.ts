@@ -13,6 +13,7 @@ import {
     TODO_FILE,
 } from '../models';
 import { appendHarnessLog } from './harnessLog';
+import { safeRemovePath } from './fileOps';
 
 /**
  * Persisted in <masterRoot>/.harness/auto-poll-lock.json. Holds which worktree is
@@ -397,7 +398,7 @@ export class AutoPollService {
         const lock = this.readLock();
         if (lock && this.samePath(lock.worktreePath, here)) {
             try {
-                fs.rmSync(this.lockPath(), { force: true });
+                safeRemovePath(this.lockPath());
             } catch {
                 // best-effort
             }

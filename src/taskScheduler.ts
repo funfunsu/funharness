@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Config, SubTask, TASK_PLAN_LEGACY_REL_PATH, TASK_PLAN_PRIMARY_REL_PATH, Task } from './models';
+import { appendHarnessLog } from './services/harnessLog';
 
 export class TaskScheduler {
     private iterDir: string;
@@ -41,6 +42,40 @@ export class TaskScheduler {
             rendered = rendered.replace(new RegExp(`{{\\s*${safeKey}\\s*}}`, 'g'), value);
         }
         return rendered;
+    }
+
+    private splitOutputEntries(raw: string): string[] {
+        const text = String(raw || '').trim();
+        if (!text) {
+            return [];
+        }
+        return text
+            .split(/[\n,，;；]+/)
+            .map(item => item.trim())
+            .filter(Boolean);
+    }
+
+    private parseInlineTracking(raw: string): { requirementIds: string[]; propertyIds: string[] } {
+        const text = String(raw || '').trim();
+        if (!text) {
+            return { requirementIds: [], propertyIds: [] };
+        }
+
+        const blocks = Array.from(text.matchAll(/\[([^\]]*)\]/g)).map(match => match[1] || '');
+        if (blocks.length === 0) {
+            return { requirementIds: [], propertyIds: [] };
+        }
+
+        const parseIds = (block: string): string[] => block
+            .split(/[,，]/)
+            .map(item => item.trim())
+            .filter(Boolean);
+
+        const requirementIds = parseIds(blocks[0]).filter(id => /^Req-/i.test(id));
+        const propertyIds = (blocks.length > 1 ? parseIds(blocks[1]) : [])
+            .filter(id => /^INV-/i.test(id));
+
+        return { requirementIds, propertyIds };
     }
 
     parseTasksMd(): SubTask[] {
@@ -97,14 +132,22 @@ export class TaskScheduler {
                 currentField = '';
             } else if (trimmed.startsWith('- 输出:') || trimmed.startsWith('- 输出：')) {
                 const val = trimmed.replace(/^- 输出[：:]/, '').trim();
-                if (val) current.output.push(val);
+                if (val) current.output.push(...this.splitOutputEntries(val));
                 currentField = 'output';
             } else if (trimmed.startsWith('- 验收:') || trimmed.startsWith('- 验收：')) {
                 currentField = 'acceptance';
             } else if (trimmed.startsWith('- 追踪:') || trimmed.startsWith('- 追踪：')) {
+                const trackingRaw = trimmed.replace(/^- 追踪[：:]/, '').trim();
+                const parsed = this.parseInlineTracking(trackingRaw);
+                if (parsed.requirementIds.length > 0) {
+                    current.requirementIds = parsed.requirementIds;
+                }
+                if (parsed.propertyIds.length > 0) {
+                    current.propertyIds = parsed.propertyIds;
+                }
                 currentField = 'tracking';
             } else if (trimmed.startsWith('- ') && currentField === 'output') {
-                current.output.push(trimmed.replace(/^- /, ''));
+                current.output.push(...this.splitOutputEntries(trimmed.replace(/^- /, '')));
             } else if (trimmed.startsWith('- ') && currentField === 'acceptance') {
                 current.acceptance.push(trimmed.replace(/^- /, ''));
             } else if (trimmed.startsWith('- Requirements:') && currentField === 'tracking') {
@@ -169,9 +212,10 @@ export class TaskScheduler {
         const nonWindowsTestScriptPath = path.join(this.iterDir, 'tests', `test-${subTask.id}.sh`).replace(/\\/g, '/');
 
         const designFile = path.join(this.docsDir, 'design.md');
+        const testcaseFile = path.join(this.docsDir, 'testcase.md');
         const designContext = this.buildDesignContext(subTask);
         const requirementsContext = this.buildRequirementsContext(subTask);
-        const testcaseContext = this.buildTestcaseContext(subTask);
+        const testcaseContext = fs.existsSync(testcaseFile) ? this.buildTestcaseContext(subTask) : '';
         const manifestContext = this.buildManifestContext(subTask);
         const instructionContext = this.buildProjectInstructionContext();
 
@@ -243,6 +287,9 @@ export class TaskScheduler {
         const systemPromptSection = devSystemPrompt
             ? `${devSystemPrompt}\n\n=====================================================================\n# 当前要执行的具体任务（请严格按以下指令完成本次编码）\n\n`
             : '';
+        const testcaseSection = testcaseContext
+            ? `\n## 测试用例上下文（裁剪）\n${testcaseContext}\n`
+            : '';
 
         return `${systemPromptSection}## 编码任务指令
 
@@ -261,9 +308,7 @@ ${subTask.input || designContext}
 
 ## 需求上下文（裁剪）
 ${requirementsContext}
-
-## 测试用例上下文（裁剪）
-${testcaseContext}
+${testcaseSection}
 
 ## 测试清单上下文（裁剪）
 ${manifestContext}
@@ -416,12 +461,23 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         const yamlBody = this.extractMachineReadableYamlBody(content);
         if (yamlBody) {
             const reqSet = new Set((subTask.requirementIds || []).map(id => id.trim()).filter(Boolean));
-            const testBlocks = this.extractYamlListBlocksForIds(yamlBody, 'testCases', reqSet, ['requirementIds', 'requirementId', 'id']);
+            const testBlocks = [
+                ...this.extractYamlListBlocksForIds(yamlBody, 'testCases', reqSet, ['requirementIds', 'requirementId', 'id']),
+                ...this.extractYamlListBlocksForIds(yamlBody, 'testcases', reqSet, ['requirementIds', 'requirementId', 'id']),
+            ];
             const selectedYaml = this.composeSelectedYaml(yamlBody, [{ key: 'testCases', blocks: testBlocks }]);
             if (selectedYaml) {
                 const wrapped = `\`\`\`yaml\n${selectedYaml}\n\`\`\``;
                 return wrapped.length > 1600 ? wrapped.substring(0, 1600) : wrapped;
             }
+
+            // When tracked requirement IDs exist, never fall back to full testcase YAML.
+            // Returning the whole file pollutes subtask prompts with unrelated Req contexts.
+            if (reqSet.size > 0) {
+                const ids = Array.from(reqSet).join(', ');
+                return `(未在 docs/testcase.md 机器可读区匹配到追踪需求的测试用例: ${ids})`;
+            }
+
             const raw = `\`\`\`yaml\n${yamlBody}\n\`\`\``;
             return raw.length > 1600 ? raw.substring(0, 1600) : raw;
         }
@@ -752,16 +808,21 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         const expectedOutputFiles = this.getPathLikeOutputs(subTask);
         const signalFiles = this.readSignalFiles(signalFilePath);
         const filesToCheck = expectedOutputFiles.length > 0 ? expectedOutputFiles : signalFiles;
+        const missingPaths: string[] = [];
+        const existingPaths: string[] = [];
 
         for (const f of filesToCheck) {
             const fullPath = path.isAbsolute(f) ? f : path.join(this.iterDir, f);
             if (!fs.existsSync(fullPath)) {
                 outputOk = false;
-                break;
+                missingPaths.push(f);
+                continue;
             }
+            existingPaths.push(f);
         }
 
         if (outputOk) {
+            this.writeLog(taskId, `📦 输出校验详情 expected=${expectedOutputFiles.length} signal=${signalFiles.length} checked=${filesToCheck.length}`);
             if (fs.existsSync(testScriptPs)) {
                 this.writeLog(taskId, `ℹ 检测到测试脚本，可按需手动执行: ${testScriptPs}`);
             } else if (fs.existsSync(testScript)) {
@@ -786,7 +847,16 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             }
         } else {
             this.updateSubTaskStatus(taskId, 'failed');
-            this.writeLog(taskId, `❌ 输出文件不完整（检查文件数: ${filesToCheck.length}）`);
+            const detail = [
+                `expectedOutputFiles=${JSON.stringify(expectedOutputFiles)}`,
+                `signalFiles=${JSON.stringify(signalFiles)}`,
+                `checked=${JSON.stringify(filesToCheck)}`,
+                `missing=${JSON.stringify(missingPaths)}`,
+                `existing=${JSON.stringify(existingPaths)}`,
+            ].join(' | ');
+            this.writeLog(taskId, `❌ 输出文件不完整（检查文件数: ${filesToCheck.length}，缺失: ${missingPaths.join(', ') || '(unknown)'}）`);
+            this.writeLog(taskId, `❌ 输出校验详细信息: ${detail}`);
+            appendHarnessLog(this.iterDir, 'scheduler', `[${taskId}] 输出文件不完整 | ${detail}`);
             this.onStatusChange();
             this.autoMode = false;
             vscode.window.showWarningMessage(`❌ 任务 ${taskId} 输出文件不完整`);
@@ -832,6 +902,8 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
 
     async retryTask(taskId: string, iterTask: Task): Promise<void> {
         this.updateSubTaskStatus(taskId, 'todo');
+        // Allow the retried task's new done signal to be consumed again.
+        this.handledSignals.delete(taskId);
         this.onStatusChange();
 
         const signalFile = path.join(this.iterDir, 'signals', `done-${taskId}`);
@@ -879,7 +951,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             return [];
         }
         return subTask.output
-            .map(item => item.trim())
+            .flatMap(item => this.splitOutputEntries(item))
             .filter(item => this.looksLikeFilePath(item));
     }
 

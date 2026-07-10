@@ -72,6 +72,11 @@ export class PromptService {
      */
     private getCandidatePromptDirs(): string[] {
         const dirs = [this.getProjectPromptsDir()];
+        // Backward compatibility: legacy root-level prompts/ directory.
+        const legacyProjectDir = path.join(this.workspaceRoot, PROMPTS_DIR);
+        if (!dirs.includes(legacyProjectDir)) {
+            dirs.push(legacyProjectDir);
+        }
         const normalized = this.workspaceRoot.replace(/\\/g, '/');
         const marker = '/worktrees/';
         const idx = normalized.indexOf(marker);
@@ -81,26 +86,12 @@ export class PromptService {
             if (!dirs.includes(masterDir)) {
                 dirs.push(masterDir);
             }
-        }
-        return dirs;
-    }
-
-    /**
-     * 「恢复出厂」：把内置 prompts/ 覆盖写入项目级 .harness/prompts/。
-     * 首次调用得到一份可编辑副本；改坏后再次调用即一键修复。返回被写入的文件名列表。
-     */
-    restoreFactoryPrompts(): string[] {
-        const targetDir = this.getProjectPromptsDir();
-        fs.mkdirSync(targetDir, { recursive: true });
-        const restored: string[] = [];
-        for (const cfg of PROMPT_CONFIGS) {
-            const source = this.getBundledPromptFile(cfg.key);
-            if (source && fs.existsSync(source)) {
-                fs.copyFileSync(source, path.join(targetDir, cfg.file));
-                restored.push(cfg.file);
+            const legacyMasterDir = path.join(masterRoot, PROMPTS_DIR);
+            if (!dirs.includes(legacyMasterDir)) {
+                dirs.push(legacyMasterDir);
             }
         }
-        return restored;
+        return dirs;
     }
 
     private resolvePromptFile(step: string): { source: RenderedPrompt['source']; path: string } {
@@ -127,7 +118,11 @@ export class PromptService {
         if (!item) {
             return '';
         }
-        return path.join(this.extensionPath, PROMPTS_DIR, item.file);
+        const candidates = [
+            path.join(this.extensionPath, BASE, PROMPTS_DIR, item.file),
+            path.join(this.extensionPath, PROMPTS_DIR, item.file),
+        ];
+        return candidates.find(p => fs.existsSync(p)) || candidates[0];
     }
 
     private composeStagePrompt(

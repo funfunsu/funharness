@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { BASE } from '../models';
+import { BASE, PROMPTS_DIR } from '../models';
 
 const DEFAULT_PROJECT_STRUCTURE = `# 前端目录（Vue3 + TypeScript + Pinia）
 src/
@@ -196,15 +196,21 @@ export class ProjectStructureService {
     }
 
     getDefaultStructure(): string {
-        const bundled = path.join(this.extensionPath, 'prompts', 'default_project_structure.md');
-        if (fs.existsSync(bundled)) {
+        const bundledCandidates = [
+            path.join(this.extensionPath, BASE, PROMPTS_DIR, 'default_project_structure.md'),
+            path.join(this.extensionPath, PROMPTS_DIR, 'default_project_structure.md'),
+        ];
+        for (const bundled of bundledCandidates) {
+            if (!fs.existsSync(bundled)) {
+                continue;
+            }
             try {
                 const content = fs.readFileSync(bundled, 'utf8').trim();
                 if (content) {
                     return content;
                 }
             } catch {
-                // ignore bundled file read failures and fallback to hardcoded default.
+                // ignore bundled file read failures and try next fallback.
             }
         }
         return DEFAULT_PROJECT_STRUCTURE.trim();

@@ -3,15 +3,16 @@ export type HarnessStep = 'req' | 'des' | 'tcs' | 'tsk' | 'dev';
 export type HarnessMessage =
     | { type: 'page'; page: string }
     | { type: 'refresh' }
-    | { type: 'restoreFactoryPrompts' }
+    | { type: 'openCustomPrompt'; step: HarnessStep }
     | { type: 'saveGit'; fg: string; bg: string; bb: string; dr: boolean }
-    | { type: 'saveAdvancedConfig'; pc: string; mc: number; aa: boolean; ar: boolean; am: boolean; cm: boolean; ad: boolean; sk: string; ck: string; wsd: string; cps: string; prm: 'local' | 'local+ai'; cct: string; afm: boolean; pas: boolean }
+    | { type: 'saveAdvancedConfig'; pc: string; mc: number; am: boolean; cm: boolean; ad: boolean; sk: string; ck: string; wsd: string; cps: string; prm: 'local' | 'local+ai'; cct: string; afm: boolean; pas: boolean }
     | { type: 'initProjectStructure' }
     | { type: 'applyProjectStructurePreview' }
     | { type: 'openArtifactsIndex' }
     | { type: 'openMasterWorkspace' }
     | { type: 'testAiProvider' }
     | { type: 'create'; name: string; desc: string; quickMode?: boolean }
+    | { type: 'logWebviewEvent'; id: string; event: string; detail?: string }
     | { type: 'requestEditTaskDesc'; id: string }
     | { type: 'updateTaskDesc'; id: string; desc: string }
     | { type: 'resetTask'; id: string }
