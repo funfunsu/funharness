@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, STAGE, Stage, Task } from '../models';
+import { BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, STAGE, Stage, Task, normalizeCustomButton } from '../models';
 import { safeRemovePath } from './fileOps';
 
 const STAGE_ORDER: Stage[] = [
@@ -35,7 +35,8 @@ export class TaskStoreService {
     ensureIterationDir(task: Task): void {
         const worktreePath = this.getIterationDir(task);
         task.worktreePath = worktreePath;
-        fs.mkdirSync(worktreePath, { recursive: true });
+        // Lazy-init mode: only record the intended path; physical creation happens
+        // when user explicitly opens the task worktree.
     }
 
     loadTasks(): Task[] {
@@ -102,6 +103,12 @@ export class TaskStoreService {
         for (const task of tasks) {
             const iterDir = this.getIterationDir(task);
             if (!iterDir) {
+                continue;
+            }
+            // Lazy-init mode: do not create iteration dirs just for state snapshots.
+            // Only write per-worktree state after the iteration directory is physically created
+            // (typically when user explicitly opens/initializes that worktree).
+            if (!fs.existsSync(iterDir)) {
                 continue;
             }
             const harnessDir = path.join(iterDir, BASE);
@@ -182,7 +189,16 @@ export class TaskStoreService {
                 const legacyMerge = (loaded.mergeTargetBranch as string | undefined || '').trim();
                 loaded.baseBranch = legacyBase || legacyMerge || '';
             }
-            return { ...DEFAULT_CONFIG, ...loaded };
+            // Ensure monorepo fields exist for configs saved before monorepo support, and
+            // deep-merge monorepoDirs so a partially-specified object keeps default subfolders.
+            const merged = { ...DEFAULT_CONFIG, ...loaded };
+            merged.monorepoGit = typeof loaded.monorepoGit === 'string' ? loaded.monorepoGit : '';
+            merged.monorepoDirs = { ...DEFAULT_CONFIG.monorepoDirs, ...(loaded.monorepoDirs || {}) };
+            // Migrate legacy single-field buttons (command) to the {scriptSource, script, args} form.
+            merged.customButtons = Array.isArray(loaded.customButtons)
+                ? (loaded.customButtons as CustomButton[]).map(normalizeCustomButton)
+                : [];
+            return merged;
         } catch {
             return { ...DEFAULT_CONFIG };
         }

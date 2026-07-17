@@ -51,7 +51,7 @@ test('TaskStoreService should save/load tasks and config', () => {
     assert.equal(loadedConfig.codingStandards, 'camelCase');
 });
 
-test('TaskStoreService should resolve and create iteration directory', () => {
+test('TaskStoreService should resolve iteration directory without creating it eagerly', () => {
     const workspaceRoot = makeTempWorkspace();
     const store = new TaskStoreService(workspaceRoot);
 
@@ -62,7 +62,7 @@ test('TaskStoreService should resolve and create iteration directory', () => {
     assert.equal(fs.existsSync(iterDir), false);
 
     store.ensureIterationDir(task);
-    assert.equal(fs.existsSync(iterDir), true);
+    assert.equal(fs.existsSync(iterDir), false);
     assert.equal(task.worktreePath, iterDir);
 });
 
@@ -75,8 +75,10 @@ test('TaskStoreService should fall back to defaults when config json is malforme
     const store = new TaskStoreService(workspaceRoot);
     const config = store.loadConfig();
 
-    assert.equal(config.backendPort, 8080);
     assert.equal(config.aiProvider, 'copilot-chat');
+    assert.equal(config.maxConcurrentAutoTasks, 2);
+    assert.equal(config.monorepoGit, '');
+    assert.equal(config.monorepoDirs.frontend, 'apps');
 });
 
 test('TaskStoreService should return empty tasks when state json is malformed', () => {

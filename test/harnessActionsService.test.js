@@ -12,7 +12,8 @@ Module._load = function mockVsCode(request, parent, isMain) {
             },
             window: {
                 showInformationMessage: () => {},
-                showErrorMessage: () => {}
+                showErrorMessage: () => {},
+                showWarningMessage: () => {}
             }
         };
     }
@@ -61,12 +62,14 @@ function createDeps() {
         }),
         getIterationDir: (task) => `/tmp/iteration-${task.name}`,
         ensureIterationDir: () => { calls.ensureIterationDir += 1; },
+        copyProjectStructureToIteration: () => {},
         saveAndRender: () => { calls.saveAndRender += 1; },
         gitService: {
             createIterationBranches: async () => {
                 calls.createBranches += 1;
                 return { success: true, message: 'ok' };
             },
+            consumeLocalBaseFallbackNotice: () => null,
             pushAll: async () => { calls.pushAll += 1; },
             mergeIterationToTarget: async () => ({ success: true, message: 'merged' })
         },
@@ -80,7 +83,7 @@ function createDeps() {
     return { deps, tasks, calls };
 }
 
-test('HarnessActionsService should create task and initialize git flow', async () => {
+test('HarnessActionsService should create task without auto-initializing git worktree', async () => {
     const { deps, tasks, calls } = createDeps();
     const service = new HarnessActionsService(deps);
 
@@ -89,18 +92,18 @@ test('HarnessActionsService should create task and initialize git flow', async (
     assert.equal(tasks.length, 1);
     assert.equal(tasks[0].name, 'featureA');
     assert.equal(calls.ensureIterationDir, 1);
-    assert.ok(calls.saveAndRender >= 2); // before and after init branch
-    assert.equal(calls.createBranches, 1);
+    assert.ok(calls.saveAndRender >= 1);
+    assert.equal(calls.createBranches, 0);
 });
 
 test('HarnessActionsService should transition stage and stop scheduler at dev finish', () => {
     const { deps, tasks, calls } = createDeps();
     const service = new HarnessActionsService(deps);
 
-    tasks.push({ id: 'task_100', name: 'n', desc: 'd', stage: '⚙️ 开发中' });
+    tasks.push({ id: 'task_100', name: 'n', desc: 'd', stage: 'developing' });
     service.nextStageByTaskId('task_100', 'dev');
 
-    assert.equal(tasks[0].stage, '⏳ 待审核');
+    assert.equal(tasks[0].stage, 'ready_for_review');
     assert.equal(calls.stopScheduler, 1);
 });
 
@@ -108,9 +111,9 @@ test('HarnessActionsService should mark task done on pass', async () => {
     const { deps, tasks, calls } = createDeps();
     const service = new HarnessActionsService(deps);
 
-    tasks.push({ id: 'task_200', name: 'n', desc: 'd', stage: '⏳ 待审核' });
+    tasks.push({ id: 'task_200', name: 'n', desc: 'd', stage: 'ready_for_review' });
     await service.passByTaskId('task_200');
 
-    assert.equal(tasks[0].stage, '✅ 已完成');
+    assert.equal(tasks[0].stage, 'done');
     assert.equal(calls.onPass, 1);
 });

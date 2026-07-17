@@ -1,14 +1,29 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
-import { Config, Task } from '../models';
+import { Config, DEFAULT_MONOREPO_DIRS, Task } from '../models';
 import { appendHarnessLog } from './harnessLog';
 import { clearDirChildrenPreserving, safeRemovePath } from './fileOps';
+
+/**
+ * Describes one git repository the harness manages for an iteration. In multi-repo mode there is
+ * one descriptor per configured side (frontend/backend), each checked out into an `iterationDir`
+ * subfolder. In monorepo mode there is a single descriptor whose worktree IS the iteration dir root.
+ */
+interface RepoDescriptor {
+    kind: 'frontend' | 'backend' | 'mono';
+    /** Human-friendly label used in user-facing messages. */
+    label: string;
+    remote: string;
+    mainDir: string;
+    worktreeDir: string;
+}
 
 export class GitService {
     private config: Config;
     private workspaceRoot: string;
     private lastExecError: string = '';
+    private localBaseFallbackNotices: Set<string> = new Set();
     /** Iteration dir of the in-flight task op; git command logs go to its per-task harness.log. */
     private currentLogDir: string = '';
 
@@ -26,6 +41,30 @@ export class GitService {
     }
 
     /**
+     * Consume and clear one-shot notices about local-base fallback usage.
+     * Returns null when no fallback happened in recent git operations.
+     */
+    consumeLocalBaseFallbackNotice(): string | null {
+        if (this.localBaseFallbackNotices.size === 0) {
+            return null;
+        }
+        const details = Array.from(this.localBaseFallbackNotices.values()).join('；');
+        this.localBaseFallbackNotices.clear();
+        return `提示：检测到指定基线分支不可用，已自动回退到可用基线继续执行（${details}）。`;
+    }
+
+    private clearOperationNotices(): void {
+        this.localBaseFallbackNotices.clear();
+    }
+
+    private markLocalBaseFallback(detail: string): void {
+        const normalized = (detail || '').trim();
+        if (normalized) {
+            this.localBaseFallbackNotices.add(normalized);
+        }
+    }
+
+    /**
      * Single source of truth for an iteration's baseline branch: the base recorded when the
      * iteration was created (task.baseBranchUsed), else the configured baseline, else 'main'.
      * All branch / merge / sync paths must resolve through here so there is exactly one notion
@@ -35,37 +74,87 @@ export class GitService {
         return (task?.baseBranchUsed || this.config.baseBranch || 'main').trim();
     }
 
+    /** True when a single-repository (monorepo) remote is configured. */
+    private isMonorepo(): boolean {
+        return Boolean(this.config.monorepoGit && this.config.monorepoGit.trim());
+    }
+
+    /**
+     * Single source of truth for which repositories an iteration spans. Monorepo mode yields one
+     * descriptor whose worktree is the iteration dir root; multi-repo mode yields one descriptor
+     * per configured frontend/backend, each checked out into an `iterationDir` subfolder.
+     * Pass '' for `iterationDir` when only main-repo info is needed (e.g. initializeRepos).
+     */
+    private resolveRepoDescriptors(iterationDir: string): RepoDescriptor[] {
+        if (this.isMonorepo()) {
+            return [{
+                kind: 'mono',
+                label: '仓库',
+                remote: this.config.monorepoGit.trim(),
+                // Monorepo: a dedicated main clone under repos/mono-main; iterations are git
+                // worktrees whose root IS the iteration dir (front/back live in configured subfolders).
+                mainDir: this.getMainRepoDir('mono'),
+                worktreeDir: iterationDir,
+            }];
+        }
+        const descriptors: RepoDescriptor[] = [];
+        if (this.config.frontendGit) {
+            descriptors.push({
+                kind: 'frontend',
+                label: '前端',
+                remote: this.config.frontendGit,
+                mainDir: this.getMainRepoDir('frontend'),
+                worktreeDir: path.join(iterationDir, 'frontend'),
+            });
+        }
+        if (this.config.backendGit) {
+            descriptors.push({
+                kind: 'backend',
+                label: '后端',
+                remote: this.config.backendGit,
+                mainDir: this.getMainRepoDir('backend'),
+                worktreeDir: path.join(iterationDir, 'backend'),
+            });
+        }
+        return descriptors;
+    }
+
     /**
      * Log a git line to the unified per-task log: the current operation's iteration dir when set
      * (so logs are split per task), otherwise the master root for task-less ops like repo init.
      */
     private logGit(line: string): void {
-        appendHarnessLog(this.currentLogDir || this.workspaceRoot, 'git', line);
+        // Critical for lazy-init: before a worktree is successfully attached, writing logs to
+        // `currentLogDir/.harness` would implicitly create the directory and then make
+        // `git worktree add <currentLogDir>` fail with "already exists".
+        // Therefore only log to currentLogDir when it is already a valid git worktree.
+        const preferred = (this.currentLogDir || '').trim();
+        const canUsePreferred = Boolean(preferred) && fs.existsSync(path.join(preferred, '.git'));
+        appendHarnessLog(canUsePreferred ? preferred : this.workspaceRoot, 'git', line);
     }
 
     async initializeRepos(): Promise<{ success: boolean; message: string }> {
         this.currentLogDir = ''; // no single task → log repo init to the master root
         this.lastExecError = '';
-        if (!this.config.frontendGit && !this.config.backendGit) {
-            return { success: false, message: '请至少填写一个 Git 地址（前端或后端）' };
+        this.clearOperationNotices();
+        const descriptors = this.resolveRepoDescriptors('');
+        if (descriptors.length === 0) {
+            return { success: false, message: '请至少填写一个 Git 地址（前端/后端或单一仓库）' };
         }
 
         const baseBranch = (this.config.baseBranch || 'main').trim();
-        const requireExact = Boolean(this.config.baseBranch?.trim());
+        // Saving Git settings should initialize repos robustly even when the configured base
+        // branch does not exist yet on remote. Exact-branch enforcement is done when creating
+        // iteration branches, not during settings save.
+        const requireExact = false;
 
-        if (this.config.frontendGit) {
-            const frontendMainDir = this.getMainRepoDir('frontend');
-            const result = await this.ensureMainRepo(this.config.frontendGit, frontendMainDir, baseBranch, requireExact);
+        for (const repo of descriptors) {
+            const result = await this.ensureMainRepo(repo.remote, repo.mainDir, baseBranch, requireExact);
             if (!result.success) {
-                return { success: false, message: this.withExecError('前端仓库初始化失败') };
+                return { success: false, message: this.withExecError(`${repo.label}仓库初始化失败`) };
             }
-        }
-
-        if (this.config.backendGit) {
-            const backendMainDir = this.getMainRepoDir('backend');
-            const result = await this.ensureMainRepo(this.config.backendGit, backendMainDir, baseBranch, requireExact);
-            if (!result.success) {
-                return { success: false, message: this.withExecError('后端仓库初始化失败') };
+            if (repo.kind === 'mono') {
+                this.ensureMonorepoScaffold(repo.mainDir);
             }
         }
 
@@ -75,6 +164,7 @@ export class GitService {
     async createIterationBranches(task: Task, iterationDir: string): Promise<{ success: boolean; message?: string; baseBranch?: string; iterationBranch?: string }> {
         this.currentLogDir = iterationDir;
         this.lastExecError = '';
+        this.clearOperationNotices();
         const branchName = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
         const baseBranch = (this.config.baseBranch || 'main').trim();
         const requireExactBaseBranch = Boolean(this.config.baseBranch?.trim());
@@ -83,52 +173,36 @@ export class GitService {
             return { success: false, message: '迭代名称必须使用英文' };
         }
 
-        if (!this.config.frontendGit && !this.config.backendGit) {
+        const descriptors = this.resolveRepoDescriptors(iterationDir);
+        if (descriptors.length === 0) {
             return { success: false, message: '请先在高级设置配置至少一个 Git 地址' };
         }
 
         const expectedWorktrees: string[] = [];
+        let baseAssigned = false;
 
-        if (this.config.frontendGit) {
-            const frontendMainDir = this.getMainRepoDir('frontend');
-            const frontendDir = path.join(iterationDir, 'frontend');
-            const frontendInit = await this.ensureMainRepo(this.config.frontendGit, frontendMainDir, baseBranch, requireExactBaseBranch);
-            if (!frontendInit.success) {
+        for (const repo of descriptors) {
+            const init = await this.ensureMainRepo(repo.remote, repo.mainDir, baseBranch, requireExactBaseBranch);
+            if (!init.success) {
                 return {
                     success: false,
                     message: this.withExecError(requireExactBaseBranch
-                        ? `前端仓库初始化失败：无法按指定基线分支 ${baseBranch} 准备代码`
-                        : '前端仓库初始化失败（clone/fetch/checkout）'),
+                        ? `${repo.label}仓库初始化失败：无法按指定基线分支 ${baseBranch} 准备代码`
+                        : `${repo.label}仓库初始化失败（clone/fetch/checkout）`),
                 };
             }
-            const frontendBaseBranch = frontendInit.baseBranch || baseBranch;
-            resolvedBaseBranch = frontendBaseBranch;
-            if (!await this.prepareWorktree(frontendMainDir, frontendDir, branchName, frontendBaseBranch)) {
-                return { success: false, message: this.withExecError('前端 worktree 创建失败') };
+            const repoBaseBranch = init.baseBranch || baseBranch;
+            if (!baseAssigned) {
+                resolvedBaseBranch = repoBaseBranch;
+                baseAssigned = true;
             }
-            expectedWorktrees.push(frontendDir);
-        }
-
-        if (this.config.backendGit) {
-            const backendMainDir = this.getMainRepoDir('backend');
-            const backendDir = path.join(iterationDir, 'backend');
-            const backendInit = await this.ensureMainRepo(this.config.backendGit, backendMainDir, baseBranch, requireExactBaseBranch);
-            if (!backendInit.success) {
-                return {
-                    success: false,
-                    message: this.withExecError(requireExactBaseBranch
-                        ? `后端仓库初始化失败：无法按指定基线分支 ${baseBranch} 准备代码`
-                        : '后端仓库初始化失败（clone/fetch/checkout）'),
-                };
+            if (!await this.prepareWorktree(repo.mainDir, repo.worktreeDir, branchName, repoBaseBranch)) {
+                return { success: false, message: this.withExecError(`${repo.label} worktree 创建失败`) };
             }
-            const backendBaseBranch = backendInit.baseBranch || baseBranch;
-            if (!resolvedBaseBranch) {
-                resolvedBaseBranch = backendBaseBranch;
+            if (repo.kind === 'mono') {
+                this.ensureMonorepoScaffold(repo.worktreeDir);
             }
-            if (!await this.prepareWorktree(backendMainDir, backendDir, branchName, backendBaseBranch)) {
-                return { success: false, message: this.withExecError('后端 worktree 创建失败') };
-            }
-            expectedWorktrees.push(backendDir);
+            expectedWorktrees.push(repo.worktreeDir);
         }
 
         const missing = expectedWorktrees.filter(dir => !this.hasGitWorktree(dir));
@@ -154,22 +228,7 @@ export class GitService {
     async detachIterationWorktrees(iterationDir: string): Promise<{ success: boolean; errors: string[] }> {
         this.currentLogDir = iterationDir;
         const errors: string[] = [];
-        const repos: Array<{ kind: 'frontend' | 'backend'; mainDir: string; worktreeDir: string }> = [];
-
-        if (this.config.frontendGit) {
-            repos.push({
-                kind: 'frontend',
-                mainDir: this.getMainRepoDir('frontend'),
-                worktreeDir: path.join(iterationDir, 'frontend'),
-            });
-        }
-        if (this.config.backendGit) {
-            repos.push({
-                kind: 'backend',
-                mainDir: this.getMainRepoDir('backend'),
-                worktreeDir: path.join(iterationDir, 'backend'),
-            });
-        }
+        const repos = this.resolveRepoDescriptors(iterationDir);
 
         for (const repo of repos) {
             const escapedWorktree = repo.worktreeDir.replace(/"/g, '\\"');
@@ -179,7 +238,7 @@ export class GitService {
                     if (registered) {
                         const removed = await this.execCmd(`git worktree remove --force "${escapedWorktree}"`, repo.mainDir);
                         if (!removed && !/not a working tree/i.test(this.lastExecError || '')) {
-                            errors.push(`[${repo.kind}] git worktree remove 失败：${this.lastExecError}`);
+                            errors.push(`[${repo.label}] git worktree remove 失败：${this.lastExecError}`);
                         }
                     }
                     await this.execCmd('git worktree prune', repo.mainDir);
@@ -188,7 +247,7 @@ export class GitService {
                 this.safeRemovePath(repo.worktreeDir, { recursive: true });
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
-                errors.push(`[${repo.kind}] 删除目录失败：${message}`);
+                errors.push(`[${repo.label}] 删除目录失败：${message}`);
             }
         }
 
@@ -209,8 +268,24 @@ export class GitService {
         clearDirChildrenPreserving(dirPath, preserveNames);
     }
 
-    private getMainRepoDir(kind: 'frontend' | 'backend'): string {
+    private getMainRepoDir(kind: 'frontend' | 'backend' | 'mono'): string {
         return path.join(this.workspaceRoot, 'repos', `${kind}-main`);
+    }
+
+    private ensureMonorepoScaffold(rootDir: string): void {
+        const dirs = this.config.monorepoDirs || DEFAULT_MONOREPO_DIRS;
+        const scaffoldDirs = [
+            dirs.frontend || DEFAULT_MONOREPO_DIRS.frontend,
+            dirs.docs || DEFAULT_MONOREPO_DIRS.docs,
+            dirs.scripts || DEFAULT_MONOREPO_DIRS.scripts,
+        ];
+        for (const relDir of scaffoldDirs) {
+            const name = (relDir || '').trim();
+            if (!name) {
+                continue;
+            }
+            fs.mkdirSync(path.join(rootDir, name), { recursive: true });
+        }
     }
 
     private buildCommitMessage(task: Task): string {
@@ -221,6 +296,17 @@ export class GitService {
     }
 
     private async ensureMainRepo(remote: string, repoDir: string, baseBranch: string, requireExactBaseBranch: boolean): Promise<{ success: boolean; baseBranch?: string }> {
+        if (fs.existsSync(repoDir) && fs.existsSync(path.join(repoDir, '.git'))) {
+            // Verify the configured remote URL matches what is actually cloned here.
+            // If it doesn't (e.g., left-over from an old git-init style setup), wipe and re-clone.
+            const urlOut = await this.execCmdOutput('git remote get-url origin', repoDir);
+            const existingUrl = urlOut.success ? urlOut.stdout.trim() : '';
+            const normalise = (u: string) => u.replace(/\.git$/, '').replace(/\/$/, '').toLowerCase();
+            if (!existingUrl || normalise(existingUrl) !== normalise(remote)) {
+                this.logGit(`主仓库远端地址不匹配（当前=${existingUrl}，期望=${remote}），删除后重新克隆`);
+                this.safeRemovePath(repoDir, { recursive: true });
+            }
+        }
         if (!fs.existsSync(repoDir) || !fs.existsSync(path.join(repoDir, '.git'))) {
             fs.mkdirSync(path.dirname(repoDir), { recursive: true });
             const cloned = await this.execCmd(`git clone ${remote} "${repoDir}"`, this.workspaceRoot || path.dirname(repoDir));
@@ -232,15 +318,45 @@ export class GitService {
     }
 
     private async prepareWorktree(mainRepoDir: string, worktreeDir: string, branchName: string, baseBranch: string): Promise<boolean> {
+        // Empty repos (no commits) cannot create worktrees. Bootstrap with an initial commit first.
+        const isEmpty = await this.isEmptyRepo(mainRepoDir);
+        if (isEmpty) {
+            this.logGit(`空仓库检测：在主仓库创建初始提交以支持 worktree`);
+            // Create baseBranch as an orphan branch with one empty commit.
+            await this.execCmd(`git checkout --orphan ${baseBranch}`, mainRepoDir);
+            await this.execCmd('git commit --allow-empty -m "chore: initial commit by funharness"', mainRepoDir);
+        }
+
+        // .harness is written into the iteration dir by saveAndRender() BEFORE git worktree
+        // creation. Windows file-system watchers keep handles on that directory, which prevents
+        // the OS from deleting it. Move .harness out temporarily so the parent directory becomes
+        // empty and deletable, then restore it after git worktree add.
+        const harnessDir = path.join(worktreeDir, '.harness');
+        const tempHarnessDir = path.join(path.dirname(worktreeDir), `.harness-tmp-${branchName}`);
+        let harnessMoved = false;
+        if (fs.existsSync(harnessDir)) {
+            try {
+                if (fs.existsSync(tempHarnessDir)) {
+                    this.safeRemovePath(tempHarnessDir, { recursive: true });
+                }
+                fs.renameSync(harnessDir, tempHarnessDir);
+                harnessMoved = true;
+                this.logGit(`.harness 已临时移出 ${worktreeDir} 以规避 Windows 文件锁`);
+            } catch {
+                // Non-fatal: forceRemoveDirAsync will handle the locked dir below.
+            }
+        }
+
         if (fs.existsSync(worktreeDir)) {
             const removed = await this.execCmd(`git worktree remove --force "${worktreeDir}"`, mainRepoDir);
             if (!removed) {
                 // When git does not recognize this path as a worktree, treat it as stale folder and continue.
                 if (!/not a working tree/i.test(this.lastExecError || '')) {
+                    if (harnessMoved) { this.tryRestoreHarness(tempHarnessDir, harnessDir); }
                     return false;
                 }
             }
-            this.safeRemovePath(worktreeDir, { recursive: true });
+            await this.forceRemoveDirAsync(worktreeDir);
         }
 
         // Clean stale worktree records before creating a new one.
@@ -248,16 +364,31 @@ export class GitService {
 
         if (await this.hasRegisteredWorktreeAtPath(mainRepoDir, worktreeDir)) {
             // Same path already registered by git worktree metadata, reuse it when valid.
+            if (harnessMoved) { this.tryRestoreHarness(tempHarnessDir, harnessDir); }
             return this.hasGitWorktree(worktreeDir);
         }
 
         fs.mkdirSync(path.dirname(worktreeDir), { recursive: true });
         const added = await this.execCmd(`git worktree add "${worktreeDir}" -B ${branchName} ${baseBranch}`, mainRepoDir);
         if (!added) {
+            // git reports "already exists" when the target directory still exists on disk
+            // (e.g. Windows file locks prevented safeRemovePath from completing).
+            // Remove it forcefully and retry once before giving up.
+            if (/already exists/i.test(this.lastExecError || '')) {
+                await this.forceRemoveDirAsync(worktreeDir);
+                await this.execCmd('git worktree prune', mainRepoDir);
+                const retried = await this.execCmd(`git worktree add "${worktreeDir}" -B ${branchName} ${baseBranch}`, mainRepoDir);
+                if (!retried) {
+                    if (harnessMoved) { this.tryRestoreHarness(tempHarnessDir, harnessDir); }
+                    return false;
+                }
+                if (harnessMoved) { this.tryRestoreHarness(tempHarnessDir, harnessDir); }
+                return this.hasGitWorktree(worktreeDir);
+            }
             const conflictPath = this.extractAlreadyCheckedOutPath(this.lastExecError);
             if (conflictPath && this.isSamePath(conflictPath, worktreeDir)) {
                 if (this.hasGitWorktree(worktreeDir)) {
-                    // Already attached at the same location; treat as successful reuse.
+                    if (harnessMoved) { this.tryRestoreHarness(tempHarnessDir, harnessDir); }
                     return true;
                 }
                 // Clear stale registration and retry once.
@@ -265,13 +396,32 @@ export class GitService {
                 await this.execCmd('git worktree prune', mainRepoDir);
                 const retried = await this.execCmd(`git worktree add "${worktreeDir}" -B ${branchName} ${baseBranch}`, mainRepoDir);
                 if (!retried) {
+                    if (harnessMoved) { this.tryRestoreHarness(tempHarnessDir, harnessDir); }
                     return false;
                 }
+                if (harnessMoved) { this.tryRestoreHarness(tempHarnessDir, harnessDir); }
                 return this.hasGitWorktree(worktreeDir);
             }
+            if (harnessMoved) { this.tryRestoreHarness(tempHarnessDir, harnessDir); }
             return false;
         }
+        if (harnessMoved) { this.tryRestoreHarness(tempHarnessDir, harnessDir); }
         return this.hasGitWorktree(worktreeDir);
+    }
+
+    /** Move the temp .harness backup back into the worktree dir if the target doesn't exist yet. */
+    private tryRestoreHarness(tempDir: string, targetDir: string): void {
+        try {
+            if (fs.existsSync(tempDir) && !fs.existsSync(targetDir)) {
+                fs.mkdirSync(path.dirname(targetDir), { recursive: true });
+                fs.renameSync(tempDir, targetDir);
+                this.logGit(`.harness 已从临时位置恢复至 ${targetDir}`);
+            } else if (fs.existsSync(tempDir)) {
+                this.safeRemovePath(tempDir, { recursive: true });
+            }
+        } catch {
+            // Best-effort: if restore fails the dir will be recreated by saveAndRender on next save.
+        }
     }
 
     async pushAll(task: Task, iterationDir: string): Promise<{ success: boolean; message: string }> {
@@ -279,30 +429,17 @@ export class GitService {
         const failures: Array<{ repo: string; reason: string }> = [];
         const commitMessage = this.buildCommitMessage(task);
         const expectedBranch = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
+        const repos = this.resolveRepoDescriptors(iterationDir);
 
-        if (this.config.frontendGit) {
-            const frontendDir = path.join(iterationDir, 'frontend');
-            const branchErr = await this.assertExpectedBranch(frontendDir, expectedBranch);
+        for (const repo of repos) {
+            const branchErr = await this.assertExpectedBranch(repo.worktreeDir, expectedBranch);
             if (branchErr) {
-                failures.push({ repo: 'frontend', reason: branchErr });
-            } else {
-                const frontendError = await this.pushRepoChanges('frontend', frontendDir, commitMessage);
-                if (frontendError) {
-                    failures.push({ repo: 'frontend', reason: frontendError });
-                }
+                failures.push({ repo: repo.label, reason: branchErr });
+                continue;
             }
-        }
-
-        if (this.config.backendGit) {
-            const backendDir = path.join(iterationDir, 'backend');
-            const branchErr = await this.assertExpectedBranch(backendDir, expectedBranch);
-            if (branchErr) {
-                failures.push({ repo: 'backend', reason: branchErr });
-            } else {
-                const backendError = await this.pushRepoChanges('backend', backendDir, commitMessage);
-                if (backendError) {
-                    failures.push({ repo: 'backend', reason: backendError });
-                }
+            const error = await this.pushRepoChanges(repo.label, repo.worktreeDir, commitMessage);
+            if (error) {
+                failures.push({ repo: repo.label, reason: error });
             }
         }
 
@@ -319,7 +456,7 @@ export class GitService {
         }
 
         // Use -A to stage tracked changes plus newly created files.
-        const addCmd = await this.execCmd(`git add . -- :(exclude).harness`, repoDir);
+        const addCmd = await this.execGitAddTolerant(repoDir);
         if (!addCmd) {
             return `git add 失败: ${this.lastExecError}`;
         }
@@ -351,22 +488,15 @@ export class GitService {
 
     async syncMainCode(task: Task, iterationDir: string): Promise<{ success: boolean; message: string }> {
         this.currentLogDir = iterationDir;
+        this.clearOperationNotices();
         const baseBranch = this.resolveBaseBranch(task);
         const expectedBranch = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
         const failures: Array<{ repo: string; reason: string }> = [];
+        const repos = this.resolveRepoDescriptors(iterationDir);
 
-        if (this.config.frontendGit) {
-            const mainDir = this.getMainRepoDir('frontend');
-            const worktreeDir = path.join(iterationDir, 'frontend');
-            const result = await this.syncRepoToWorktree(mainDir, worktreeDir, baseBranch, expectedBranch);
-            if (!result.ok) { failures.push({ repo: 'frontend', reason: result.reason || '未知' }); }
-        }
-
-        if (this.config.backendGit) {
-            const mainDir = this.getMainRepoDir('backend');
-            const worktreeDir = path.join(iterationDir, 'backend');
-            const result = await this.syncRepoToWorktree(mainDir, worktreeDir, baseBranch, expectedBranch);
-            if (!result.ok) { failures.push({ repo: 'backend', reason: result.reason || '未知' }); }
+        for (const repo of repos) {
+            const result = await this.syncRepoToWorktree(repo.mainDir, repo.worktreeDir, baseBranch, expectedBranch);
+            if (!result.ok) { failures.push({ repo: repo.label, reason: result.reason || '未知' }); }
         }
 
         if (failures.length > 0) {
@@ -394,7 +524,7 @@ export class GitService {
 
         // Auto-commit any pending local changes so the merge can proceed cleanly.
         {
-            const addOk = await this.execCmd(`git add . -- :(exclude).harness`, worktreeDir);
+            const addOk = await this.execGitAddTolerant(worktreeDir);
             if (!addOk) {
                 return { ok: false, reason: `同步前自动暂存失败：${this.lastExecError}` };
             }
@@ -421,7 +551,21 @@ export class GitService {
         // The main repo may not be on baseBranch, and pulling would merge baseBranch
         // into whatever branch it is currently on, which could corrupt iteration branches.
         // git fetch origin (above) is sufficient to update origin/${baseBranch} tracking ref.
-        const merged = await this.execCmd(`git merge origin/${baseBranch} --no-edit`, worktreeDir);
+        // If origin/<base> doesn't exist, fall back to an available remote default branch
+        // (origin/HEAD -> master/main).
+        const remoteList = await this.execCmdOutput(`git branch -r --list origin/${baseBranch}`, mainRepoDir);
+        const hasRemoteBase = remoteList.success && Boolean((remoteList.stdout || '').trim());
+        let mergeSource = `origin/${baseBranch}`;
+        if (!hasRemoteBase) {
+            const fallbackBranch = await this.findDefaultBranch(mainRepoDir);
+            if (!fallbackBranch) {
+                return { ok: false, reason: `基线分支不可用：远程不存在 ${baseBranch}，且未找到可用的远程回退分支（master/main）` };
+            }
+            mergeSource = `origin/${fallbackBranch}`;
+            this.logGit(`同步回退：origin/${baseBranch} 不存在，改用远程分支 origin/${fallbackBranch} 合并`);
+            this.markLocalBaseFallback(`指定=${baseBranch} -> 使用=${fallbackBranch}`);
+        }
+        const merged = await this.execCmd(`git merge ${mergeSource} --no-edit`, worktreeDir);
         if (!merged) {
             return { ok: false, reason: `合并主分支代码失败（可能有冲突）：${this.lastExecError}` };
         }
@@ -442,30 +586,30 @@ export class GitService {
             return { success: false, message: '无法识别迭代分支名' };
         }
 
-        type RepoCtx = { kind: 'frontend' | 'backend'; mainDir: string; worktreeDir: string };
-        const repos: RepoCtx[] = [];
-        if (this.config.frontendGit) {
-            repos.push({
-                kind: 'frontend',
-                mainDir: this.getMainRepoDir('frontend'),
-                worktreeDir: path.join(iterationDir, 'frontend'),
-            });
-        }
-        if (this.config.backendGit) {
-            repos.push({
-                kind: 'backend',
-                mainDir: this.getMainRepoDir('backend'),
-                worktreeDir: path.join(iterationDir, 'backend'),
-            });
-        }
+        type RepoCtx = { kind: 'frontend' | 'backend' | 'mono'; label: string; mainDir: string; worktreeDir: string };
+        const repos: RepoCtx[] = this.resolveRepoDescriptors(iterationDir);
 
-        // Quick check: skip the entire pipeline when no worktree has any changes.
+        // Quick check: skip the entire pipeline when no worktree has uncommitted changes
+        // AND the iteration branch has no commits ahead of the target baseline.
         let anyChanges = false;
         for (const repo of repos) {
             if (!fs.existsSync(repo.worktreeDir)) continue;
+            // 1) Check for uncommitted working-tree changes.
             const quickStatus = await this.execCmdOutput('git status --porcelain', repo.worktreeDir);
             if (quickStatus.success && quickStatus.stdout.trim().length > 0) {
                 anyChanges = true;
+                break;
+            }
+            // 2) Check for committed-but-not-merged differences vs the target baseline.
+            //    `git log target..HEAD` lists commits on the iteration branch that are not
+            //    yet in the target — i.e. exactly what needs to be merged.
+            const ahead = await this.execCmdOutput(
+                `git log ${target}..HEAD --oneline`,
+                repo.worktreeDir,
+            );
+            if (ahead.success && ahead.stdout.trim().length > 0) {
+                anyChanges = true;
+                this.logGit(`迭代分支有未合并到 ${target} 的提交：\n${ahead.stdout.trim()}`);
                 break;
             }
         }
@@ -483,7 +627,7 @@ export class GitService {
             if (!prep.ok) {
                 return {
                     success: false,
-                    message: `[${repo.kind}] 迭代分支同步到远程失败：${prep.reason}\n\n` +
+                    message: `[${repo.label}] 迭代分支同步到远程失败：${prep.reason}\n\n` +
                         `本地 worktree 和迭代分支均未变更，请处理后重试。`,
                 };
             }
@@ -496,7 +640,7 @@ export class GitService {
             if (!merged.ok) {
                 return {
                     success: false,
-                    message: `[${repo.kind}] 合并/推送到远程基线 ${target} 失败：${merged.reason}\n\n` +
+                    message: `[${repo.label}] 合并/推送到远程基线 ${target} 失败：${merged.reason}\n\n` +
                         `⚠️ 代码已安全保存在远程 origin/${sourceBranch}，本地 worktree 与迭代分支均已保留，未执行任何清理。\n` +
                         `请手动处理冲突或确认远程状态后重试。`,
                 };
@@ -517,7 +661,7 @@ export class GitService {
         for (const repo of repos) {
             const cleanupResult = await this.cleanupMergedBranch(repo.mainDir, repo.worktreeDir, sourceBranch, target);
             if (!cleanupResult.ok) {
-                cleanupFailures.push({ repo: repo.kind, reason: cleanupResult.reason || '未知错误' });
+                cleanupFailures.push({ repo: repo.label, reason: cleanupResult.reason || '未知错误' });
             }
         }
 
@@ -551,7 +695,7 @@ export class GitService {
             return { ok: false, reason: branchErr };
         }
 
-        const addCmd = await this.execCmd(`git add . -- :(exclude).harness`, worktreeDir);
+        const addCmd = await this.execGitAddTolerant(worktreeDir);
         if (!addCmd) {
             return { ok: false, reason: `git add 失败：${this.lastExecError}` };
         }
@@ -631,8 +775,6 @@ export class GitService {
             const createFromRemote = await this.execCmd(`git checkout -b ${targetBranch} origin/${targetBranch}`, repoDir);
             if (!createFromRemote) {
                 if (/already exists/i.test(this.lastExecError)) {
-                    // Branch exists locally but wasn't checked out above (e.g. dirty state).
-                    // Force-switch to it.
                     const forceCheckout = await this.execCmd(`git checkout ${targetBranch}`, repoDir);
                     if (!forceCheckout) {
                         return { ok: false, reason: `目标分支 ${targetBranch} 本地已存在但无法切换：${this.lastExecError}` };
@@ -661,7 +803,6 @@ export class GitService {
             const dryRunOk = await this.execCmd(`git merge --no-commit --no-ff ${sourceBranch}`, repoDir);
             if (!dryRunOk) {
                 const dryRunError = this.lastExecError;
-                // Only abort if a merge was actually in progress (MERGE_HEAD exists).
                 if (fs.existsSync(path.join(repoDir, '.git', 'MERGE_HEAD'))) {
                     await this.execCmd('git merge --abort', repoDir);
                 }
@@ -689,8 +830,7 @@ export class GitService {
             return { ok: false, reason: `push 到 ${targetBranch} 失败：${this.lastExecError}` };
         }
 
-        // Verify remote actually advanced. `git push` can exit 0 in degenerate cases without
-        // updating the remote ref we expected, so we explicitly compare SHAs.
+        // Verify remote actually advanced.
         const refetched = await this.execCmd('git fetch origin', repoDir);
         if (!refetched) {
             return { ok: false, reason: `推送后 fetch origin 失败，无法校验远程：${this.lastExecError}` };
@@ -782,6 +922,16 @@ export class GitService {
         if (!fetched) {
             return { success: false };
         }
+
+        // Handle empty repositories (freshly created remote with zero commits).
+        // In this case there are no branches at all — just succeed and let the user start working.
+        const isEmpty = await this.isEmptyRepo(repoDir);
+        if (isEmpty) {
+            this.logGit(`仓库为空仓库（无任何提交），跳过基线分支检出，直接视为初始化成功`);
+            this.markLocalBaseFallback(`远程仓库为空，将在首次提交时自动创建分支`);
+            return { success: true, baseBranch: baseBranch || 'main' };
+        }
+
         const branchCandidates = requireExactBaseBranch
             ? [baseBranch]
             : await this.buildBaseBranchCandidates(repoDir, baseBranch);
@@ -795,21 +945,39 @@ export class GitService {
             if (pulled) {
                 return { success: true, baseBranch: candidate };
             }
+            // Pull failed — check if the remote simply doesn't have this branch.
+            // If local checkout succeeded but remote branch is absent, that's OK:
+            // the user can start working from the local branch.
+            const remoteHasBranch = await this.execCmdOutput(`git branch -r --list origin/${candidate}`, repoDir);
+            if (!remoteHasBranch.success || !(remoteHasBranch.stdout || '').trim()) {
+                this.logGit(`远程不存在分支 ${candidate}，但本地已切换成功，视为初始化成功`);
+                this.markLocalBaseFallback(`远程不存在 ${candidate}，使用本地分支`);
+                return { success: true, baseBranch: candidate };
+            }
         }
 
-        // If the specified base branch doesn't exist, create it from master/main
+        // Exact base mode fallback: when the configured base branch is unavailable, fall back to
+        // an existing remote baseline (origin/HEAD -> master/main).
         if (requireExactBaseBranch) {
             const fallbackBranch = await this.findDefaultBranch(repoDir);
             if (fallbackBranch) {
                 const switched = await this.switchToBranch(repoDir, fallbackBranch);
                 if (switched) {
-                    await this.execCmd(`git pull origin ${fallbackBranch}`, repoDir);
-                    const created = await this.execCmd(`git checkout -b ${baseBranch}`, repoDir);
-                    if (created) {
-                        await this.execCmd(`git push -u origin ${baseBranch}`, repoDir);
-                        return { success: true, baseBranch };
+                    const pulled = await this.execCmd(`git pull origin ${fallbackBranch}`, repoDir);
+                    if (pulled) {
+                        this.logGit(`基线回退：指定 ${baseBranch} 不可用，改用远程分支 ${fallbackBranch}`);
+                        this.markLocalBaseFallback(`指定=${baseBranch} -> 使用=${fallbackBranch}`);
+                        return { success: true, baseBranch: fallbackBranch };
                     }
                 }
+            }
+            // If remote has zero branches (e.g. empty remote repo but local has orphan commits),
+            // succeed with the local state — the user can push later when the remote is ready.
+            const anyRemote = await this.execCmdOutput('git branch -r', repoDir);
+            if (!anyRemote.success || !(anyRemote.stdout || '').trim()) {
+                this.logGit(`远程无任何分支可用，使用本地分支 ${baseBranch} 继续`);
+                this.markLocalBaseFallback(`远程仓库无分支，使用本地分支`);
+                return { success: true, baseBranch };
             }
             this.lastExecError = this.withExecError(`指定基线分支不可用: ${baseBranch}`);
         }
@@ -817,17 +985,56 @@ export class GitService {
         return { success: false };
     }
 
+    /**
+     * Returns true when the repo has no commits at all (empty clone).
+     */
+    private async isEmptyRepo(repoDir: string): Promise<boolean> {
+        const result = await this.execCmdOutput('git rev-parse HEAD', repoDir);
+        // In an empty repo, rev-parse HEAD fails with "fatal: bad default revision 'HEAD'"
+        return !result.success;
+    }
+
     private async findDefaultBranch(repoDir: string): Promise<string | null> {
-        const remoteDefault = await this.resolveRemoteDefaultBranch(repoDir);
-        if (remoteDefault) {
-            return remoteDefault;
-        }
-        for (const candidate of ['master', 'main']) {
-            const switched = await this.switchToBranch(repoDir, candidate);
-            if (switched) {
-                return candidate;
+        // One call to list all remote branches; parse everything from it.
+        const allRemote = await this.execCmdOutput('git branch -r', repoDir);
+        if (allRemote.success && allRemote.stdout.trim()) {
+            const lines = allRemote.stdout.split('\n').map(l => l.trim()).filter(Boolean);
+            // 1. Honour origin/HEAD symbolic pointer when set.
+            for (const line of lines) {
+                const match = /origin\/HEAD\s*->\s*origin\/(\S+)/.exec(line);
+                if (match) {
+                    return match[1];
+                }
             }
+            // 2. Try well-known default branch names.
+            const branchNames = lines
+                .filter(l => !l.startsWith('origin/HEAD'))
+                .map(l => l.replace(/^origin\//, ''));
+            for (const candidate of ['master', 'main']) {
+                if (branchNames.includes(candidate)) {
+                    return candidate;
+                }
+            }
+            // 3. Last resort: use the first available remote branch.
+            return branchNames[0] || null;
         }
+
+        // Fallback: local tracking refs absent (e.g., legacy git-init setup) — query the remote
+        // directly via ls-remote so we can still find a usable baseline.
+        this.logGit('git branch -r 返回空，尝试 git ls-remote --heads origin 直接查询远端');
+        const lsRemote = await this.execCmdOutput('git ls-remote --heads origin', repoDir);
+        if (lsRemote.success && lsRemote.stdout.trim()) {
+            const branchNames = lsRemote.stdout.split('\n')
+                .map(l => { const m = /refs\/heads\/(\S+)$/.exec(l.trim()); return m ? m[1] : null; })
+                .filter((b): b is string => Boolean(b));
+            for (const candidate of ['master', 'main']) {
+                if (branchNames.includes(candidate)) {
+                    return candidate;
+                }
+            }
+            return branchNames[0] || null;
+        }
+
         return null;
     }
 
@@ -851,22 +1058,31 @@ export class GitService {
     }
 
     private async resolveRemoteDefaultBranch(repoDir: string): Promise<string | null> {
-        const symbolic = await this.execCmdOutput('git symbolic-ref --short refs/remotes/origin/HEAD', repoDir);
-        if (!symbolic.success) {
+        // Parse origin/HEAD symbolic pointer from the remote-tracking branch list.
+        const allRemote = await this.execCmdOutput('git branch -r', repoDir);
+        if (!allRemote.success || !allRemote.stdout.trim()) {
             return null;
         }
-        const line = (symbolic.stdout || '').trim();
-        if (!line) {
-            return null;
+        for (const line of allRemote.stdout.split('\n')) {
+            const match = /origin\/HEAD\s*->\s*origin\/(\S+)/.exec(line.trim());
+            if (match) {
+                return match[1];
+            }
         }
-        const parts = line.split('/');
-        return parts.length >= 2 ? parts[parts.length - 1] : null;
+        return null;
     }
 
     private async switchToBranch(repoDir: string, branch: string): Promise<boolean> {
-        const checkout = await this.execCmd(`git checkout ${branch}`, repoDir);
-        if (checkout) {
-            return true;
+        const localList = await this.execCmdOutput(`git branch --list ${branch}`, repoDir);
+        const localExists = localList.success && Boolean((localList.stdout || '').trim());
+        if (localExists) {
+            return this.execCmd(`git checkout ${branch}`, repoDir);
+        }
+
+        const remoteList = await this.execCmdOutput(`git branch -r --list origin/${branch}`, repoDir);
+        const remoteExists = remoteList.success && Boolean((remoteList.stdout || '').trim());
+        if (!remoteExists) {
+            return false;
         }
         return this.execCmd(`git checkout -b ${branch} origin/${branch}`, repoDir);
     }
@@ -901,6 +1117,24 @@ export class GitService {
 
     private removeDirRobustly(targetDir: string): void {
         this.safeRemovePath(targetDir, { recursive: true });
+    }
+
+    /**
+     * Async directory removal with OS-shell fallback for Windows file-lock situations.
+     * Uses fs.rmSync first; if the directory still exists afterwards, falls back to
+     * `cmd /c rd /s /q` (Windows) or `rm -rf` (Unix) via the shell.
+     */
+    private async forceRemoveDirAsync(dirPath: string): Promise<void> {
+        this.safeRemovePath(dirPath, { recursive: true });
+        if (!fs.existsSync(dirPath)) {
+            return;
+        }
+        this.logGit(`safeRemovePath 未能删除 ${dirPath}，尝试 shell 强制删除`);
+        if (process.platform === 'win32') {
+            await this.execCmd(`cmd /c rd /s /q "${dirPath}"`, path.dirname(dirPath));
+        } else {
+            await this.execCmd(`rm -rf "${dirPath}"`, path.dirname(dirPath));
+        }
     }
 
     private async hasRegisteredWorktreeAtPath(mainRepoDir: string, worktreeDir: string): Promise<boolean> {
@@ -945,6 +1179,24 @@ export class GitService {
             return prefix;
         }
         return `${prefix}；${this.lastExecError}`;
+    }
+
+    /**
+     * Run `git add` while tolerating the non-zero exit that some Git versions produce
+     * when the working tree contains paths ignored by .gitignore.  The actual staging still
+     * succeeds for all non-ignored files; the exit code is misleading.
+     */
+    private async execGitAddTolerant(cwd: string): Promise<boolean> {
+        const result = await this.execCmdOutput('git add . -- ":(exclude).harness"', cwd);
+        if (result.success) {
+            return true;
+        }
+        // Git exits non-zero when it encounters ignored paths – treat as success.
+        if (/ignored by one of your \.gitignore/i.test(result.stderr)) {
+            this.logGit(`WARN (tolerated ignored-file warning) [${cwd}] git add\n  stderr: ${result.stderr.trim()}`);
+            return true;
+        }
+        return false;
     }
 
     private async execCmd(cmd: string, cwd: string): Promise<boolean> {

@@ -1,4 +1,4 @@
-import { Config, CustomButton, STAGE, STAGE_LABEL, SubTask, Task, TaskStats, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS } from './models';
+import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubTask, Task, TaskStats, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, normalizeCustomButton } from './models';
 import { HarnessConfigMeta } from './services/taskStoreService';
 import { AutoPollStatus } from './services/autoPollService';
 
@@ -10,61 +10,6 @@ function escapeHtml(value: string): string {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
-}
-
-function buildScriptOptions(selected: string, scriptFiles: string[]): string {
-    const opts = ['<option value="">（选择脚本）</option>'];
-    let matched = false;
-    for (const f of scriptFiles) {
-        const sel = f === selected ? ' selected' : '';
-        if (sel) {
-            matched = true;
-        }
-        opts.push(`<option value="${escapeHtml(f)}"${sel}>${escapeHtml(f)}</option>`);
-    }
-    // A previously chosen script that no longer exists is kept (marked 缺失) so the
-    // button isn't silently re-pointed when its file is missing.
-    if (selected && !matched) {
-        opts.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)}（缺失）</option>`);
-    }
-    return opts.join('');
-}
-
-/** Worktree subfolders a custom button can run in. Empty value = worktree root. */
-const CUSTOM_BUTTON_WORKDIRS = ['frontend', 'backend'];
-
-function buildWorkdirOptions(selected: string): string {
-    const opts = ['<option value="">根目录</option>'];
-    let matched = false;
-    for (const d of CUSTOM_BUTTON_WORKDIRS) {
-        const sel = d === selected ? ' selected' : '';
-        if (sel) {
-            matched = true;
-        }
-        opts.push(`<option value="${escapeHtml(d)}"${sel}>${escapeHtml(d)}</option>`);
-    }
-    // Keep a previously chosen folder that isn't in the standard set, so a button
-    // configured for a custom layout isn't silently reset to the root.
-    if (selected && !matched) {
-        opts.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)}（自定义）</option>`);
-    }
-    return opts.join('');
-}
-
-function buildPlacementOptions(selected: string): string {
-    const place = selected === 'main' ? 'main' : 'iteration';
-    return `<option value="iteration"${place === 'iteration' ? ' selected' : ''}>子面板（迭代）</option>` +
-        `<option value="main"${place === 'main' ? ' selected' : ''}>主面板</option>`;
-}
-
-function customButtonRowHtml(name: string, command: string, workdir: string, placement: string, scriptFiles: string[], disabled: string): string {
-    return `<div class="cb-row">
-<input class="cb-name" placeholder="按钮名称（如 部署）" value="${escapeHtml(name)}" ${disabled}>
-<select class="cb-place" ${disabled} title="显示位置">${buildPlacementOptions(placement)}</select>
-<select class="cb-dir" ${disabled} title="执行目录">${buildWorkdirOptions(workdir)}</select>
-<select class="cb-cmd" ${disabled}>${buildScriptOptions(command, scriptFiles)}</select>
-<button class="cb-del" onclick="removeCustomButton(this)" ${disabled}>✕</button>
-</div>`;
 }
 
 /** Worktree-subview card for the exclusive remote-task auto-poller. */
@@ -349,7 +294,7 @@ function collectTaskActions(ctx: TaskActionContext): { primaryActions: string[];
 
 export function buildMainPageHtml(
     taskViews: MainTaskViewModel[],
-    dashboard: { activeAutoCount: number; maxConcurrentAutoTasks: number; abnormalCount: number },
+    dashboard: Record<string, never>,
     config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; autoPoll?: AutoPollStatus }
 ): string {
     const customButtons = config.customButtons || [];
@@ -454,12 +399,6 @@ ${!isWorktreeSubview ? `<div class="nav">
 <div class="header">
 <h4>${isWorktreeSubview ? '🎯 当前迭代任务' : '📌 迭代任务'}</h4>
 <div class="header-actions">
-${!isWorktreeSubview ? `
-<span class="task-status">并发槽位：${dashboard.activeAutoCount}/${dashboard.maxConcurrentAutoTasks}</span>
-<span class="task-status">异常任务：${dashboard.abnormalCount}</span>
-<button class="toolbar-btn" onclick="toggleAbnormalOnly()">⚠ 只看异常</button>
-<button class="toolbar-btn" onclick="openAbnormalTasks()">📂 打开异常任务</button>
-` : ''}
 <button class="refresh" onclick="refresh()">🔄 刷新</button>
 </div>
 </div>
@@ -554,12 +493,12 @@ placeholder="请输入需求描述"
 </div>
 </div>
 </div>
-<div>阶段：${STAGE_LABEL[t.stage] || t.stage}</div>
+${!t.quickMode ? `<div>阶段：${STAGE_LABEL[t.stage] || t.stage}</div>
 <div class="task-status">原因：${health.summary || '-'}</div>
 ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.latestFailureReason}</div>` : ''}
 <div class="task-status">待办:${stats.todo} 执行中:${stats.doing} 完成:${stats.done}${stats.failed > 0 ? ` 失败:${stats.failed}` : ''}</div>
 <div class="task-progress"><div class="progress-bar" style="width:${view.pct}%"></div></div>
-<div style="font-size:12px">进度：${view.pct}%</div>
+<div style="font-size:12px">进度：${view.pct}%</div>` : ''}
 ${isWorktreeSubview ? `<div class="config-actions" style="margin-top:6px">
 <button class="btn-gray" onclick="setTaskAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
 <button class="btn-gray" onclick="setTaskAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
@@ -623,8 +562,9 @@ ${!isWorktreeSubview ? `<div class="fixed-bottom">
 <h4>🚀 创建迭代开发版本</h4>
 <input id="name" placeholder="迭代名称（英文）">
 <textarea id="desc" rows="2" placeholder="功能描述"></textarea>
-<label style="display:flex;align-items:center;gap:6px;margin:4px 0 8px;font-size:12px;color:var(--vscode-descriptionForeground)">
-<input type="checkbox" id="quickMode"> 快捷模式（跳过需求/设计/任务拆解，直接进入开发）
+<label style="display:flex;align-items:center;justify-content:space-between;margin:4px 0 8px;font-size:12px;color:var(--vscode-descriptionForeground);cursor:pointer">
+<span>快捷模式（跳过拆解，直接开发）</span>
+<input type="checkbox" id="quickMode" style="margin:0;width:16px;height:16px;flex-shrink:0">
 </label>
 <button class="btn-primary" onclick="create()">创建迭代开发版本</button>
 </div>
@@ -632,7 +572,6 @@ ${!isWorktreeSubview ? `<div class="fixed-bottom">
 
 <script>
 const v=acquireVsCodeApi();
-let abnormalOnly=false;
 function p(x){v.postMessage({type:'page',page:x})}
 function create(){
     const name=document.getElementById('name').value.trim();
@@ -737,21 +676,7 @@ function openFolderLocation(id,location){v.postMessage({type:'openFolderLocation
 function setTaskAutomation(id,aa,ar){v.postMessage({type:'setTaskAutomation',id,aa,ar})}
 function setTaskAiProvider(id,ap){v.postMessage({type:'setTaskAiProvider',id,ap})}
 function pushDev(id){v.postMessage({type:'pushAndNextStage',id})}
-function toggleAbnormalOnly(){
-    abnormalOnly=!abnormalOnly;
-    const items=document.querySelectorAll('.task-item[data-task-id]');
-    items.forEach((item)=>{
-        const abnormal=item.getAttribute('data-abnormal')==='1';
-        item.classList.toggle('task-hidden', abnormalOnly && !abnormal);
-    });
-}
-function openAbnormalTasks(){
-    const items=document.querySelectorAll('.task-item[data-task-id][data-abnormal="1"]');
-    items.forEach((item)=>{
-        const id=item.getAttribute('data-task-id');
-        if(id){openFolderLocation(id,'worktree');}
-    });
-}
+
 document.addEventListener('DOMContentLoaded',()=>{
     const taskItems=document.querySelectorAll('.task-item[data-task-id]');
     taskItems.forEach((item)=>{
@@ -773,11 +698,28 @@ window.addEventListener('unhandledrejection',(event)=>{
 export function buildSettingsPageHtml(
     config: Config,
     configMeta: HarnessConfigMeta,
-    scriptFiles: string[],
-    scriptDir: string
+    scriptInventory: ScriptInventory,
 ): string {
     const readOnly = configMeta.readOnly === true;
     const disabled = readOnly ? 'disabled' : '';
+    const inv = scriptInventory;
+    const isWin = process.platform === 'win32';
+    const osLabel = isWin ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux');
+    const scriptExtHint = isWin ? '.ps1 / .bat / .cmd / .js' : '.sh / .bash / .js';
+    const scriptsSubdir = inv.scriptsSubdir;
+    const initialButtons = (config.customButtons || []).map(normalizeCustomButton).map(b => ({
+        name: b.name,
+        scriptSource: b.scriptSource,
+        script: b.script,
+        args: b.args,
+        placement: b.placement,
+    }));
+    const monorepoGitValue = config.monorepoGit || '';
+    // Initial active Git-mode tab: monorepo when a single-repo URL is configured;
+    // multi-repo only when the user has front/back URLs but no monorepo URL.
+    const initialGitMode = config.monorepoGit
+        ? 'mono'
+        : (config.frontendGit || config.backendGit ? 'multi' : 'mono');
     const originLabel = configMeta.origin === 'worktreeSnapshot'
         ? '子 worktree 快照配置'
         : configMeta.origin === 'master'
@@ -799,6 +741,9 @@ input,select,textarea{width:100%;padding:10px;border-radius:8px;border:none;back
 button{width:100%;padding:10px;border-radius:8px;border:none;color:white;margin-top:10px}
 .section{background:#1c1c1e;border-radius:10px;padding:12px;margin-bottom:12px}
 .section-title{font-weight:600;margin-bottom:8px}
+.git-tabs{display:flex;gap:6px;margin-bottom:10px}
+.git-tab{flex:1;padding:8px;border-radius:8px;border:1px solid #3a3a3f;background:#222;color:#bbb;font-size:13px;margin:0}
+.git-tab.active{background:#0a2a4a;border-color:#007aff;color:#fff}
 .toggle-row{display:flex;align-items:center;justify-content:space-between;margin:8px 0;color:#ddd;font-size:13px}
 .toggle-row input{width:auto;margin:0}
 .meta-box{background:#2a2a2d;border:1px solid #3a3a3f;border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px;color:#ddd}
@@ -820,10 +765,11 @@ button{width:100%;padding:10px;border-radius:8px;border:none;color:white;margin-
 .fold[open]>summary{margin-bottom:8px;color:#fff}
 .cb-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
 .cb-row input,.cb-row select{margin:0;min-width:0;box-sizing:border-box}
-.cb-name{flex:1 1 140px}
-.cb-place{flex:1 1 110px}
-.cb-dir{flex:1 1 130px}
-.cb-cmd{flex:2 1 160px}
+.cb-name{flex:1 1 120px}
+.cb-place{flex:1 1 100px}
+.cb-src{flex:1 1 110px}
+.cb-cmd{flex:2 1 150px}
+.cb-args{flex:1 1 110px}
 .cb-del{width:auto;flex:0 0 auto;margin:0;padding:10px 14px;background:#ff3b30}
 .cb-empty{margin:10px 0;padding:10px;border-radius:8px;background:#2b2308;border:1px solid #7a5d00;color:#ffd56a;font-size:12px}
 </style>
@@ -843,10 +789,24 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 
 <div class="section">
 <div class="section-title">Git 配置</div>
+<div class="git-tabs">
+<button type="button" class="git-tab" id="gitTabMono" onclick="switchGitMode('mono')" ${disabled}>单一仓库 (Monorepo)</button>
+<button type="button" class="git-tab" id="gitTabMulti" onclick="switchGitMode('multi')" ${disabled}>多仓库 (前后端分离)</button>
+</div>
+
+<div id="gitPaneMono" class="git-pane">
+<h5>单一仓库（Monorepo）Git 地址</h5>
+<input id="mg" value="${monorepoGitValue}" placeholder="代码、文档、脚本位于同一仓库" ${disabled}>
+<div style="font-size:12px;opacity:0.7;margin:4px 0 8px">该模式下，funharness 会将仓库克隆到 <b>repos/mono-main</b> 作为主仓库，并在主仓库与每个迭代 worktree 中按需补齐目录骨架（默认：<b>apps/</b> 代码、<b>docs/</b> 文档、<b>scripts/</b> 项目脚本）。迭代任务以 git worktree 形式生成在 <b>worktrees/&lt;task&gt;/</b>（根即迭代目录）。你可继续在 apps/ 下组织前后端，也可按项目规范调整。若填写了基线分支但远程不存在，系统会在本地主仓库自动创建该分支。</div>
+</div>
+
+<div id="gitPaneMulti" class="git-pane">
 <h5>前端 Git 地址（可选）</h5>
 <input id="fg" value="${config.frontendGit || ''}" ${disabled}>
 <h5>后端 Git 地址（可选）</h5>
 <input id="bg" value="${config.backendGit || ''}" ${disabled}>
+</div>
+
 <h5>基线分支（如 main、master 或 yourname/integration）</h5>
 <input id="bb" value="${config.baseBranch || ''}" placeholder="如 main 或 yourname/integration" ${disabled}>
 <div class="toggle-row">
@@ -909,20 +869,22 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 
 <div class="section">
 <div class="section-title">自定义按钮</div>
-<div class="hint">脚本统一维护在主目录的 <b>script/</b> 目录下（如 deploy.sh）。为按钮选择「显示位置」「执行目录」（根目录 / frontend / backend）和一个脚本即可；插件会按你的操作系统自动拼接执行命令。可配置多个。</div>
-<div class="hint">显示位置：<b>子面板（迭代）</b>会显示在每个迭代任务卡片上，点击时 cd 到该任务 worktree 迭代目录下的所选文件夹再运行；<b>主面板</b>会显示在主面板顶部的独立区域，不属于任何任务迭代，点击时 cd 到主工作区根目录下的所选文件夹再运行。</div>
-<div class="kv">脚本目录：<b>${escapeHtml(scriptDir)}</b></div>
+<div class="hint">为每个按钮选择<b>脚本来源</b>、<b>显示位置</b>和一个<b>脚本</b>；插件会按当前操作系统（${osLabel}，脚本类型：${scriptExtHint}）自动拼接执行命令。已被其它按钮占用的脚本不会重复出现在下拉框中。</div>
+<div class="hint">脚本来源：<b>主目录(不提交)</b> = <code>script/</code>（随主工作区，不进 git）；<b>迭代脚本</b> = 当前迭代 worktree 中已提交的 <code>${escapeHtml(scriptsSubdir)}/</code>（点哪个任务就用哪个 worktree 的脚本；主面板按钮会回退到主克隆的同名目录）。</div>
+<div class="hint">显示位置：<b>子面板（迭代）</b>显示在每个迭代任务卡片上，终端 cd 到该任务 worktree 迭代目录再运行脚本；<b>主面板</b>显示在主面板顶部独立区域，终端 cd 到主工作区根目录再运行脚本。脚本内部可自行 cd 到具体子目录（如 frontend/backend）。</div>
+<div class="kv">主目录脚本：<b>${escapeHtml(inv.dirs.master)}</b></div>
+${inv.dirs.repoMono ? `<div class="kv">迭代脚本(候选，来自主克隆)：<b>${escapeHtml(inv.dirs.repoMono)}</b></div>` : ''}
+${inv.dirs.repoFrontend ? `<div class="kv">前端迭代脚本(候选)：<b>${escapeHtml(inv.dirs.repoFrontend)}</b></div>` : ''}
+${inv.dirs.repoBackend ? `<div class="kv">后端迭代脚本(候选)：<b>${escapeHtml(inv.dirs.repoBackend)}</b></div>` : ''}
 <div class="inline-actions" style="margin-top:8px">
-<button onclick="openScriptDir()" style="background:#6d6d72" ${disabled}>📂 打开 script 目录</button>
+<button onclick="openScriptDir()" style="background:#6d6d72" ${disabled}>📂 打开主目录 script/</button>
 <button onclick="openHarnessLog()" style="background:#6d6d72" ${disabled}>📋 打开日志</button>
 <button onclick="p('settings')" style="background:#8e8e93">🔄 刷新脚本列表</button>
 </div>
-${scriptFiles.length === 0 ? '<div class="cb-empty">script/ 目录下暂无脚本文件。请先在上面的脚本目录中创建脚本（如 deploy.sh），然后点「🔄 刷新脚本列表」。</div>' : ''}
-<div id="cbList">
-${(config.customButtons || []).map(b => customButtonRowHtml(b.name, b.command, b.workdir || '', b.placement || 'iteration', scriptFiles, disabled)).join('')}
-</div>
+<div id="cbEmpty" class="cb-empty" style="display:none">未发现可用脚本。请在上面任一脚本目录中创建 ${scriptExtHint} 脚本，然后点「🔄 刷新脚本列表」。</div>
+<div id="cbList"></div>
 <div class="inline-actions">
-<button onclick="addCustomButton()" style="background:#3a3a3f" ${scriptFiles.length === 0 ? 'disabled' : disabled}>➕ 添加按钮</button>
+<button onclick="addCustomButton()" style="background:#3a3a3f" ${disabled}>➕ 添加按钮</button>
 <button onclick="saveCustomButtons()" style="background:#007aff" ${disabled}>💾 保存自定义按钮</button>
 </div>
 </div>
@@ -939,7 +901,7 @@ ${(config.customButtons || []).map(b => customButtonRowHtml(b.name, b.command, b
 <input id="ap_int" type="number" min="5" value="${config.autoPollIntervalSec || 60}" ${disabled}>
 <h5>拉取脚本文件名（位于 script/ 下，推荐 Node 脚本 pullTask.js）</h5>
 <input id="ap_script" value="${escapeHtml(config.autoPollScript || 'pullTask.js')}" placeholder="pullTask.js" ${disabled}>
-<div class="kv" style="margin:6px 0">脚本状态：<b>${scriptFiles.includes(config.autoPollScript || 'pullTask.js') ? '✅ 已存在' : '⚠ 未找到，请点「创建/打开脚本」'}</b></div>
+<div class="kv" style="margin:6px 0">脚本状态：<b>${inv.master.includes(config.autoPollScript || 'pullTask.js') ? '✅ 已存在' : '⚠ 未找到，请点「创建/打开脚本」'}</b></div>
 <h5>自动任务 Prompt（派发给 AI 执行器时，会以「此 Prompt + 换行 + todo.md 内容」拼接后填入）</h5>
 <textarea id="ap_prompt" rows="5" placeholder="${escapeHtml(DEFAULT_AUTO_POLL_PROMPT)}" ${disabled}>${escapeHtml(config.autoPollPrompt || DEFAULT_AUTO_POLL_PROMPT)}</textarea>
 <div class="hint">留空保存则恢复为默认 Prompt。todo.md 内容会附在此 Prompt 之后一并发送（过长会在深链中截断，但完整内容已复制到剪贴板）。</div>
@@ -981,7 +943,20 @@ function toggleCustomPromptMore(){
     more.style.display=open?'flex':'none';
     toggle.textContent=open?'收起':'更多';
 }
-function saveGit(){v.postMessage({type:'saveGit',fg:document.getElementById('fg').value,bg:document.getElementById('bg').value,bb:document.getElementById('bb').value,dr:document.getElementById('dr').checked})}
+function saveGit(){v.postMessage({type:'saveGit',mode:gitMode,fg:document.getElementById('fg').value,bg:document.getElementById('bg').value,bb:document.getElementById('bb').value,dr:document.getElementById('dr').checked,mg:document.getElementById('mg').value,md:{frontend:'apps',backend:'apps',docs:'docs',scripts:'scripts'}})}
+let gitMode='${initialGitMode}';
+function switchGitMode(m){
+    gitMode=m;
+    var mono=document.getElementById('gitPaneMono');
+    var multi=document.getElementById('gitPaneMulti');
+    if(mono)mono.style.display=m==='mono'?'block':'none';
+    if(multi)multi.style.display=m==='multi'?'block':'none';
+    var tm=document.getElementById('gitTabMono');
+    var tx=document.getElementById('gitTabMulti');
+    if(tm)tm.classList.toggle('active',m==='mono');
+    if(tx)tx.classList.toggle('active',m==='multi');
+}
+switchGitMode(gitMode);
 function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
 function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
 function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
@@ -990,42 +965,105 @@ function testAiProvider(){v.postMessage({type:'testAiProvider'})}
 function saveAutoPollConfig(){v.postMessage({type:'saveAutoPollConfig',enabled:document.getElementById('ap_enabled').checked,interval:parseInt(document.getElementById('ap_int').value)||60,script:document.getElementById('ap_script').value.trim(),prompt:document.getElementById('ap_prompt').value,skipMarkers:document.getElementById('ap_skip').value})}
 function toggleAutoPollDetails(){const d=document.getElementById('ap_details');if(d)d.style.display=document.getElementById('ap_enabled').checked?'block':'none'}
 function createPollScriptTemplate(){v.postMessage({type:'createPollScriptTemplate'})}
-const scriptFiles=${JSON.stringify(scriptFiles).replace(/</g, '\\u003c')};
-const cbWorkdirs=${JSON.stringify(CUSTOM_BUTTON_WORKDIRS)};
-function cbEscAttr(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
-function cbScriptOptions(selected){
-  let opts='<option value="">（选择脚本）</option>';
-  scriptFiles.forEach(function(f){opts+='<option value="'+cbEscAttr(f)+'"'+(f===selected?' selected':'')+'>'+cbEscAttr(f)+'</option>';});
-  return opts;
+const INV=${JSON.stringify(inv).replace(/</g, '\\u003c')};
+const INIT_BTNS=${JSON.stringify(initialButtons).replace(/</g, '\\u003c')};
+const CB_READONLY=${readOnly ? 'true' : 'false'};
+function cbEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function cbListFor(source){
+  if(source==='master')return INV.master||[];
+  if(INV.mode==='mono')return INV.repoMono||[];
+  var combined=(INV.repoFrontend||[]).concat(INV.repoBackend||[]);
+  var seen={};return combined.filter(function(f){if(seen[f])return false;seen[f]=true;return true;});
 }
-function cbWorkdirOptions(selected){
-  let opts='<option value="">根目录</option>';
-  cbWorkdirs.forEach(function(d){opts+='<option value="'+cbEscAttr(d)+'"'+(d===selected?' selected':'')+'>'+cbEscAttr(d)+'</option>';});
+function cbSlot(source,script){return source+'::'+script;}
+function cbAllScriptCount(){return (INV.master||[]).length+(INV.repoMono||[]).length+(INV.repoFrontend||[]).length+(INV.repoBackend||[]).length;}
+function cbSourceOptions(selected){
+  var arr=[['master','主目录(不提交)'],['worktree','迭代脚本(worktree)']];
+  var opts='';
+  arr.forEach(function(p){opts+='<option value="'+p[0]+'"'+(p[0]===selected?' selected':'')+'>'+p[1]+'</option>';});
   return opts;
 }
 function cbPlacementOptions(selected){
-  const place=selected==='main'?'main':'iteration';
+  var place=selected==='main'?'main':'iteration';
   return '<option value="iteration"'+(place==='iteration'?' selected':'')+'>子面板（迭代）</option>'+
     '<option value="main"'+(place==='main'?' selected':'')+'>主面板</option>';
 }
-function cbEmptyRow(){return '<div class="cb-row"><input class="cb-name" placeholder="按钮名称（如 部署）"><select class="cb-place" title="显示位置">'+cbPlacementOptions('')+'</select><select class="cb-dir" title="执行目录">'+cbWorkdirOptions('')+'</select><select class="cb-cmd">'+cbScriptOptions('')+'</select><button class="cb-del" onclick="removeCustomButton(this)">✕</button></div>';}
-function addCustomButton(){if(scriptFiles.length===0){alert('请先在 script/ 目录下创建脚本，再点「刷新脚本列表」');return;}document.getElementById('cbList').insertAdjacentHTML('beforeend',cbEmptyRow());}
-function removeCustomButton(btn){const r=btn.closest('.cb-row');if(r)r.remove();}
+function cbRowHtml(b){
+  b=b||{};
+  var dis=CB_READONLY?' disabled':'';
+  return '<div class="cb-row">'+
+    '<input class="cb-name" placeholder="按钮名称（如 部署）" value="'+cbEsc(b.name||'')+'"'+dis+'>'+
+    '<select class="cb-place" title="显示位置"'+dis+'>'+cbPlacementOptions(b.placement||'iteration')+'</select>'+
+    '<select class="cb-src" title="脚本来源" onchange="cbOnSourceChange(this)"'+dis+'>'+cbSourceOptions(b.scriptSource||'master')+'</select>'+
+    '<select class="cb-cmd" title="脚本" data-val="'+cbEsc(b.script||'')+'" onchange="cbOnScriptChange(this)"'+dis+'></select>'+
+    '<input class="cb-args" placeholder="参数(可选)" value="'+cbEsc(b.args||'')+'"'+dis+'>'+
+    '<button class="cb-del" onclick="removeCustomButton(this)"'+dis+'>✕</button>'+
+    '</div>';
+}
+function cbOnScriptChange(el){el.setAttribute('data-val',el.value);cbRefreshScripts();}
+function cbOnSourceChange(el){var cmd=el.closest('.cb-row').querySelector('.cb-cmd');cmd.setAttribute('data-val','');cbRefreshScripts();}
+// Rebuild every row's script dropdown from the inventory for its source, hiding any
+// script already bound by ANOTHER row (same source), and preserving a now-missing
+// selection with a （缺失) marker so buttons aren't silently re-pointed.
+function cbRefreshScripts(){
+  var rows=[].slice.call(document.querySelectorAll('#cbList .cb-row'));
+  var used={};
+  rows.forEach(function(r){
+    var src=r.querySelector('.cb-src').value;
+    var cur=r.querySelector('.cb-cmd').getAttribute('data-val')||'';
+    if(cur){var k=cbSlot(src,cur);used[k]=(used[k]||0)+1;}
+  });
+  rows.forEach(function(r){
+    var src=r.querySelector('.cb-src').value;
+    var cmd=r.querySelector('.cb-cmd');
+    var cur=cmd.getAttribute('data-val')||'';
+    var avail=cbListFor(src);
+    var opts='<option value="">（选择脚本）</option>';
+    var matched=false;
+    avail.forEach(function(f){
+      var isCur=(f===cur);
+      if(!isCur){var k=cbSlot(src,f);if(used[k])return;}
+      if(isCur)matched=true;
+      opts+='<option value="'+cbEsc(f)+'"'+(isCur?' selected':'')+'>'+cbEsc(f)+'</option>';
+    });
+    if(cur&&!matched){opts+='<option value="'+cbEsc(cur)+'" selected>'+cbEsc(cur)+'（缺失）</option>';}
+    cmd.innerHTML=opts;
+    cmd.value=cur;
+    cmd.setAttribute('data-val',cmd.value);
+  });
+}
+function cbUpdateEmpty(){var e=document.getElementById('cbEmpty');if(e)e.style.display=cbAllScriptCount()===0?'block':'none';}
+function cbRenderAll(){
+  var list=document.getElementById('cbList');
+  if(!list)return;
+  list.innerHTML='';
+  (INIT_BTNS||[]).forEach(function(b){list.insertAdjacentHTML('beforeend',cbRowHtml(b));});
+  cbRefreshScripts();
+  cbUpdateEmpty();
+}
+function addCustomButton(){
+  if(cbAllScriptCount()===0){alert('未发现可用脚本，请先在脚本目录中创建脚本，再点「刷新脚本列表」');return;}
+  document.getElementById('cbList').insertAdjacentHTML('beforeend',cbRowHtml({}));
+  cbRefreshScripts();
+}
+function removeCustomButton(btn){var r=btn.closest('.cb-row');if(r)r.remove();cbRefreshScripts();}
 function openScriptDir(){v.postMessage({type:'openScriptDir'});}
 function openHarnessLog(){v.postMessage({type:'openHarnessLog'});}
 function saveCustomButtons(){
-  const rows=document.querySelectorAll('#cbList .cb-row');
-  const buttons=[];
+  var rows=document.querySelectorAll('#cbList .cb-row');
+  var buttons=[];
   rows.forEach(function(r){
-    const name=r.querySelector('.cb-name').value.trim();
-    const command=r.querySelector('.cb-cmd').value.trim();
-    const workdir=r.querySelector('.cb-dir').value.trim();
-    const placeEl=r.querySelector('.cb-place');
-    const placement=(placeEl&&placeEl.value==='main')?'main':'iteration';
-    if(name&&command){buttons.push({name:name,command:command,workdir:workdir,placement:placement});}
+    var name=r.querySelector('.cb-name').value.trim();
+    var scriptSource=r.querySelector('.cb-src').value;
+    var script=r.querySelector('.cb-cmd').value.trim();
+    var args=r.querySelector('.cb-args').value.trim();
+    var placeEl=r.querySelector('.cb-place');
+    var placement=(placeEl&&placeEl.value==='main')?'main':'iteration';
+    if(name&&script){buttons.push({name:name,scriptSource:scriptSource,script:script,args:args,placement:placement});}
   });
   v.postMessage({type:'saveCustomButtons',buttons:buttons});
 }
+cbRenderAll();
 </script>
 </body>
 </html>`;

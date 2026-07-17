@@ -18,8 +18,7 @@ test('GitService.pushAll stages new files with git add -A', async () => {
     {
       frontendGit: 'https://example.com/frontend.git',
       backendGit: 'https://example.com/backend.git',
-      mergeTargetBranch: 'main',
-      baseSyncBranch: 'main',
+      baseBranch: 'main',
       mergeDryRunEnabled: true,
     },
     tempRoot,
@@ -40,17 +39,18 @@ test('GitService.pushAll stages new files with git add -A', async () => {
       id: 'task_1',
       name: 'demo-task',
       desc: 'demo task',
-      stage: '⚙️ 开发中',
+      stage: 'developing',
     },
     iterationDir,
   );
 
   assert.equal(result.success, true);
 
-  const frontendAdd = commands.find((item) => item.cmd === 'git add -A' && item.cwd === frontendDir);
-  const backendAdd = commands.find((item) => item.cmd === 'git add -A' && item.cwd === backendDir);
-  assert.ok(frontendAdd, 'frontend should use git add -A');
-  assert.ok(backendAdd, 'backend should use git add -A');
+  const addCmd = 'git add . -- ":(exclude).harness"';
+  const frontendAdd = commands.find((item) => item.cmd === addCmd && item.cwd === frontendDir);
+  const backendAdd = commands.find((item) => item.cmd === addCmd && item.cwd === backendDir);
+  assert.ok(frontendAdd, 'frontend should stage changes excluding .harness');
+  assert.ok(backendAdd, 'backend should stage changes excluding .harness');
 
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });

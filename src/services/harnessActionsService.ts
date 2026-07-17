@@ -8,12 +8,15 @@ import {
     Config,
     CustomButton,
     CUSTOM_SCRIPT_DIR,
+    DEFAULT_MONOREPO_DIRS,
     HARNESS_STATE_FILE,
     HARNESS_STATE_FILE_LEGACY,
     STAGE,
     TASK_PLAN_LEGACY_REL_PATH,
     TASK_PLAN_PRIMARY_REL_PATH,
     Task,
+    getScriptsSubdir,
+    normalizeCustomButton,
 } from '../models';
 import { TaskScheduler } from '../taskScheduler';
 import { GitService } from './gitService';
@@ -66,6 +69,13 @@ export class HarnessActionsService {
         tcs: 'testcase',
         tsk: 'tasks',
     } as const;
+
+    private showLocalBaseFallbackNoticeIfAny(): void {
+        const notice = this.deps.gitService.consumeLocalBaseFallbackNotice();
+        if (notice) {
+            vscode.window.showInformationMessage(notice);
+        }
+    }
 
     private replaceTemplateVars(template: string, vars: Record<string, string>): string {
         let rendered = template;
@@ -127,22 +137,21 @@ export class HarnessActionsService {
         };
         this.deps.getTasks().push(newTask);
         this.deps.ensureIterationDir(newTask);
-        this.deps.copyProjectStructureToIteration(this.deps.getIterationDir(newTask));
+        // Lazy-init mode: do not auto-create git worktree here.
+        // Worktree/checkout is created only when user explicitly opens the task worktree.
+        if (newTask.quickMode) {
+            newTask.stage = STAGE.DEVELOPING;
+        } else {
+            newTask.stage = STAGE.WRITING_REQUIREMENT;
+        }
         this.deps.saveAndRender();
-        await this.initializeTaskGit(newTask);
         if (newTask.quickMode) {
             // Skip requirements/design/testcase/task-split — jump straight to DEVELOPING.
             // Dev Agent runs with only task.desc and project context.
-            newTask.stage = STAGE.DEVELOPING;
-            this.deps.saveAndRender();
             vscode.window.showInformationMessage('已使用快捷模式：跳过文档生成，直接进入开发');
         } else {
             vscode.window.showInformationMessage(`任务拆分模式已自动判定：${inferredSplitMode === 'compact' ? '急速模式' : '标准模式'}`);
-        }
-        if (newTask.worktreePath) {
-            await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(newTask.worktreePath), {
-                forceNewWindow: true,
-            });
+            vscode.window.showInformationMessage('提示：代码目录将在点击任务的 Worktree 按钮时初始化');
         }
     }
 
@@ -189,18 +198,17 @@ export class HarnessActionsService {
             task.iterationBranch = undefined;
             task.baseBranchUsed = undefined;
             task.stage = STAGE.INITIALIZING;
-            this.logTaskReset(task, '任务状态已重置为 initializing，准备重建目录与基线代码');
+            this.logTaskReset(task, '任务状态已重置为 initializing，等待用户打开 Worktree 时重建代码');
 
             this.deps.ensureIterationDir(task);
-            this.deps.copyProjectStructureToIteration(this.deps.getIterationDir(task));
             this.deps.saveAndRender();
-            this.logTaskReset(task, '目录骨架已恢复，开始重新初始化 Git/worktree');
-            await this.initializeTaskGit(task);
-            this.logTaskReset(task, `重置完成，当前阶段=${task.stage}`);
-            vscode.window.showInformationMessage(`任务已重置：${task.name}`);
+            task.stage = STAGE.WRITING_REQUIREMENT;
+            this.deps.saveAndRender();
+            this.logTaskReset(task, `重置完成（懒初始化），当前阶段=${task.stage}`);
+            vscode.window.showInformationMessage(`任务已重置：${task.name}（点击 Worktree 按钮时初始化代码）`);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            appendHarnessLog(iterDir, 'reset', `重置失败：${message}`);
+            appendHarnessLog(this.resolveTaskLogDir(task), 'reset', `重置失败：${message}`);
             vscode.window.showErrorMessage(`重置任务失败：${message}`);
         }
     }
@@ -213,15 +221,24 @@ export class HarnessActionsService {
         this.deps.gitService.clearDirChildrenPreserving(iterDir, [BASE]);
     }
 
+    private resolveTaskLogDir(task: Task): string {
+        const iterDir = this.deps.getIterationDir(task);
+        // Lazy-init safety: before worktree attach, avoid creating iterDir/.harness via logs.
+        if (iterDir && fs.existsSync(path.join(iterDir, '.git'))) {
+            return iterDir;
+        }
+        return this.deps.getMasterRoot();
+    }
+
     private logTaskReset(task: Task, message: string): void {
-        appendHarnessLog(this.deps.getIterationDir(task), 'reset', `[${task.id}] ${message}`);
+        appendHarnessLog(this.resolveTaskLogDir(task), 'reset', `[${task.id}] ${message}`);
     }
 
     logUiEventByTaskId(taskId: string, event: string, detail?: string): void {
         const task = this.getTaskById(taskId);
         if (!task) return;
         const suffix = detail ? ` | ${detail}` : '';
-        appendHarnessLog(this.deps.getIterationDir(task), 'webview', `[${task.id}] ${event}${suffix}`);
+        appendHarnessLog(this.resolveTaskLogDir(task), 'webview', `[${task.id}] ${event}${suffix}`);
     }
 
     updateTaskDescByTaskId(taskId: string, desc: string): void {
@@ -374,19 +391,38 @@ export class HarnessActionsService {
 
     async openFolderLocationByTaskId(
         taskId: string,
-        location: 'worktree' | 'frontend' | 'backend' | 'mainFrontend' | 'mainBackend'
+        location: 'worktree' | 'frontend' | 'backend' | 'mainFrontend' | 'mainBackend' | 'mono' | 'mainMono'
     ): Promise<void> {
         const task = this.getTaskById(taskId);
         if (!task) return;
 
+        const cfg = this.deps.getConfig();
+        const isMono = Boolean(cfg.monorepoGit?.trim());
+        const dirs = cfg.monorepoDirs || DEFAULT_MONOREPO_DIRS;
+        const rootDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
         const iterDir = this.deps.getIterationDir(task);
+        // In monorepo mode the frontend/backend subfolders use the configured names; in multi-repo
+        // mode they are the fixed worktree subdirs. The monorepo main repo is a dedicated clone at
+        // repos/mono-main; multi-repo mode uses per-side clones under repos/.
+        const feSub = isMono ? (dirs.frontend || DEFAULT_MONOREPO_DIRS.frontend) : 'frontend';
+        const beSub = isMono ? (dirs.backend || DEFAULT_MONOREPO_DIRS.backend) : 'backend';
         const locationMap = {
             worktree: iterDir,
-            frontend: path.join(iterDir, 'frontend'),
-            backend: path.join(iterDir, 'backend'),
-            mainFrontend: path.join(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '', 'repos', 'frontend-main'),
-            mainBackend: path.join(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '', 'repos', 'backend-main'),
+            mono: iterDir,
+            frontend: path.join(iterDir, feSub),
+            backend: path.join(iterDir, beSub),
+            mainMono: path.join(rootDir, 'repos', 'mono-main'),
+            mainFrontend: isMono ? path.join(rootDir, 'repos', 'mono-main') : path.join(rootDir, 'repos', 'frontend-main'),
+            mainBackend: isMono ? path.join(rootDir, 'repos', 'mono-main') : path.join(rootDir, 'repos', 'backend-main'),
         } as const;
+
+        // Lazy-init entry point: initialize only when user explicitly opens iteration folders.
+        if (location === 'worktree' || location === 'mono' || location === 'frontend' || location === 'backend') {
+            const compensated = await this.ensureIterationCodeBeforeOpen(task, iterDir);
+            if (!compensated) {
+                return;
+            }
+        }
 
         const targetPath = locationMap[location];
         if (!fs.existsSync(targetPath)) {
@@ -394,13 +430,9 @@ export class HarnessActionsService {
             return;
         }
 
-        if (location === 'worktree') {
-            const compensated = await this.ensureIterationCodeBeforeOpen(task, targetPath);
-            if (!compensated) {
-                return;
-            }
-            this.syncConfiguredPathsForWorktree(targetPath);
-            this.seedWorktreeHarnessState(task, targetPath);
+        if (location === 'worktree' || location === 'mono') {
+            this.syncConfiguredPathsForWorktree(iterDir);
+            this.seedWorktreeHarnessState(task, iterDir);
         }
 
         await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(targetPath), {
@@ -519,10 +551,17 @@ export class HarnessActionsService {
 
     private async ensureIterationCodeBeforeOpen(task: Task, iterDir: string): Promise<boolean> {
         const cfg = this.deps.getConfig();
-        const frontendMissing = Boolean(cfg.frontendGit) && !fs.existsSync(path.join(iterDir, 'frontend', '.git'));
-        const backendMissing = Boolean(cfg.backendGit) && !fs.existsSync(path.join(iterDir, 'backend', '.git'));
+        let missing: boolean;
+        if (cfg.monorepoGit?.trim()) {
+            // Monorepo: the iteration dir root itself is the single git worktree.
+            missing = !fs.existsSync(path.join(iterDir, '.git'));
+        } else {
+            const frontendMissing = Boolean(cfg.frontendGit) && !fs.existsSync(path.join(iterDir, 'frontend', '.git'));
+            const backendMissing = Boolean(cfg.backendGit) && !fs.existsSync(path.join(iterDir, 'backend', '.git'));
+            missing = frontendMissing || backendMissing;
+        }
 
-        if (!frontendMissing && !backendMissing) {
+        if (!missing) {
             return true;
         }
 
@@ -541,6 +580,7 @@ export class HarnessActionsService {
         }
         this.deps.saveAndRender();
         vscode.window.showInformationMessage(`代码补偿完成：${task.name}`);
+        this.showLocalBaseFallbackNoticeIfAny();
         return true;
     }
 
@@ -776,27 +816,28 @@ export class HarnessActionsService {
             vscode.window.showErrorMessage(`同步失败：${result.message}`, { modal: true });
         } else {
             vscode.window.showInformationMessage(result.message);
+            this.showLocalBaseFallbackNoticeIfAny();
         }
     }
 
     /**
-     * Runs a user-defined custom button. Scripts are maintained as a single shared
-     * set under `<masterRoot>/script/` (the "主目录"). Clicking opens a terminal whose
-     * cwd is THIS task's worktree iteration directory and runs the master script there,
-     * so one unified script operates on whichever iteration the button was clicked from.
+     * Runs a user-defined custom button. The script is resolved from the button's configured
+     * source ('master' shared dir, or this iteration's committed 'worktree' scripts). Clicking
+     * opens a terminal whose cwd is THIS task's worktree iteration directory and runs the
+     * resolved script there.
      */
     async runCustomButtonByTaskId(taskId: string, buttonId: string): Promise<void> {
         const task = this.getTaskById(taskId);
         if (!task) return;
 
-        const button = (this.deps.getConfig().customButtons || []).find(b => b.id === buttonId);
-        if (!button) {
+        const raw = (this.deps.getConfig().customButtons || []).find(b => b.id === buttonId);
+        if (!raw) {
             vscode.window.showWarningMessage('未找到对应的自定义按钮，请在「高级设置」中重新配置');
             return;
         }
-        const command = (button.command || '').trim();
-        if (!command) {
-            vscode.window.showWarningMessage(`自定义按钮「${button.name}」未配置指令`);
+        const button = normalizeCustomButton(raw);
+        if (!button.script) {
+            vscode.window.showWarningMessage(`自定义按钮「${button.name}」未选择脚本`);
             return;
         }
 
@@ -808,24 +849,23 @@ export class HarnessActionsService {
             return;
         }
 
-        // The button may target a subfolder of the worktree (e.g. frontend/backend);
-        // empty = the worktree root.
-        this.launchCustomButton(button, iterDir, `执行目录不存在：{dir}。请确认该 worktree 下存在「{workdir}」文件夹。`, task.name);
+        // Run the script from the worktree iteration dir.
+        this.launchCustomButton(button, iterDir, true, `迭代目录不存在：{dir}`, task.name);
     }
 
     /**
      * Runs a 'main' placement custom button — one that belongs to no task iteration. It is
-     * rendered in the main panel's dedicated area and runs against the master workspace root
-     * (optionally a `workdir` subfolder), not any worktree.
+     * rendered in the main panel's dedicated area and runs against the master workspace root.
      */
     async runStandaloneCustomButton(buttonId: string): Promise<void> {
-        const button = (this.deps.getConfig().customButtons || []).find(b => b.id === buttonId);
-        if (!button) {
+        const raw = (this.deps.getConfig().customButtons || []).find(b => b.id === buttonId);
+        if (!raw) {
             vscode.window.showWarningMessage('未找到对应的自定义按钮，请在「高级设置」中重新配置');
             return;
         }
-        if (!(button.command || '').trim()) {
-            vscode.window.showWarningMessage(`自定义按钮「${button.name}」未配置指令`);
+        const button = normalizeCustomButton(raw);
+        if (!button.script) {
+            vscode.window.showWarningMessage(`自定义按钮「${button.name}」未选择脚本`);
             return;
         }
 
@@ -834,37 +874,76 @@ export class HarnessActionsService {
             vscode.window.showWarningMessage(`主工作区目录不存在，无法执行：${masterRoot}`);
             return;
         }
-        this.launchCustomButton(button, masterRoot, `执行目录不存在：{dir}。请确认主工作区下存在「{workdir}」文件夹。`, '主面板');
+        this.launchCustomButton(button, masterRoot, false, `主工作区目录不存在：{dir}`, '主面板');
     }
 
     /**
-     * Shared launcher for custom buttons. Resolves the workdir against `baseDir`, resolves the
-     * script against the shared master script dir, then opens a terminal there and runs it.
+     * Resolve the absolute directory a button's script lives in, honoring its scriptSource:
+     * - 'master':   `<masterRoot>/script/`.
+     * - 'worktree': the committed scripts dir inside THIS iteration worktree (iteration context),
+     *               falling back to the main clone for 'main'-placement buttons.
+     *               In multi-repo mode, searches frontend-main then backend-main (or their
+     *               worktree equivalents) to locate the script.
+     * `runBaseDir` is the iteration worktree dir for iteration buttons, else the master root.
      */
-    private launchCustomButton(button: CustomButton, baseDir: string, missingDirTpl: string, label: string): void {
-        const command = (button.command || '').trim();
-        const workdir = (button.workdir || '').trim();
-        const runDir = workdir ? path.join(baseDir, workdir) : baseDir;
-        if (workdir && !fs.existsSync(runDir)) {
-            vscode.window.showWarningMessage(missingDirTpl.replace('{dir}', runDir).replace('{workdir}', workdir));
-            return;
+    private resolveScriptDir(button: CustomButton, runBaseDir: string, isIterationContext: boolean): string {
+        const masterRoot = this.deps.getMasterRoot();
+        const config = this.deps.getConfig();
+        const isMono = Boolean((config.monorepoGit || '').trim());
+        const scriptsSubdir = getScriptsSubdir(config);
+        const source = button.scriptSource || 'master';
+
+        if (source === 'master') {
+            return path.join(masterRoot, CUSTOM_SCRIPT_DIR);
         }
 
-        // Resolve the script against the shared master script dir. The first token is
-        // the script file (relative to <masterRoot>/script/, leading "./" optional);
-        // anything after it is passed through as arguments.
-        const scriptDir = path.join(this.deps.getMasterRoot(), CUSTOM_SCRIPT_DIR);
-        const firstSpace = command.search(/\s/);
-        const scriptRef = (firstSpace === -1 ? command : command.slice(0, firstSpace)).replace(/^\.\//, '');
-        const extraArgs = firstSpace === -1 ? '' : command.slice(firstSpace);
-        const scriptPath = path.join(scriptDir, scriptRef);
+        const repoScriptsDir = (): string => {
+            if (isMono) {
+                return path.join(masterRoot, 'repos', 'mono-main', scriptsSubdir);
+            }
+            // Multi-repo: try frontend-main first, fall back to backend-main.
+            const feDir = path.join(masterRoot, 'repos', 'frontend-main', scriptsSubdir);
+            const script = (button.script || '').trim();
+            if (script && fs.existsSync(path.join(feDir, script))) {
+                return feDir;
+            }
+            return path.join(masterRoot, 'repos', 'backend-main', scriptsSubdir);
+        };
+
+        if (source === 'worktree' && isIterationContext) {
+            if (isMono) {
+                return path.join(runBaseDir, scriptsSubdir);
+            }
+            // Multi-repo worktree: try frontend subdir first, fall back to backend.
+            const feDir = path.join(runBaseDir, 'frontend', scriptsSubdir);
+            const script = (button.script || '').trim();
+            if (script && fs.existsSync(path.join(feDir, script))) {
+                return feDir;
+            }
+            return path.join(runBaseDir, 'backend', scriptsSubdir);
+        }
+        // 'worktree' with no worktree (main-panel button): use the main clone.
+        return repoScriptsDir();
+    }
+
+    /**
+     * Shared launcher for custom buttons. The terminal cwd is always `baseDir` (the iteration
+     * worktree dir or master root); the script itself handles any sub-navigation.
+     */
+    private launchCustomButton(button: CustomButton, baseDir: string, isIterationContext: boolean, missingDirTpl: string, label: string): void {
+        const script = (button.script || '').trim();
+        const extraArgs = (button.args || '').trim();
+        const runDir = baseDir;
+
+        const scriptDir = this.resolveScriptDir(button, baseDir, isIterationContext);
+        const scriptPath = path.join(scriptDir, script);
 
         if (!fs.existsSync(scriptPath)) {
-            vscode.window.showWarningMessage(`脚本不存在：${scriptPath}。请在主目录的 ${CUSTOM_SCRIPT_DIR}/ 目录下维护脚本（如 deploy.sh）。`);
+            vscode.window.showWarningMessage(`脚本不存在：${scriptPath}。请确认脚本仍位于所选来源目录中。`);
             return;
         }
 
-        const runCmd = this.buildCustomButtonCommand(scriptPath, extraArgs);
+        const runCmd = this.buildCustomButtonCommand(scriptPath, extraArgs ? ` ${extraArgs}` : '');
         const terminalName = `Fun Harness ${label} ${button.name}`;
         const existing = vscode.window.terminals.find(t => t.name === terminalName);
         if (existing) {
@@ -968,6 +1047,7 @@ export class HarnessActionsService {
         task.stage = STAGE.WRITING_REQUIREMENT;
         this.deps.saveAndRender();
         vscode.window.showInformationMessage(result.message || '✅ 迭代初始化完成');
+        this.showLocalBaseFallbackNoticeIfAny();
     }
 
     private getTaskById(taskId: string): Task | undefined {
@@ -1349,6 +1429,13 @@ export class HarnessActionsService {
 
     private syncTaskDocsToMaster(task: Task, iterDir: string, trigger: 'manualPush' | 'taskDone'): void {
         try {
+            // Iteration-docs-to-root archival is only meaningful in multi-repo mode. In monorepo mode
+            // the git merge of the iteration branch already propagates docs into the main repo, so
+            // this manual copy-back would be redundant.
+            const cfg = this.deps.getConfig();
+            if (Boolean(cfg.monorepoGit?.trim())) {
+                return;
+            }
             const sourceRequirements = path.join(iterDir, 'docs', 'requirements.md');
             const sourceDesign = path.join(iterDir, 'docs', 'design.md');
             const masterRoot = this.resolveMasterWorkspaceRoot();

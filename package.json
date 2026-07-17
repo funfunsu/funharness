@@ -3,7 +3,7 @@
   "displayName": "Fun Harness AI 研发流程",
   "description": "在 VS Code 内把 AI 编程组织成可控的研发流水线：需求→设计→测试→任务拆解→开发→合并，每步专属 Agent + 独立 Git Worktree + 多阶段安全合并保护。支持 Copilot / Claude Code / Trae / Qodo 等多 Provider。",
   "license": "PolyForm-Noncommercial-1.0.0",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "engines": {
     "vscode": "^1.80.0"
   },

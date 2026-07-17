@@ -62,13 +62,27 @@ src/
 `;
 
 export class ProjectStructureService {
+    private monorepoMainDir: string | undefined;
+
     constructor(
         private readonly workspaceRoot: string,
         private readonly extensionPath: string,
     ) {}
 
+    /**
+     * In monorepo mode, set to repos/mono-main so that project-structure.md
+     * lives inside the git-managed worktree rather than the untracked workspace docs/.
+     */
+    setMonorepoMainDir(dir: string | undefined): void {
+        this.monorepoMainDir = dir;
+    }
+
+    private getStructureRoot(): string {
+        return this.monorepoMainDir || this.workspaceRoot;
+    }
+
     getRootStructureFilePath(): string {
-        return path.join(this.workspaceRoot, 'docs', 'project-structure.md');
+        return path.join(this.getStructureRoot(), 'docs', 'project-structure.md');
     }
 
     getIterationStructureFilePath(iterDir: string): string {
@@ -76,7 +90,7 @@ export class ProjectStructureService {
     }
 
     getPreviewStructureFilePath(): string {
-        return path.join(this.workspaceRoot, 'docs', 'project-structure.preview.md');
+        return path.join(this.getStructureRoot(), 'docs', 'project-structure.preview.md');
     }
 
     private getLegacyRootStructureFilePath(): string {
@@ -223,6 +237,10 @@ export class ProjectStructureService {
             this.workspaceRoot,
             path.join(this.workspaceRoot, 'repos', 'frontend-main'),
             path.join(this.workspaceRoot, 'frontend'),
+            // Monorepo layout: dedicated main clone at repos/mono-main, with an apps/ folder.
+            path.join(this.workspaceRoot, 'repos', 'mono-main', 'apps'),
+            path.join(this.workspaceRoot, 'repos', 'mono-main'),
+            path.join(this.workspaceRoot, 'apps'),
         ];
         for (const candidate of candidates) {
             if (!fs.existsSync(candidate)) {
@@ -248,6 +266,10 @@ export class ProjectStructureService {
             path.join(this.workspaceRoot, 'repos', 'backend-main'),
             path.join(this.workspaceRoot, 'backend'),
             this.workspaceRoot,
+            // Monorepo layout: dedicated main clone at repos/mono-main, with an apps/ folder.
+            path.join(this.workspaceRoot, 'repos', 'mono-main', 'apps'),
+            path.join(this.workspaceRoot, 'repos', 'mono-main'),
+            path.join(this.workspaceRoot, 'apps'),
         ];
         for (const candidate of candidates) {
             if (!fs.existsSync(candidate)) {

@@ -7,7 +7,7 @@ interface HarnessMessageControllerDeps {
     reloadTasks: () => void;
     render: () => void;
     openCustomPrompt: (step: 'req' | 'des' | 'tcs' | 'tsk' | 'dev') => Promise<void>;
-    saveGit:(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean) => Promise<void>;
+    saveGit:(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi') => Promise<void>;
     saveAdvancedConfig: (msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>) => void;
     initProjectStructure: () => Promise<void>;
     applyProjectStructurePreview: () => Promise<void>;
@@ -36,7 +36,7 @@ interface HarnessMessageControllerDeps {
     completeDevWithPush: (taskId: string) => Promise<void>;
     pushAndNextStage: (taskId: string) => Promise<void>;
     commitToBaseline: (taskId: string) => Promise<void>;
-    saveCustomButtons: (buttons: { name: string; command: string; workdir?: string; placement?: 'iteration' | 'main' }[]) => void;
+    saveCustomButtons: (buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string; placement?: 'iteration' | 'main' }[]) => void;
     runCustomButton: (taskId: string, buttonId: string) => Promise<void>;
     runMainCustomButton: (buttonId: string) => Promise<void>;
     openScriptDir: () => Promise<void>;
@@ -111,7 +111,7 @@ export class HarnessMessageController {
                 await this.deps.openCustomPrompt(msg.step);
                 return;
             case 'saveGit':
-                await this.deps.saveGit(msg.fg, msg.bg, msg.bb, msg.dr);
+                await this.deps.saveGit(msg.fg, msg.bg, msg.bb, msg.dr, msg.mg, msg.md, msg.mode);
                 return;
             case 'saveAdvancedConfig':
                 this.deps.saveAdvancedConfig(msg);

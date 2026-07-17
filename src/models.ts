@@ -170,20 +170,37 @@ export function getAiProvider(id: string): AiProviderDefinition {
 // ── Custom action buttons ──────────────────────────────────────────
 
 /**
- * A user-defined button shown on task cards. Clicking it opens a terminal
- * whose cwd is the task's iteration worktree directory (optionally a `workdir`
- * subfolder such as `frontend`/`backend`) and runs `command` (e.g. `./deploy.sh`).
+ * Where a custom button's script file physically lives. This decouples buttons from the
+ * old single hardcoded `<masterRoot>/script/` dir so scripts can be co-located with code:
+ * - 'master':   `<masterRoot>/script/` — shared, NOT committed to git (legacy default).
+ * - 'worktree': the committed scripts dir inside THIS task's iteration worktree (per-iteration).
+ *               For 'main'-placement buttons (no worktree) this falls back to the main clone.
+ *
+ * The legacy 'repo' source has been folded into 'worktree' (committed scripts are the same set);
+ * old configs are migrated to 'worktree' on load.
+ */
+export type CustomButtonScriptSource = 'master' | 'worktree';
+
+/**
+ * A user-defined button shown on task cards or the main panel. Clicking it opens a terminal
+ * whose cwd is the task's worktree iteration dir (iteration buttons) or the master workspace
+ * root (main buttons), then runs the resolved script. The script itself is responsible for
+ * navigating to any subdirectory it needs (e.g. `cd frontend`).
  */
 export interface CustomButton {
     id: string;
     name: string;
-    command: string;
+    /** Where the script file lives. Defaults to 'master' for legacy/undefined buttons. */
+    scriptSource?: CustomButtonScriptSource;
+    /** Script file name (no path), resolved against the scriptSource directory. */
+    script?: string;
+    /** Optional extra CLI arguments appended after the script invocation. */
+    args?: string;
     /**
-     * Subfolder to run the script in (e.g. 'frontend' | 'backend'). Empty/undefined = root.
-     * For 'iteration' buttons the root is the task's worktree dir; for 'main' buttons it is
-     * the master workspace root.
+     * @deprecated Legacy single-field form `"<scriptFile> [args]"` resolved under
+     * `<masterRoot>/script/`. Retained only so old configs migrate to `script`/`args` on load.
      */
-    workdir?: string;
+    command?: string;
     /**
      * Where the button is rendered:
      * - 'iteration' (default): on each task card (worktree subview always; main panel when an
@@ -194,11 +211,89 @@ export interface CustomButton {
     placement?: 'iteration' | 'main';
 }
 
+/**
+ * Inventory of discovered scripts per source, built on the extension side and handed to the
+ * settings webview so each button row can offer OS-appropriate scripts in a dropdown.
+ */
+export interface ScriptInventory {
+    mode: 'mono' | 'multi';
+    /** Committed scripts subfolder name (from monorepoDirs.scripts). */
+    scriptsSubdir: string;
+    /** Scripts under `<masterRoot>/script/`. */
+    master: string[];
+    /** Committed scripts under `repos/mono-main/<scriptsSubdir>/` (monorepo mode). */
+    repoMono: string[];
+    /** Committed scripts under `repos/frontend-main/<scriptsSubdir>/` (multi-repo mode). */
+    repoFrontend: string[];
+    /** Committed scripts under `repos/backend-main/<scriptsSubdir>/` (multi-repo mode). */
+    repoBackend: string[];
+    /** Absolute directories backing each list (for "open dir" and hints). */
+    dirs: {
+        master: string;
+        repoMono?: string;
+        repoFrontend?: string;
+        repoBackend?: string;
+    };
+}
+
+/** True when a file name is a runnable script for the CURRENT OS (plus cross-platform .js). */
+export function isOsScriptFile(name: string): boolean {
+    const lower = name.toLowerCase();
+    if (lower.endsWith('.js')) {
+        return true;
+    }
+    if (process.platform === 'win32') {
+        return lower.endsWith('.ps1') || lower.endsWith('.bat') || lower.endsWith('.cmd');
+    }
+    return lower.endsWith('.sh') || lower.endsWith('.bash');
+}
+
+/**
+ * Normalize a possibly-legacy custom button into the {scriptSource, script, args} form.
+ * Legacy buttons carrying only `command` become 'master'-source buttons.
+ */
+export function normalizeCustomButton(b: CustomButton): CustomButton {
+    const source: CustomButtonScriptSource =
+        b.scriptSource === 'worktree' || (b.scriptSource as string) === 'repo' ? 'worktree' : 'master';
+    let script = (b.script || '').trim();
+    let args = (b.args || '').trim();
+    if (!script && b.command) {
+        const command = b.command.trim();
+        const firstSpace = command.search(/\s/);
+        script = (firstSpace === -1 ? command : command.slice(0, firstSpace)).replace(/^\.\//, '');
+        args = firstSpace === -1 ? '' : command.slice(firstSpace).trim();
+    }
+    return {
+        id: b.id,
+        name: b.name,
+        scriptSource: source,
+        script,
+        args,
+        placement: b.placement === 'main' ? 'main' : 'iteration',
+    };
+}
+
 // ── Config ─────────────────────────────────────────────────────────
 
 export interface Config {
     frontendGit: string;
     backendGit: string;
+    /**
+     * Single-repository (monorepo) remote URL. When non-empty, the harness operates in monorepo
+     * mode: it clones ONE repo whose iteration worktree is the iteration dir root, and
+     * `frontendGit`/`backendGit` are ignored. Empty = multi-repo (separate frontend/backend) mode.
+     */
+    monorepoGit: string;
+    /**
+     * Subfolder names inside a monorepo checkout, used for "open folder" navigation and structure
+     * detection only (NOT injected into AI prompts). Empty values fall back to the defaults.
+     */
+    monorepoDirs: {
+        frontend: string;
+        backend: string;
+        docs: string;
+        scripts: string;
+    };
     /** The single configured baseline branch (e.g. main / yourname/integration). Iterations branch from it and merge back to it. */
     baseBranch: string;
     mergeDryRunEnabled: boolean;
@@ -267,9 +362,24 @@ export const PROMPT_CONFIGS: PromptConfig[] = [
     { key: 'dev', name: '全栈开发 Agent', file: 'dev_custom_prompt.md' }
 ];
 
+export const DEFAULT_MONOREPO_DIRS = {
+    frontend: 'apps',
+    backend: 'apps',
+    docs: 'docs',
+    scripts: 'scripts',
+} as const;
+
+/** The committed scripts subfolder name used by the 'worktree' button source. */
+export function getScriptsSubdir(config: Pick<Config, 'monorepoDirs'>): string {
+    const value = (config.monorepoDirs?.scripts || '').trim();
+    return value || DEFAULT_MONOREPO_DIRS.scripts;
+}
+
 export const DEFAULT_CONFIG: Config = {
     frontendGit: '',
     backendGit: '',
+    monorepoGit: '',
+    monorepoDirs: { ...DEFAULT_MONOREPO_DIRS },
     baseBranch: '',
     mergeDryRunEnabled: true,
     techStack: '',

@@ -6,11 +6,14 @@ import {
     Config,
     CUSTOM_SCRIPT_DIR,
     CustomButton,
+    CustomButtonScriptSource,
     DEFAULT_AUTO_POLL_PROMPT,
     DEFAULT_CONFIG,
+    DEFAULT_MONOREPO_DIRS,
     DEFAULT_POLL_SCRIPT,
     HARNESS_LOG_FILE,
     PROMPTS_DIR,
+    ScriptInventory,
     TODO_FILE,
     STAGE,
     SubTask,
@@ -18,7 +21,10 @@ import {
     TASK_PLAN_PRIMARY_REL_PATH,
     Task,
     TaskStats,
-    getAiProvider
+    getAiProvider,
+    getScriptsSubdir,
+    isOsScriptFile,
+    normalizeCustomButton
 } from './models';
 import { TaskScheduler } from './taskScheduler';
 import { startMasterArtifactWatcher } from './masterArtifactWatcher';
@@ -165,7 +171,7 @@ class Harness {
                 reloadTasks: () => this.loadTasks(),
                 render: () => this.render(),
                 openCustomPrompt: (step) => this.handleOpenCustomPrompt(step),
-                saveGit: (frontendGit, backendGit, baseBranch, dryRun) => this.handleSaveGit(frontendGit, backendGit, baseBranch, dryRun),
+                saveGit: (frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode) => this.handleSaveGit(frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode),
                 saveAdvancedConfig: (msg) => this.handleSaveAdvancedConfig(msg),
                 initProjectStructure: () => this.handleInitProjectStructure(),
                 applyProjectStructurePreview: () => this.handleApplyProjectStructurePreview(),
@@ -324,17 +330,50 @@ class Harness {
         return workspaceRoot;
     }
 
-    /** File names available for custom buttons, scanned from <masterRoot>/script/. */
-    private listCustomScripts(): string[] {
-        const dir = path.join(this.getMasterRoot(), CUSTOM_SCRIPT_DIR);
+    /** Scan a directory for OS-appropriate script files (hidden files excluded). */
+    private scanScriptDir(dir: string): string[] {
         try {
             return fs.readdirSync(dir, { withFileTypes: true })
-                .filter(e => e.isFile() && !e.name.startsWith('.'))
+                .filter(e => e.isFile() && !e.name.startsWith('.') && isOsScriptFile(e.name))
                 .map(e => e.name)
                 .sort((a, b) => a.localeCompare(b));
         } catch {
             return [];
         }
+    }
+
+    /**
+     * Build the per-source script inventory the settings webview uses to populate button
+     * dropdowns. Covers the shared master `script/` dir plus the committed scripts dirs of the
+     * main clone(s) — mono-main in monorepo mode, or frontend/backend-main in multi-repo mode.
+     */
+    private buildScriptInventory(): ScriptInventory {
+        const masterRoot = this.getMasterRoot();
+        const isMono = Boolean((this.config.monorepoGit || '').trim());
+        const scriptsSubdir = getScriptsSubdir(this.config);
+        const masterDir = path.join(masterRoot, CUSTOM_SCRIPT_DIR);
+        const inventory: ScriptInventory = {
+            mode: isMono ? 'mono' : 'multi',
+            scriptsSubdir,
+            master: this.scanScriptDir(masterDir),
+            repoMono: [],
+            repoFrontend: [],
+            repoBackend: [],
+            dirs: { master: masterDir },
+        };
+        if (isMono) {
+            const monoDir = path.join(masterRoot, 'repos', 'mono-main', scriptsSubdir);
+            inventory.repoMono = this.scanScriptDir(monoDir);
+            inventory.dirs.repoMono = monoDir;
+        } else {
+            const feDir = path.join(masterRoot, 'repos', 'frontend-main', scriptsSubdir);
+            const beDir = path.join(masterRoot, 'repos', 'backend-main', scriptsSubdir);
+            inventory.repoFrontend = this.scanScriptDir(feDir);
+            inventory.repoBackend = this.scanScriptDir(beDir);
+            inventory.dirs.repoFrontend = feDir;
+            inventory.dirs.repoBackend = beDir;
+        }
+        return inventory;
     }
 
     /** Create (if needed) and reveal the shared script dir, guiding the user to put scripts there. */
@@ -407,11 +446,13 @@ class Harness {
             const subTasks = scheduler.parseTasksMd();
             const iterDir = this.getIterationDir(task);
             const testScriptName = process.platform === 'win32' ? 'test-api.ps1' : 'test-api.sh';
-            const frontendDir = path.join(iterDir, 'frontend');
-            const backendDir = path.join(iterDir, 'backend');
-            const docsDir = path.join(iterDir, 'docs');
-            const mainFrontendDir = path.join(workspaceRoot, 'repos', 'frontend-main');
-            const mainBackendDir = path.join(workspaceRoot, 'repos', 'backend-main');
+            const isMono = Boolean(this.config.monorepoGit?.trim());
+            const monoDirs = this.config.monorepoDirs || DEFAULT_MONOREPO_DIRS;
+            const frontendDir = path.join(iterDir, isMono ? (monoDirs.frontend || DEFAULT_MONOREPO_DIRS.frontend) : 'frontend');
+            const backendDir = path.join(iterDir, isMono ? (monoDirs.backend || DEFAULT_MONOREPO_DIRS.backend) : 'backend');
+            const docsDir = path.join(iterDir, isMono ? (monoDirs.docs || DEFAULT_MONOREPO_DIRS.docs) : 'docs');
+            const mainFrontendDir = isMono ? path.join(workspaceRoot, 'repos', 'mono-main') : path.join(workspaceRoot, 'repos', 'frontend-main');
+            const mainBackendDir = isMono ? path.join(workspaceRoot, 'repos', 'mono-main') : path.join(workspaceRoot, 'repos', 'backend-main');
             const requirementsFile = path.join(docsDir, 'requirements.md');
             const designFile = path.join(docsDir, 'design.md');
             const taskPlanFile = fs.existsSync(path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/')))
@@ -442,7 +483,12 @@ class Harness {
                 healthReasons.push('worktree 缺失');
                 severity = 'bad';
             }
-            if (!rawHealth.frontendExists && !rawHealth.backendExists) {
+            if (isMono) {
+                if (!fs.existsSync(path.join(iterDir, '.git'))) {
+                    healthReasons.push('仓库代码缺失');
+                    severity = 'bad';
+                }
+            } else if (!rawHealth.frontendExists && !rawHealth.backendExists) {
                 healthReasons.push('前后端目录都缺失');
                 severity = 'bad';
             }
@@ -498,13 +544,7 @@ class Harness {
             return left.task.name.localeCompare(right.task.name);
         });
 
-        const activeAutoCount = taskViews.filter(view => view.isAuto).length;
-        const abnormalCount = taskViews.filter(view => view.health.severity !== 'good').length;
-        webview.html = buildMainPageHtml(taskViews, {
-            activeAutoCount,
-            maxConcurrentAutoTasks: this.config.maxConcurrentAutoTasks,
-            abnormalCount,
-        }, {
+        webview.html = buildMainPageHtml(taskViews, {}, {
             compactTaskDecomposition: this.config.compactTaskDecomposition,
             isWorktreeSubview: this.isWorktreeSubview(),
             aiProvider: this.config.aiProvider,
@@ -528,8 +568,7 @@ class Harness {
             webview.html = buildSettingsPageHtml(
                 this.config,
                 this.configMeta,
-                this.listCustomScripts(),
-                path.join(this.getMasterRoot(), CUSTOM_SCRIPT_DIR),
+                this.buildScriptInventory(),
             );
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -580,15 +619,41 @@ class Harness {
         }
     }
 
-    private async handleSaveGit(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean): Promise<void> {
+    private async handleSaveGit(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi'): Promise<void> {
         if (this.configMeta.readOnly) {
             vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改设置');
             return;
         }
-        if (!frontendGit && !backendGit) {
-            vscode.window.showWarningMessage('请至少填写一个 Git 地址（前端或后端）');
-            return;
+        // Resolve the active mode. Older webviews may not send `mode`; fall back to "monorepo when a
+        // single-repo URL is present" to preserve prior behaviour.
+        const activeMode: 'mono' | 'multi' = mode ?? ((monorepoGit || '').trim() ? 'mono' : 'multi');
+
+        let mono = (monorepoGit || '').trim();
+        if (activeMode === 'mono') {
+            // Monorepo: require an explicit URL from the user.
+            if (!mono) {
+                vscode.window.showWarningMessage('单一仓库模式：请填写 Git 地址');
+                return;
+            }
+        } else {
+            // Multi-repo: explicitly disable monorepo mode and require at least one side URL.
+            mono = '';
+            if (!frontendGit && !backendGit) {
+                vscode.window.showWarningMessage('多仓库模式：请至少填写前端或后端 Git 地址');
+                return;
+            }
         }
+        this.config.monorepoGit = mono;
+        if (monorepoDirs) {
+            this.config.monorepoDirs = {
+                frontend: DEFAULT_MONOREPO_DIRS.frontend,
+                backend: DEFAULT_MONOREPO_DIRS.backend,
+                docs: DEFAULT_MONOREPO_DIRS.docs,
+                scripts: DEFAULT_MONOREPO_DIRS.scripts,
+            };
+        }
+        // In monorepo mode the separate frontend/backend remotes are ignored; keep them stored so
+        // switching back to multi-repo mode does not lose the previously configured URLs.
         this.config.frontendGit = frontendGit;
         this.config.backendGit = backendGit;
         this.config.baseBranch = baseBranch;
@@ -630,28 +695,31 @@ class Harness {
         vscode.window.showInformationMessage('✅ 高级策略已保存');
     }
 
-    private handleSaveCustomButtons(buttons: { name: string; command: string; workdir?: string; placement?: 'iteration' | 'main' }[]): void {
+    private handleSaveCustomButtons(buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string; placement?: 'iteration' | 'main' }[]): void {
         if (this.configMeta.readOnly) {
             vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改自定义按钮');
             return;
         }
 
         const normalized: CustomButton[] = (buttons || [])
-            .map((b, i) => ({
+            .map((b, i) => normalizeCustomButton({
                 id: `cb_${i}`,
                 name: (b.name || '').trim(),
-                command: (b.command || '').trim(),
-                workdir: (b.workdir || '').trim(),
+                scriptSource: (b.scriptSource as CustomButtonScriptSource | undefined),
+                script: (b.script || '').trim(),
+                args: (b.args || '').trim(),
+                command: b.command,
                 placement: b.placement === 'main' ? 'main' as const : 'iteration' as const,
             }))
-            .filter(b => b.name && b.command);
+            .filter(b => b.name && b.script);
 
         this.config.customButtons = normalized;
         this.saveConfig();
         // Push the latest buttons into existing worktree snapshots so their subview
         // panels reflect them after a window reload (new worktrees inherit on creation).
         this.taskStore.syncCustomButtonsToWorktrees(normalized);
-        // Ensure the shared script dir exists so the user has a place to drop scripts.
+        // Ensure the shared master script dir exists so the user always has a place to drop
+        // uncommitted scripts (committed source dirs are created with the repo scaffold).
         const scriptDir = path.join(this.getMasterRoot(), CUSTOM_SCRIPT_DIR);
         try {
             fs.mkdirSync(scriptDir, { recursive: true });
@@ -659,7 +727,7 @@ class Harness {
             // best-effort
         }
         this.renderSettings();
-        vscode.window.showInformationMessage(`✅ 已保存 ${normalized.length} 个自定义按钮。脚本请放在：${scriptDir}`);
+        vscode.window.showInformationMessage(`✅ 已保存 ${normalized.length} 个自定义按钮`);
     }
 
     private handleSaveAutoPollConfig(msg: Extract<HarnessMessage, { type: 'saveAutoPollConfig' }>): void {
@@ -765,6 +833,11 @@ class Harness {
         if (this.configMeta.readOnly || !this.projectStructureService) {
             return;
         }
+        // In monorepo mode, project-structure.md lives in the git-managed mono-main repo.
+        const isMono = Boolean((this.config.monorepoGit || '').trim());
+        this.projectStructureService.setMonorepoMainDir(
+            isMono ? path.join(workspaceRoot, 'repos', 'mono-main') : undefined
+        );
         this.projectStructureService.ensureBaseline(this.config.customProjectStructure || '');
     }
 
@@ -775,6 +848,10 @@ class Harness {
     private copyProjectStructureToIteration(iterDir: string): void {
         const masterRoot = this.getMasterRoot();
         const masterService = new ProjectStructureService(masterRoot, extensionPath);
+        const isMono = Boolean((this.config.monorepoGit || '').trim());
+        masterService.setMonorepoMainDir(
+            isMono ? path.join(masterRoot, 'repos', 'mono-main') : undefined
+        );
         masterService.copyRootStructureToIteration(iterDir);
 
         // Fallback to current-window service in case master baseline is empty.
