@@ -41,6 +41,7 @@ interface ArtifactIndexFile {
 interface HarnessActionsDeps {
     getTasks: () => Task[];
     getConfig: () => Config;
+    reloadConfig?: () => void;
     /** Master workspace root (the "主目录"), even when invoked from a worktree subview window. */
     getMasterRoot: () => string;
     getIterationDir: (task: Task) => string;
@@ -830,7 +831,12 @@ export class HarnessActionsService {
         const task = this.getTaskById(taskId);
         if (!task) return;
 
-        const raw = (this.deps.getConfig().customButtons || []).find(b => b.id === buttonId);
+        let raw = (this.deps.getConfig().customButtons || []).find(b => b.id === buttonId);
+        if (!raw || !normalizeCustomButton(raw).script) {
+            // Config may be stale in worktree subview — reload from disk and retry.
+            this.deps.reloadConfig?.();
+            raw = (this.deps.getConfig().customButtons || []).find(b => b.id === buttonId);
+        }
         if (!raw) {
             vscode.window.showWarningMessage('未找到对应的自定义按钮，请在「高级设置」中重新配置');
             return;

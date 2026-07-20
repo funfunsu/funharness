@@ -152,6 +152,7 @@ class Harness {
             this.actionsService = new HarnessActionsService({
                 getTasks: () => this.tasks,
                 getConfig: () => this.config,
+                reloadConfig: () => this.loadConfig(),
                 getMasterRoot: () => this.getMasterRoot(),
                 getIterationDir: (task) => this.getIterationDir(task),
                 ensureIterationDir: (task) => this.taskStore.ensureIterationDir(task),
@@ -168,7 +169,7 @@ class Harness {
             this.messageController = new HarnessMessageController({
                 isWorktreeSubview: () => this.isWorktreeSubview(),
                 setPage: (page) => { this.currentPage = page; },
-                reloadTasks: () => this.loadTasks(),
+                reloadTasks: () => { if (this.isWorktreeSubview()) { this.loadConfig(); } this.loadTasks(); },
                 render: () => this.render(),
                 openCustomPrompt: (step) => this.handleOpenCustomPrompt(step),
                 saveGit: (frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode) => this.handleSaveGit(frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode),
