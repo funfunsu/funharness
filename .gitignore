@@ -1,18 +1,23 @@
-.vscode/**
-.vscode-test/**
-.yarnrc
-vsc-extension-quickstart.md
-**/tsconfig.json
-**/eslint.config.mjs
-**/*.map
+**/.DS_Store
+
+# Editor and test artifacts
+**/.vscode/**
+**/.vscode-test/**
 **/.vscode-test.*
-.github/**
-node_modules/**
-src/**/*.js
-dist/**
-out/**
-*.vsix
-.vscodeignore
-package-lock.json
-.harness/**
-docs/**
+
+# Dependency installs
+**/node_modules/**
+
+# Build output
+**/out/**
+**/dist/**
+**/*.tsbuildinfo
+**/*.map
+
+# Local packaging and runtime-generated files
+**/*.vsix
+**/.harness/**
+**/package-lock.json
+
+# Optional local config
+**/.yarnrc
