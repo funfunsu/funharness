@@ -20,6 +20,7 @@ import {
     getSpecFileRel,
     resolveTaskPlanFileForIteration,
     getDocsRootDirName,
+    isMonoMode,
     normalizeCustomButton,
 } from '../models';
 import { TaskScheduler } from '../taskScheduler';
@@ -407,6 +408,8 @@ export class HarnessActionsService {
             this.reconcileStageArtifactPath(task, 'des');
         } else if (artifact === 'testcase') {
             this.reconcileStageArtifactPath(task, 'tcs');
+        } else if (artifact === 'tasks') {
+            this.reconcileStageArtifactPath(task, 'tsk');
         }
         const testScriptName = process.platform === 'win32' ? 'test-api.ps1' : 'test-api.sh';
         const cfg = this.deps.getConfig();
@@ -1413,14 +1416,21 @@ export class HarnessActionsService {
         }
 
         const candidates = [
-            // Legacy flat docs-root location (docs/<file>), e.g. iterations created before the
-            // task-named subfolder was introduced in monorepo mode.
-            path.join(iterDir, getDocsRootDirName(cfg), fileName),
             path.join(iterDir, fileName),
             path.join(iterDir, 'doc', fileName),
             path.join(iterDir, '.harness', 'staging', fileName),
             path.join(iterDir, '.harness', 'artifacts', fileName),
         ];
+
+        const docsRootCandidate = path.join(iterDir, getDocsRootDirName(cfg), fileName);
+        if (!isMonoMode(cfg)) {
+            // Legacy flat docs-root location (docs/<file>) for non-monorepo mode.
+            candidates.unshift(docsRootCandidate);
+        } else if (this.isLegacyMonoArtifactForTask(docsRootCandidate, fileName, path.basename(iterDir))) {
+            // In monorepo mode, only migrate docs-root files that clearly belong to this
+            // iteration task to avoid consuming repository-level project documents.
+            candidates.unshift(docsRootCandidate);
+        }
 
         for (const candidate of candidates) {
             if (!fs.existsSync(candidate) || this.normalize(candidate) === this.normalize(canonicalAbs)) {
@@ -1441,6 +1451,37 @@ export class HarnessActionsService {
         }
 
         return false;
+    }
+
+    private isLegacyMonoArtifactForTask(filePath: string, fileName: string, taskName: string): boolean {
+        if (!fs.existsSync(filePath)) {
+            return false;
+        }
+        let content = '';
+        try {
+            content = fs.readFileSync(filePath, 'utf8');
+        } catch {
+            return false;
+        }
+        if (!content.trim()) {
+            return false;
+        }
+
+        const artifactTypeMap: Record<string, string> = {
+            'requirements.md': 'requirements',
+            'design.md': 'design',
+            'testcase.md': 'testcase',
+            'tasks.md': 'tasks',
+        };
+        const artifactType = artifactTypeMap[fileName];
+        if (!artifactType) {
+            return false;
+        }
+
+        const escapedTaskName = taskName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const typePattern = new RegExp(`artifactType\\s*:\\s*${artifactType}\\b`, 'i');
+        const taskPattern = new RegExp(`taskName\\s*:\\s*["']?${escapedTaskName}["']?\\b`, 'i');
+        return typePattern.test(content) && taskPattern.test(content);
     }
 
     private startArtifactRepairWatch(task: Task, step: HarnessStep): void {

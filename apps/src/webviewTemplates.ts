@@ -298,7 +298,7 @@ function collectTaskActions(ctx: TaskActionContext): { primaryActions: string[];
 export function buildMainPageHtml(
     taskViews: MainTaskViewModel[],
     dashboard: Record<string, never>,
-    config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; autoPoll?: AutoPollStatus }
+    config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; autoPollEnabled: boolean; autoPoll?: AutoPollStatus }
 ): string {
     const customButtons = config.customButtons || [];
     // 'main' buttons render in a dedicated main-panel area belonging to no iteration;
@@ -432,7 +432,7 @@ ${!isWorktreeSubview && mainButtons.length > 0 ? `<div class="main-actions-card"
 <div class="main-actions">${mainButtons.map(b => `<button class="btn-gray" onclick="runMainCustomButton('${b.id}')">${escapeHtml(b.name)}</button>`).join('')}</div>
 </div>` : ''}
 
-${isWorktreeSubview && config.autoPoll ? buildAutoPollPanelHtml(config.autoPoll) : ''}
+${isWorktreeSubview && config.autoPollEnabled && config.autoPoll ? buildAutoPollPanelHtml(config.autoPoll) : ''}
 
 ${`<div class="todo-card" id="workspace-todo-panel">
 <div class="todo-head">
