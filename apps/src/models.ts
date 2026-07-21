@@ -433,6 +433,12 @@ export function resolveSpecFile(iterDir: string, config: SpecDocsConfig, fileNam
     if (fs.existsSync(canonical)) {
         return canonical;
     }
+    // In monorepo mode, docs/<task>/ is the canonical and only supported location.
+    // Do not fall back to docs/<file> because many repositories keep project-level
+    // documents there and they are not iteration artifacts.
+    if (isMonoMode(config)) {
+        return canonical;
+    }
     const legacyFlat = path.join(iterDir, getDocsRootDirName(config), fileName);
     if (legacyFlat !== canonical && fs.existsSync(legacyFlat)) {
         return legacyFlat;
@@ -447,6 +453,9 @@ export function resolveSpecFile(iterDir: string, config: SpecDocsConfig, fileNam
  */
 export function resolveTaskPlanFileForIteration(iterDir: string, config: SpecDocsConfig): string {
     const canonical = getSpecFile(iterDir, config, 'tasks.md');
+    if (isMonoMode(config)) {
+        return canonical;
+    }
     const legacyFlat = path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/'));
     const legacyOld = path.join(iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/'));
     for (const candidate of [canonical, legacyFlat, legacyOld]) {
