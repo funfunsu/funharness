@@ -97,7 +97,16 @@ export class ProjectStructureService {
         return path.join(this.workspaceRoot, BASE, 'project-structure.md');
     }
 
-    ensureBaseline(customProjectStructure: string): { source: 'custom' | 'existing' | 'default'; filePath: string } {
+    /**
+     * Ensure the root project-structure.md baseline exists and report which source produced it.
+     * The returned `source` is a single, mutually-exclusive origin of the final document:
+     *   - 'custom'   : written from user-provided custom structure
+     *   - 'existing' : an existing non-empty root document was kept
+     *   - 'detected' : content derived from the real workspace directory scan
+     *   - 'default'  : fell back to the built-in default template
+     * (The 'detected' branch wiring is implemented in a later task; this signature declares the contract.)
+     */
+    ensureBaseline(customProjectStructure: string): { source: 'custom' | 'existing' | 'detected' | 'default'; filePath: string } {
         const custom = (customProjectStructure || '').trim();
         if (custom) {
             this.writeRootStructure(custom);
