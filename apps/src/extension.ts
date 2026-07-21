@@ -295,9 +295,7 @@ class Harness {
             }
             const iterDir = this.getIterationDir(task);
             const hasTestcase = this.hasMeaningfulArtifactContent(resolveSpecFile(iterDir, this.config, 'testcase.md'));
-            const hasTaskPlan = fs.existsSync(resolveTaskPlanFileForIteration(iterDir, this.config))
-                || fs.existsSync(path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/')))
-                || fs.existsSync(path.join(iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/')));
+            const hasTaskPlan = fs.existsSync(resolveTaskPlanFileForIteration(iterDir, this.config));
 
             let target = task.stage;
             if (hasTaskPlan) {
@@ -554,6 +552,7 @@ class Harness {
             isWorktreeSubview: this.isWorktreeSubview(),
             aiProvider: this.config.aiProvider,
             customButtons: this.config.customButtons || [],
+            autoPollEnabled: this.config.autoPollEnabled,
             autoPoll: this.isWorktreeSubview() ? this.autoPollService.getStatus() : undefined,
         });
         } catch (error) {
