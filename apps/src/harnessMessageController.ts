@@ -126,14 +126,20 @@ export class HarnessMessageController {
                 updatedAt: todo.updatedAt,
             })),
         };
+        let posted = false;
         try {
             this.deps.todoChanged?.(payload);
+            posted = true;
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error || 'unknown');
             this.logTodo('TODO-SYNC-001', '面板同步广播失败', detail);
             vscode.window.showWarningMessage('TODO-SYNC-001: 面板同步广播失败');
         }
-        this.deps.render();
+        // Only do a full render when postMessage failed; a full render replaces
+        // the entire webview HTML which resets client-side todo state to [].
+        if (!posted) {
+            this.deps.render();
+        }
     }
 
     /**
@@ -442,15 +448,10 @@ export class HarnessMessageController {
 
                     if (!createdTask?.id) {
                         await this.deps.createTask(todo.title, todo.description ?? '', false);
-                        this.emitTodoChanged('reloaded', todoStore.list());
-                        return;
                     }
 
-                    todoStore.promoteToTask({
-                        id: msg.todoId,
-                        taskId: createdTask.id,
-                        strategy: msg.promotionPolicy,
-                    });
+                    // Always remove the promoted todo from the list.
+                    todoStore.remove(msg.todoId);
                     this.emitTodoChanged('promoted', todoStore.list());
                 } catch (error) {
                     const mapped = this.mapTodoError(error);

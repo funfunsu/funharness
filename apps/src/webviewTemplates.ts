@@ -1,8 +1,7 @@
 import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubTask, Task, TaskStats, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, normalizeCustomButton } from './models';
 import { HarnessConfigMeta } from './services/taskStoreService';
 import { AutoPollStatus } from './services/autoPollService';
-import { WorkspaceTodoStoreService, WorkspaceTodoItem } from './services/workspaceTodoStoreService';
-import * as vscode from 'vscode';
+
 
 /** Escape a string for safe interpolation into HTML text or a double-quoted attribute. */
 function escapeHtml(value: string): string {
@@ -42,20 +41,7 @@ ${scriptNote}
 </div>`;
 }
 
-/** Load latest workspace-level todos so every render starts from authoritative persisted state. */
-function loadWorkspaceTodoSnapshot(): WorkspaceTodoItem[] {
-    try {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!workspaceRoot) {
-            return [];
-        }
-        const todoStore = new WorkspaceTodoStoreService(workspaceRoot);
-        todoStore.load();
-        return todoStore.list();
-    } catch {
-        return [];
-    }
-}
+
 
 export interface MainTaskViewModel {
     task: Task;
@@ -323,7 +309,6 @@ export function buildMainPageHtml(
     const visibleTaskViews = isWorktreeSubview
         ? taskViews.slice(0, 1)
         : taskViews;
-    const initialTodos = loadWorkspaceTodoSnapshot();
 
     return `<!DOCTYPE html>
 <html>
@@ -637,7 +622,7 @@ ${!isWorktreeSubview ? `<div class="fixed-bottom">
 const v=acquireVsCodeApi();
 const TODO_STATE_KEY='workspaceTodoState.v1';
 const TODO_SOURCE_PANEL=${isWorktreeSubview ? "'worktree'" : "'master'"};
-const TODO_INITIAL_TODOS=${JSON.stringify(initialTodos)};
+const TODO_INITIAL_TODOS=[];
 let todoState=loadTodoState();
 
 /** Escape raw text before writing into todo item HTML slots. */
@@ -753,10 +738,10 @@ function renderTodoPanel(){
             + descHtml
             + '<div class="todo-item-meta">ID: '+safeId+' · 更新于 '+(updatedAt||'-')+'</div>'
             + '<div class="todo-item-actions">'
-            + '<button class="btn-gray" onclick="toggleTodoStatus(\''+safeId+'\',\''+nextStatus+'\')">'+toggleLabel+'</button>'
-            + '<button class="btn-blue" onclick="openTodoEditEditor(\''+safeId+'\')">编辑</button>'
-            + '<button class="btn-green" onclick="promoteTodoToTask(\''+safeId+'\')">'+promoteLabel+'</button>'
-            + '<button class="btn-red" onclick="deleteTodo(\''+safeId+'\')">删除</button>'
+            + '<button class="btn-gray" data-todo-action="toggle" data-todo-id="'+safeId+'" data-todo-next="'+nextStatus+'">'+toggleLabel+'</button>'
+            + '<button class="btn-blue" data-todo-action="edit" data-todo-id="'+safeId+'">编辑</button>'
+            + '<button class="btn-green" data-todo-action="promote" data-todo-id="'+safeId+'">'+promoteLabel+'</button>'
+            + '<button class="btn-red" data-todo-action="delete" data-todo-id="'+safeId+'">删除</button>'
             + '</div>'
             + '</div>';
     }).join('');
@@ -773,7 +758,6 @@ function openTodoCreateEditor(){
 function openTodoEditEditor(id){
     const todo=findTodoById(id);
     if(!todo){
-        alert('未找到待办项');
         return;
     }
     todoState.editor={
@@ -805,7 +789,8 @@ function submitTodoEditor(){
     const description=String(descInput.value||'').trim();
     const status=String(statusSelect.value||'open');
     if(!title){
-        alert('标题不能为空');
+        var ti=document.getElementById('todo-title-input');
+        if(ti){ti.style.outline='2px solid #ff3b30';ti.placeholder='标题不能为空';setTimeout(function(){ti.style.outline='';ti.placeholder='标题（必填）';},2000);}
         return;
     }
 
@@ -836,7 +821,6 @@ function submitTodoEditor(){
 function toggleTodoStatus(id,nextStatus){
     const todo=findTodoById(id);
     if(!todo){
-        alert('未找到待办项');
         return;
     }
     todoState.todos=todoState.todos.map((item)=>item.id===id
@@ -859,35 +843,25 @@ function deleteTodo(id){
     if(!todo){
         return;
     }
-    if(!confirm('确认删除该待办吗？')){
-        return;
-    }
     todoState.todos=todoState.todos.filter((item)=>item.id!==id);
     saveTodoState();
     renderTodoPanel();
     v.postMessage({type:'todo.delete',id});
 }
 
-/** Promote a todo into a new iteration task with optional mark-promoted policy. */
+/** Promote a todo into a new iteration task and remove it from the todo list. */
 function promoteTodoToTask(id){
     const todo=findTodoById(id);
     if(!todo){
-        alert('未找到待办项');
         return;
     }
-    const markPromoted=confirm('创建迭代任务后是否将该待办标记为“已转任务”？\n确定=标记，取消=保留原状态');
-    const promotionPolicy=markPromoted?'mark-promoted':'keep';
-    if(markPromoted){
-        todoState.todos=todoState.todos.map((item)=>item.id===id
-            ? {...item,status:'promoted',updatedAt:new Date().toISOString()}
-            : item);
-        saveTodoState();
-        renderTodoPanel();
-    }
+    todoState.todos=todoState.todos.filter((item)=>item.id!==id);
+    saveTodoState();
+    renderTodoPanel();
     v.postMessage({
         type:'todo.promoteToTask',
         todoId:id,
-        promotionPolicy,
+        promotionPolicy:'remove',
     });
 }
 
@@ -920,11 +894,25 @@ window.addEventListener('message',(event)=>{
     }
 });
 
+/** Delegated handler for dynamically rendered todo-item actions (avoids fragile inline onclick escaping). */
+document.addEventListener('click',(event)=>{
+    const origin=event.target;
+    if(!origin||typeof origin.closest!=='function'){return;}
+    const btn=origin.closest('[data-todo-action]');
+    if(!btn){return;}
+    const action=btn.getAttribute('data-todo-action');
+    const id=btn.getAttribute('data-todo-id')||'';
+    if(action==='toggle'){toggleTodoStatus(id,btn.getAttribute('data-todo-next')||'done');}
+    else if(action==='edit'){openTodoEditEditor(id);}
+    else if(action==='promote'){promoteTodoToTask(id);}
+    else if(action==='delete'){deleteTodo(id);}
+});
+
 function p(x){v.postMessage({type:'page',page:x})}
 function create(){
     const name=document.getElementById('name').value.trim();
     const desc=document.getElementById('desc').value.trim();
-    if(!name){alert('请输入迭代名称（英文）');return;}
+    if(!name){var ni=document.getElementById('name');if(ni){ni.style.outline='2px solid #ff3b30';ni.placeholder='请输入迭代名称（英文）';setTimeout(function(){ni.style.outline='';ni.placeholder='迭代名称（英文）';},2000);}return;}
     const quickMode=document.getElementById('quickMode').checked;
     v.postMessage({type:'create',name,desc,quickMode});
     document.getElementById('name').value='';
@@ -999,13 +987,13 @@ function commitTaskDescEditor(id){
         var desc=nodes.desc;
         if(!editor||!desc){
             logWebviewEvent(id,'taskDescEditor.save.missingNodes');
-            alert('保存失败：未找到编辑器节点');
+            logWebviewEvent(id,'taskDescEditor.save.missingNodes.alert');
             return;
         }
         var nextDesc=String(editor.value||'').trim();
         logWebviewEvent(id,'taskDescEditor.save.click','len='+nextDesc.length);
         if(!nextDesc){
-            alert('需求描述不能为空');
+            if(editor){editor.style.outline='2px solid #ff3b30';setTimeout(function(){editor.style.outline='';},2000);}
             return;
         }
         desc.innerText=nextDesc;
@@ -1015,7 +1003,7 @@ function commitTaskDescEditor(id){
     }catch(error){
         var message=error&&error.message?error.message:String(error);
         try{logWebviewEvent(id,'taskDescEditor.save.error',message);}catch{}
-        alert('保存失败：'+message);
+        logWebviewEvent(id,'taskDescEditor.save.error.alert',message);
     }
 }
 function resetTask(id){v.postMessage({type:'resetTask',id})}
@@ -1028,6 +1016,7 @@ function pushDev(id){v.postMessage({type:'pushAndNextStage',id})}
 document.addEventListener('DOMContentLoaded',()=>{
     if(document.getElementById('workspace-todo-panel')){
         renderTodoPanel();
+        v.postMessage({type:'todo.list'});
     }
     const taskItems=document.querySelectorAll('.task-item[data-task-id]');
     taskItems.forEach((item)=>{
@@ -1393,7 +1382,7 @@ function cbRenderAll(){
   cbUpdateEmpty();
 }
 function addCustomButton(){
-  if(cbAllScriptCount()===0){alert('未发现可用脚本，请先在脚本目录中创建脚本，再点「刷新脚本列表」');return;}
+  if(cbAllScriptCount()===0){var em=document.getElementById('cbEmpty');if(em){em.style.display='block';}return;}
   document.getElementById('cbList').insertAdjacentHTML('beforeend',cbRowHtml({}));
   cbRefreshScripts();
 }

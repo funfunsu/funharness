@@ -95,6 +95,8 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
+    "postcompile": "node scripts/validate-webview.js",
+    "validate:webview": "node scripts/validate-webview.js",
     "watch": "tsc -watch -p ./",
     "test": "npm run compile && node --test test",
     "prepackage": "npm run compile",
