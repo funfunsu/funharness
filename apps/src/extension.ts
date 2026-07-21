@@ -183,6 +183,7 @@ class Harness {
                 testAiProvider: async () => this.aiDispatchService.testConnection(),
                 setSubTaskStatus: async (taskId, subId, status) => this.actionsService.setSubTaskStatusByTaskId(taskId, subId, status),
                 createTask: async (name, desc, quickMode) => this.actionsService.createTask(name, desc, quickMode),
+                createTaskFromTodo: async (name, desc) => this.actionsService.createTaskFromTodo(name, desc),
                 logWebviewEvent: (taskId, event, detail) => this.actionsService.logUiEventByTaskId(taskId, event, detail),
                 requestEditTaskDesc: async (taskId) => this.actionsService.promptUpdateTaskDescByTaskId(taskId),
                 updateTaskDesc: (taskId, desc) => this.actionsService.updateTaskDescByTaskId(taskId, desc),

@@ -1,6 +1,8 @@
 import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubTask, Task, TaskStats, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, normalizeCustomButton } from './models';
 import { HarnessConfigMeta } from './services/taskStoreService';
 import { AutoPollStatus } from './services/autoPollService';
+import { WorkspaceTodoStoreService, WorkspaceTodoItem } from './services/workspaceTodoStoreService';
+import * as vscode from 'vscode';
 
 /** Escape a string for safe interpolation into HTML text or a double-quoted attribute. */
 function escapeHtml(value: string): string {
@@ -38,6 +40,21 @@ ${elsewhereNote}
 ${scriptNote}
 <button class="btn-green" onclick="toggleAutoPoll(true)">▶ 开启自动轮询远程任务并执行</button>
 </div>`;
+}
+
+/** Load latest workspace-level todos so every render starts from authoritative persisted state. */
+function loadWorkspaceTodoSnapshot(): WorkspaceTodoItem[] {
+    try {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) {
+            return [];
+        }
+        const todoStore = new WorkspaceTodoStoreService(workspaceRoot);
+        todoStore.load();
+        return todoStore.list();
+    } catch {
+        return [];
+    }
 }
 
 export interface MainTaskViewModel {
@@ -306,6 +323,7 @@ export function buildMainPageHtml(
     const visibleTaskViews = isWorktreeSubview
         ? taskViews.slice(0, 1)
         : taskViews;
+    const initialTodos = loadWorkspaceTodoSnapshot();
 
     return `<!DOCTYPE html>
 <html>
@@ -387,6 +405,25 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .sub-task-panel>summary{cursor:pointer;font-size:12px;color:#bbb;list-style:none}
 .sub-task-panel>summary::-webkit-details-marker{display:none}
 .sub-task-panel[open]>summary{color:#fff}
+.todo-card{margin:0 0 12px;padding:12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
+.todo-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.todo-title{font-weight:600;font-size:13px}
+.todo-list{display:flex;flex-direction:column;gap:8px}
+.todo-item{background:#232326;border:1px solid #34343a;border-radius:8px;padding:8px}
+.todo-item-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.todo-item-title{font-size:13px;font-weight:600;line-height:1.45;word-break:break-word}
+.todo-item-title.done{text-decoration:line-through;color:#a0a0a7}
+.todo-item-desc{margin-top:4px;font-size:12px;color:#b8b8bf;white-space:pre-wrap;line-height:1.5;word-break:break-word}
+.todo-item-meta{margin-top:6px;font-size:11px;color:#8f8f96}
+.todo-item-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.todo-item-actions button{flex:1;min-width:72px;padding:6px 8px;border:none;border-radius:7px;font-size:11px}
+.todo-empty{padding:12px;border:1px dashed #4a4a52;border-radius:8px;color:#a9a9b0;font-size:12px;line-height:1.5;text-align:center}
+.todo-editor{display:none;margin:10px 0 8px;padding:10px;background:#232326;border:1px solid #34343a;border-radius:8px}
+.todo-editor.open{display:block}
+.todo-editor-head{font-size:12px;color:#d6d6dc;margin-bottom:8px}
+.todo-editor-actions{display:flex;gap:6px;flex-wrap:wrap}
+.todo-editor-actions button{flex:1;min-width:80px;padding:8px;border:none;border-radius:8px;font-size:11px}
+.todo-loading{font-size:12px;color:#a9a9b0;margin-bottom:6px}
 </style>
 </head>
 <body>
@@ -411,6 +448,32 @@ ${!isWorktreeSubview && mainButtons.length > 0 ? `<div class="main-actions-card"
 </div>` : ''}
 
 ${isWorktreeSubview && config.autoPoll ? buildAutoPollPanelHtml(config.autoPoll) : ''}
+
+${`<div class="todo-card" id="workspace-todo-panel">
+<div class="todo-head">
+<div class="todo-title">${isWorktreeSubview ? '📝 共享待办（工作区）' : '📝 工作区待办'}</div>
+<button class="btn-blue" style="padding:6px 10px;font-size:11px;min-width:auto;flex:none" onclick="openTodoCreateEditor()">＋ 添加待办</button>
+</div>
+<div id="todo-loading" class="todo-loading" style="display:none">正在加载待办列表...</div>
+<div class="todo-editor" id="todo-editor">
+<div class="todo-editor-head" id="todo-editor-head">新增待办</div>
+<input id="todo-title-input" placeholder="标题（必填）">
+<textarea id="todo-desc-input" rows="3" placeholder="描述（可选）"></textarea>
+<select id="todo-status-select" style="display:none">
+<option value="open">open</option>
+<option value="done">done</option>
+<option value="promoted">promoted</option>
+</select>
+<div class="todo-editor-actions">
+<button class="btn-gray" onclick="closeTodoEditor()">取消</button>
+<button class="btn-blue" onclick="submitTodoEditor()">保存</button>
+</div>
+</div>
+<div id="todo-empty" class="todo-empty" style="display:none">
+暂无待办，点击「添加待办」创建第一条记录。
+</div>
+<div id="todo-list" class="todo-list"></div>
+</div>`}
 
 ${visibleTaskViews.map(view => {
     const t = view.task;
@@ -572,6 +635,291 @@ ${!isWorktreeSubview ? `<div class="fixed-bottom">
 
 <script>
 const v=acquireVsCodeApi();
+const TODO_STATE_KEY='workspaceTodoState.v1';
+const TODO_SOURCE_PANEL=${isWorktreeSubview ? "'worktree'" : "'master'"};
+const TODO_INITIAL_TODOS=${JSON.stringify(initialTodos)};
+let todoState=loadTodoState();
+
+/** Escape raw text before writing into todo item HTML slots. */
+function escapeTodoHtml(value){
+    return String(value??'')
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;')
+        .replace(/'/g,'&#39;');
+}
+
+/** Build a clean default client state for the main-panel todo widget. */
+function createDefaultTodoState(){
+    return {
+        todos:Array.isArray(TODO_INITIAL_TODOS)?TODO_INITIAL_TODOS:[],
+        loading:false,
+        editor:{mode:'',id:'',title:'',description:'',status:'open'},
+    };
+}
+
+/** Read persisted todo widget state from VS Code webview storage. */
+function loadTodoState(){
+    const state=v.getState()||{};
+    const cached=state[TODO_STATE_KEY];
+    const fallback=createDefaultTodoState();
+    if(!cached||typeof cached!=='object'){
+        return fallback;
+    }
+    return {
+        todos:Array.isArray(TODO_INITIAL_TODOS)?TODO_INITIAL_TODOS:(Array.isArray(cached.todos)?cached.todos:[]),
+        loading:cached.loading===true,
+        editor:cached.editor&&typeof cached.editor==='object'
+            ? {
+                mode:cached.editor.mode==='edit'||cached.editor.mode==='create'?cached.editor.mode:'',
+                id:String(cached.editor.id||''),
+                title:String(cached.editor.title||''),
+                description:String(cached.editor.description||''),
+                status:cached.editor.status==='done'||cached.editor.status==='promoted'?cached.editor.status:'open',
+            }
+            : fallback.editor,
+    };
+}
+
+/** Persist todo widget state so re-rendered pages can restore current draft/UI context. */
+function saveTodoState(){
+    const state=v.getState()||{};
+    state[TODO_STATE_KEY]=todoState;
+    v.setState(state);
+}
+
+/** Ask extension host for latest workspace todo list snapshot. */
+function requestTodoList(){
+    todoState.loading=true;
+    saveTodoState();
+    renderTodoPanel();
+    v.postMessage({type:'todo.list'});
+}
+
+/** Return current todo item by id from local widget state. */
+function findTodoById(id){
+    return todoState.todos.find((todo)=>todo.id===id);
+}
+
+/** Render todo list, empty state and editor based on current local state. */
+function renderTodoPanel(){
+    const panel=document.getElementById('workspace-todo-panel');
+    if(!panel){return;}
+
+    const loading=document.getElementById('todo-loading');
+    const empty=document.getElementById('todo-empty');
+    const list=document.getElementById('todo-list');
+    const editor=document.getElementById('todo-editor');
+    const editorHead=document.getElementById('todo-editor-head');
+    const titleInput=document.getElementById('todo-title-input');
+    const descInput=document.getElementById('todo-desc-input');
+    const statusSelect=document.getElementById('todo-status-select');
+    if(!loading||!empty||!list||!editor||!editorHead||!titleInput||!descInput||!statusSelect){return;}
+
+    loading.style.display=todoState.loading?'block':'none';
+
+    const editorOpen=todoState.editor.mode==='create'||todoState.editor.mode==='edit';
+    editor.classList.toggle('open',editorOpen);
+    editorHead.innerText=todoState.editor.mode==='edit'?'编辑待办':'新增待办';
+    titleInput.value=todoState.editor.title||'';
+    descInput.value=todoState.editor.description||'';
+    statusSelect.value=todoState.editor.status||'open';
+    statusSelect.style.display=todoState.editor.mode==='edit'?'block':'none';
+
+    if(todoState.todos.length===0){
+        empty.style.display='block';
+        list.innerHTML='';
+        return;
+    }
+
+    empty.style.display='none';
+    list.innerHTML=todoState.todos.map((todo)=>{
+        const safeId=escapeTodoHtml(todo.id);
+        const safeTitle=escapeTodoHtml(todo.title||'');
+        const safeDesc=escapeTodoHtml(todo.description||'');
+        const statusLabel=todo.status==='done'?'已完成':todo.status==='promoted'?'已转任务':'进行中';
+        const updatedAt=escapeTodoHtml(todo.updatedAt||'');
+        const nextStatus=todo.status==='done'?'open':'done';
+        const descHtml=safeDesc?'<div class="todo-item-desc">'+safeDesc+'</div>':'';
+        const titleClass=todo.status==='done'?'todo-item-title done':'todo-item-title';
+        const toggleLabel=todo.status==='done'?'标记未完成':'标记完成';
+        const promoteLabel=todo.status==='promoted'?'再次转任务':'转任务';
+        return '<div class="todo-item">'
+            + '<div class="todo-item-head">'
+            + '<div class="'+titleClass+'">'+safeTitle+'</div>'
+            + '<span class="task-status">'+statusLabel+'</span>'
+            + '</div>'
+            + descHtml
+            + '<div class="todo-item-meta">ID: '+safeId+' · 更新于 '+(updatedAt||'-')+'</div>'
+            + '<div class="todo-item-actions">'
+            + '<button class="btn-gray" onclick="toggleTodoStatus(\''+safeId+'\',\''+nextStatus+'\')">'+toggleLabel+'</button>'
+            + '<button class="btn-blue" onclick="openTodoEditEditor(\''+safeId+'\')">编辑</button>'
+            + '<button class="btn-green" onclick="promoteTodoToTask(\''+safeId+'\')">'+promoteLabel+'</button>'
+            + '<button class="btn-red" onclick="deleteTodo(\''+safeId+'\')">删除</button>'
+            + '</div>'
+            + '</div>';
+    }).join('');
+}
+
+/** Open create editor with cleared draft fields. */
+function openTodoCreateEditor(){
+    todoState.editor={mode:'create',id:'',title:'',description:'',status:'open'};
+    saveTodoState();
+    renderTodoPanel();
+}
+
+/** Open edit editor and load selected todo as initial values. */
+function openTodoEditEditor(id){
+    const todo=findTodoById(id);
+    if(!todo){
+        alert('未找到待办项');
+        return;
+    }
+    todoState.editor={
+        mode:'edit',
+        id:todo.id,
+        title:todo.title||'',
+        description:todo.description||'',
+        status:todo.status||'open',
+    };
+    saveTodoState();
+    renderTodoPanel();
+}
+
+/** Close editor and keep current todo list unchanged. */
+function closeTodoEditor(){
+    todoState.editor={mode:'',id:'',title:'',description:'',status:'open'};
+    saveTodoState();
+    renderTodoPanel();
+}
+
+/** Submit create/edit operation and sync changes through todo message contracts. */
+function submitTodoEditor(){
+    const titleInput=document.getElementById('todo-title-input');
+    const descInput=document.getElementById('todo-desc-input');
+    const statusSelect=document.getElementById('todo-status-select');
+    if(!titleInput||!descInput||!statusSelect){return;}
+
+    const title=String(titleInput.value||'').trim();
+    const description=String(descInput.value||'').trim();
+    const status=String(statusSelect.value||'open');
+    if(!title){
+        alert('标题不能为空');
+        return;
+    }
+
+    if(todoState.editor.mode==='edit'&&todoState.editor.id){
+        const nextTodos=todoState.todos.map((todo)=>todo.id===todoState.editor.id
+            ? {...todo,title,description:description||null,status,updatedAt:new Date().toISOString()}
+            : todo);
+        todoState.todos=nextTodos;
+        v.postMessage({
+            type:'todo.update',
+            id:todoState.editor.id,
+            title,
+            description:description||null,
+            status,
+        });
+    }else{
+        v.postMessage({
+            type:'todo.create',
+            sourcePanel:TODO_SOURCE_PANEL,
+            title,
+            description:description||null,
+        });
+    }
+    closeTodoEditor();
+}
+
+/** Toggle item status between open and done from the list card action. */
+function toggleTodoStatus(id,nextStatus){
+    const todo=findTodoById(id);
+    if(!todo){
+        alert('未找到待办项');
+        return;
+    }
+    todoState.todos=todoState.todos.map((item)=>item.id===id
+        ? {...item,status:nextStatus,updatedAt:new Date().toISOString()}
+        : item);
+    saveTodoState();
+    renderTodoPanel();
+    v.postMessage({
+        type:'todo.update',
+        id,
+        title:todo.title,
+        description:todo.description,
+        status:nextStatus,
+    });
+}
+
+/** Delete item from current list and notify extension host for persistence. */
+function deleteTodo(id){
+    const todo=findTodoById(id);
+    if(!todo){
+        return;
+    }
+    if(!confirm('确认删除该待办吗？')){
+        return;
+    }
+    todoState.todos=todoState.todos.filter((item)=>item.id!==id);
+    saveTodoState();
+    renderTodoPanel();
+    v.postMessage({type:'todo.delete',id});
+}
+
+/** Promote a todo into a new iteration task with optional mark-promoted policy. */
+function promoteTodoToTask(id){
+    const todo=findTodoById(id);
+    if(!todo){
+        alert('未找到待办项');
+        return;
+    }
+    const markPromoted=confirm('创建迭代任务后是否将该待办标记为“已转任务”？\n确定=标记，取消=保留原状态');
+    const promotionPolicy=markPromoted?'mark-promoted':'keep';
+    if(markPromoted){
+        todoState.todos=todoState.todos.map((item)=>item.id===id
+            ? {...item,status:'promoted',updatedAt:new Date().toISOString()}
+            : item);
+        saveTodoState();
+        renderTodoPanel();
+    }
+    v.postMessage({
+        type:'todo.promoteToTask',
+        todoId:id,
+        promotionPolicy,
+    });
+}
+
+/** Consume todo.changed events and refresh panel with authoritative host payload. */
+function handleTodoChangedEvent(message){
+    if(!message||!Array.isArray(message.todos)){
+        todoState.loading=false;
+        saveTodoState();
+        renderTodoPanel();
+        return;
+    }
+    todoState.todos=message.todos.map((todo)=>({
+        id:String(todo.id||''),
+        title:String(todo.title||''),
+        description:todo.description==null?null:String(todo.description),
+        status:todo.status==='done'||todo.status==='promoted'?todo.status:'open',
+        createdAt:String(todo.createdAt||''),
+        updatedAt:String(todo.updatedAt||''),
+    }));
+    todoState.loading=false;
+    saveTodoState();
+    renderTodoPanel();
+}
+
+/** Listen to extension pushed events so list can stay consistent without manual refresh. */
+window.addEventListener('message',(event)=>{
+    const message=event&&event.data?event.data:{};
+    if(message.type==='todo.changed'){
+        handleTodoChangedEvent(message);
+    }
+});
+
 function p(x){v.postMessage({type:'page',page:x})}
 function create(){
     const name=document.getElementById('name').value.trim();
@@ -678,6 +1026,9 @@ function setTaskAiProvider(id,ap){v.postMessage({type:'setTaskAiProvider',id,ap}
 function pushDev(id){v.postMessage({type:'pushAndNextStage',id})}
 
 document.addEventListener('DOMContentLoaded',()=>{
+    if(document.getElementById('workspace-todo-panel')){
+        renderTodoPanel();
+    }
     const taskItems=document.querySelectorAll('.task-item[data-task-id]');
     taskItems.forEach((item)=>{
         const id=item.getAttribute('data-task-id');
