@@ -1,5 +1,18 @@
 export type HarnessStep = 'req' | 'des' | 'tcs' | 'tsk' | 'dev';
 
+export type TodoSourcePanel = 'master' | 'worktree';
+export type TodoStatus = 'open' | 'done' | 'promoted';
+export type TodoPromotionPolicy = 'keep' | 'mark-promoted';
+
+export interface TodoMessageItem {
+    id: string;
+    title: string;
+    description: string | null;
+    status: TodoStatus;
+    createdAt: string;
+    updatedAt: string;
+}
+
 export type HarnessMessage =
     | { type: 'page'; page: string }
     | { type: 'refresh' }
@@ -40,4 +53,10 @@ export type HarnessMessage =
     | { type: 'openHarnessLog' }
     | { type: 'saveAutoPollConfig'; interval: number; script: string; prompt: string; skipMarkers: string; enabled: boolean }
     | { type: 'createPollScriptTemplate' }
-    | { type: 'toggleAutoPoll'; enable: boolean };
+    | { type: 'toggleAutoPoll'; enable: boolean }
+    | { type: 'todo.create'; sourcePanel: TodoSourcePanel; title: string; description: string | null }
+    | { type: 'todo.update'; id: string; title: string; description: string | null; status: TodoStatus }
+    | { type: 'todo.delete'; id: string }
+    | { type: 'todo.list' }
+    | { type: 'todo.promoteToTask'; todoId: string; promotionPolicy: TodoPromotionPolicy }
+    | { type: 'todo.changed'; reason: 'created' | 'updated' | 'deleted' | 'promoted' | 'reloaded'; todos: TodoMessageItem[] };

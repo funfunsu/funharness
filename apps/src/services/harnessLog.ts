@@ -33,3 +33,11 @@ export function appendHarnessLog(baseDir: string, category: string, message: str
         // logging is best-effort
     }
 }
+
+/**
+ * Append one Todo-domain log entry with a stable code and optional detail payload.
+ */
+export function appendTodoLog(baseDir: string, code: string, message: string, detail?: string): void {
+    const suffix = detail ? ` | ${detail}` : '';
+    appendHarnessLog(baseDir, 'todo', `${code} | ${message}${suffix}`);
+}

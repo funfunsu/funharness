@@ -156,6 +156,38 @@ export class HarnessActionsService {
         }
     }
 
+    /**
+     * Create an iteration task from a workspace todo and return the created task identity.
+     */
+    async createTaskFromTodo(title: string, description: string): Promise<Task> {
+        const normalizedTitle = (title || '').trim();
+        if (!normalizedTitle) {
+            throw new Error('TODO-PROMOTE-001: 待办标题为空，无法创建迭代任务');
+        }
+
+        const normalizedDesc = (description || '').trim();
+        const id = `task_${Date.now()}`;
+        const cfg = this.deps.getConfig();
+        const inferredSplitMode = this.inferTaskSplitMode(normalizedTitle, normalizedDesc, cfg);
+        const newTask: Task = {
+            id,
+            name: normalizedTitle,
+            desc: normalizedDesc,
+            taskSplitMode: inferredSplitMode,
+            stage: STAGE.INITIALIZING,
+            autoAdvanceEnabled: cfg.autoAdvanceEnabled,
+            autoRepairEnabled: cfg.autoRepairEnabled,
+            quickMode: false,
+        };
+
+        this.deps.getTasks().push(newTask);
+        this.deps.ensureIterationDir(newTask);
+        newTask.stage = STAGE.WRITING_REQUIREMENT;
+        this.deps.saveAndRender();
+        vscode.window.showInformationMessage(`已从待办创建迭代任务：${newTask.name}`);
+        return newTask;
+    }
+
     async resetTaskByTaskId(taskId: string): Promise<void> {
         const task = this.getTaskById(taskId);
         if (!task) return;

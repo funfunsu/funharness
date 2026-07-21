@@ -1,0 +1,3 @@
+[2026-07-21T03:41:59.144Z] 信号文件检测到: done-1.2
+[2026-07-21T03:41:59.148Z] ❌ 输出文件不完整（检查文件数: 4，缺失: todo.update, todo.delete, todo.list, todo.promoteToTask）
+[2026-07-21T03:41:59.148Z] ❌ 输出校验详细信息: expectedOutputFiles=["todo.update","todo.delete","todo.list","todo.promoteToTask"] | signalFiles=["apps/src/harnessMessages.ts","signals/done-1.2"] | checked=["todo.update","todo.delete","todo.list","todo.promoteToTask"] | missing=["todo.update","todo.delete","todo.list","todo.promoteToTask"] | existing=[]

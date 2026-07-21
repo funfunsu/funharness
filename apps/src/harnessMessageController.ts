@@ -1,5 +1,7 @@
 import { HarnessMessage } from './harnessMessages';
 import * as vscode from 'vscode';
+import { WorkspaceTodoStoreService, WorkspaceTodoItem } from './services/workspaceTodoStoreService';
+import { appendTodoLog } from './services/harnessLog';
 
 interface HarnessMessageControllerDeps {
     isWorktreeSubview: () => boolean;
@@ -15,6 +17,7 @@ interface HarnessMessageControllerDeps {
     openMasterWorkspace: () => Promise<void>;
     testAiProvider: () => Promise<void>;
     createTask: (name: string, desc: string, quickMode?: boolean) => Promise<void>;
+    createTaskFromTodo?: (name: string, desc: string) => Promise<{ id: string }>;
     logWebviewEvent: (taskId: string, event: string, detail?: string) => void;
     requestEditTaskDesc: (taskId: string) => Promise<void>;
     updateTaskDesc: (taskId: string, desc: string) => void;
@@ -44,10 +47,134 @@ interface HarnessMessageControllerDeps {
     saveAutoPollConfig: (msg: Extract<HarnessMessage, { type: 'saveAutoPollConfig' }>) => void;
     createPollScriptTemplate: () => Promise<void>;
     toggleAutoPoll: (enable: boolean) => void;
+    // Todo message handlers are optional to keep backward compatibility during staged rollout.
+    todoCreate?: (msg: Extract<HarnessMessage, { type: 'todo.create' }>) => Promise<void>;
+    todoUpdate?: (msg: Extract<HarnessMessage, { type: 'todo.update' }>) => Promise<void>;
+    todoDelete?: (msg: Extract<HarnessMessage, { type: 'todo.delete' }>) => Promise<void>;
+    todoList?: (msg: Extract<HarnessMessage, { type: 'todo.list' }>) => Promise<void>;
+    todoPromoteToTask?: (msg: Extract<HarnessMessage, { type: 'todo.promoteToTask' }>) => Promise<void>;
+    todoChanged?: (msg: Extract<HarnessMessage, { type: 'todo.changed' }>) => void;
 }
 
 export class HarnessMessageController {
+    private todoStore?: WorkspaceTodoStoreService;
+    private todoFileWatcher?: vscode.FileSystemWatcher;
+
     constructor(private readonly deps: HarnessMessageControllerDeps) {}
+
+    /**
+     * Watch workspace todo persistence file so sibling panels can refresh after external writes.
+     */
+    private ensureTodoFileWatcher(workspaceRoot: string): void {
+        if (this.todoFileWatcher) {
+            return;
+        }
+        const pattern = new vscode.RelativePattern(workspaceRoot, '.harness/workspace-todos.json');
+        this.todoFileWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+        const onChanged = () => {
+            try {
+                const todoStore = this.getTodoStore();
+                todoStore.load();
+                this.emitTodoChanged('reloaded', todoStore.list());
+            } catch {
+                // Ignore external transient write errors; manual refresh can recover.
+            }
+        };
+        this.todoFileWatcher.onDidCreate(onChanged);
+        this.todoFileWatcher.onDidChange(onChanged);
+        this.todoFileWatcher.onDidDelete(() => {
+            try {
+                const todoStore = this.getTodoStore();
+                todoStore.load();
+                this.emitTodoChanged('reloaded', todoStore.list());
+            } catch {
+                // Ignore external transient delete errors; manual refresh can recover.
+            }
+        });
+    }
+
+    /**
+     * Lazily initialize workspace Todo store for fallback message handling.
+     */
+    private getTodoStore(): WorkspaceTodoStoreService {
+        if (this.todoStore) {
+            return this.todoStore;
+        }
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) {
+            throw new Error('TODO-IO-001: 未检测到工作区目录');
+        }
+        this.ensureTodoFileWatcher(workspaceRoot);
+        this.todoStore = new WorkspaceTodoStoreService(workspaceRoot);
+        this.todoStore.load();
+        return this.todoStore;
+    }
+
+    /**
+     * Emit todo.changed payload and trigger a re-render so webview can refresh.
+     */
+    private emitTodoChanged(reason: Extract<HarnessMessage, { type: 'todo.changed' }>['reason'], todos: WorkspaceTodoItem[]): void {
+        const payload: Extract<HarnessMessage, { type: 'todo.changed' }> = {
+            type: 'todo.changed',
+            reason,
+            todos: todos.map(todo => ({
+                id: todo.id,
+                title: todo.title,
+                description: todo.description,
+                status: todo.status,
+                createdAt: todo.createdAt,
+                updatedAt: todo.updatedAt,
+            })),
+        };
+        try {
+            this.deps.todoChanged?.(payload);
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error || 'unknown');
+            this.logTodo('TODO-SYNC-001', '面板同步广播失败', detail);
+            vscode.window.showWarningMessage('TODO-SYNC-001: 面板同步广播失败');
+        }
+        this.deps.render();
+    }
+
+    /**
+     * Map low-level errors to TODO-VAL / TODO-IO categories expected by design contracts.
+     */
+    private mapTodoError(error: unknown): string {
+        const message = error instanceof Error ? error.message : String(error || '未知错误');
+        if (message.includes('TODO-VAL-001')) {
+            return 'TODO-VAL-001: 标题不能为空';
+        }
+        if (message.includes('TODO-VAL-002')) {
+            return 'TODO-VAL-002: 待办不存在';
+        }
+        if (message.includes('TODO-IO-001')) {
+            return 'TODO-IO-001: 待办存储文件读取失败';
+        }
+        if (message.includes('TODO-IO-002')) {
+            return 'TODO-IO-002: 待办存储文件写入失败';
+        }
+        if (message.includes('TODO-SYNC-001')) {
+            return 'TODO-SYNC-001: 面板同步广播失败';
+        }
+        if (message.includes('TODO-PROMOTE-001')) {
+            return 'TODO-PROMOTE-001: 待办转任务失败';
+        }
+        if (message.includes('TODO-POLICY-001')) {
+            return 'TODO-POLICY-001: 不支持的转化策略（keep|mark-promoted）';
+        }
+        return `TODO-IO-002: ${message}`;
+    }
+
+    /**
+     * Append a best-effort Todo error log under workspace-level harness logs.
+     */
+    private logTodo(code: string, message: string, detail?: string): void {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) {
+            return;
+        }
+        appendTodoLog(workspaceRoot, code, message, detail);
+    }
 
     private ensureWorktreeAllowed(msg: HarnessMessage): boolean {
         if (!this.deps.isWorktreeSubview()) {
@@ -81,6 +208,11 @@ export class HarnessMessageController {
             case 'openMasterWorkspace':
             case 'toggleAutoPoll':
             case 'openCustomPrompt':
+            case 'todo.create':
+            case 'todo.update':
+            case 'todo.delete':
+            case 'todo.list':
+            case 'todo.promoteToTask':
                 return true;
             case 'page':
                 if (msg.page === 'main') {
@@ -220,6 +352,114 @@ export class HarnessMessageController {
                 return;
             case 'toggleAutoPoll':
                 this.deps.toggleAutoPoll(msg.enable);
+                return;
+            case 'todo.create':
+                if (this.deps.todoCreate) {
+                    await this.deps.todoCreate(msg);
+                    return;
+                }
+                try {
+                    const todoStore = this.getTodoStore();
+                    todoStore.create({
+                        title: msg.title,
+                        description: msg.description,
+                        sourcePanel: msg.sourcePanel,
+                    });
+                    this.emitTodoChanged('created', todoStore.list());
+                } catch (error) {
+                    const mapped = this.mapTodoError(error);
+                    this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
+                    vscode.window.showWarningMessage(mapped);
+                }
+                return;
+            case 'todo.update':
+                if (this.deps.todoUpdate) {
+                    await this.deps.todoUpdate(msg);
+                    return;
+                }
+                try {
+                    const todoStore = this.getTodoStore();
+                    todoStore.update({
+                        id: msg.id,
+                        title: msg.title,
+                        description: msg.description,
+                        status: msg.status,
+                    });
+                    this.emitTodoChanged('updated', todoStore.list());
+                } catch (error) {
+                    const mapped = this.mapTodoError(error);
+                    this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
+                    vscode.window.showWarningMessage(mapped);
+                }
+                return;
+            case 'todo.delete':
+                if (this.deps.todoDelete) {
+                    await this.deps.todoDelete(msg);
+                    return;
+                }
+                try {
+                    const todoStore = this.getTodoStore();
+                    todoStore.remove(msg.id);
+                    this.emitTodoChanged('deleted', todoStore.list());
+                } catch (error) {
+                    const mapped = this.mapTodoError(error);
+                    this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
+                    vscode.window.showWarningMessage(mapped);
+                }
+                return;
+            case 'todo.list':
+                if (this.deps.todoList) {
+                    await this.deps.todoList(msg);
+                    return;
+                }
+                try {
+                    const todoStore = this.getTodoStore();
+                    this.emitTodoChanged('reloaded', todoStore.list());
+                } catch (error) {
+                    const mapped = this.mapTodoError(error);
+                    this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
+                    vscode.window.showWarningMessage(mapped);
+                }
+                return;
+            case 'todo.promoteToTask':
+                if (this.deps.todoPromoteToTask) {
+                    await this.deps.todoPromoteToTask(msg);
+                    return;
+                }
+                try {
+                    const todoStore = this.getTodoStore();
+                    const todo = todoStore.list().find(item => item.id === msg.todoId);
+                    if (!todo) {
+                        const mapped = 'TODO-VAL-002: 待办不存在';
+                        this.logTodo('TODO-VAL-002', mapped);
+                        vscode.window.showWarningMessage(mapped);
+                        return;
+                    }
+
+                    const createdTask = this.deps.createTaskFromTodo
+                        ? await this.deps.createTaskFromTodo(todo.title, todo.description ?? '')
+                        : undefined;
+
+                    if (!createdTask?.id) {
+                        await this.deps.createTask(todo.title, todo.description ?? '', false);
+                        this.emitTodoChanged('reloaded', todoStore.list());
+                        return;
+                    }
+
+                    todoStore.promoteToTask({
+                        id: msg.todoId,
+                        taskId: createdTask.id,
+                        strategy: msg.promotionPolicy,
+                    });
+                    this.emitTodoChanged('promoted', todoStore.list());
+                } catch (error) {
+                    const mapped = this.mapTodoError(error);
+                    this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
+                    vscode.window.showWarningMessage(mapped);
+                }
+                return;
+            case 'todo.changed':
+                // todo.changed is an extension-to-webview event and should not be sent from webview.
                 return;
         }
     }
