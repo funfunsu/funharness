@@ -218,6 +218,10 @@ class Harness {
                 saveAutoPollConfig: (msg) => this.handleSaveAutoPollConfig(msg),
                 createPollScriptTemplate: () => this.handleCreatePollScriptTemplate(),
                 toggleAutoPoll: (enable) => this.handleToggleAutoPoll(enable),
+                todoChanged: (msg) => {
+                    const webview = this.sidebarView?.webview ?? this.panel?.webview;
+                    webview?.postMessage(msg);
+                },
             });
             startMasterArtifactWatcher(this.context, {
                 workspaceRoot,
