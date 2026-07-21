@@ -24,6 +24,18 @@ export interface WorkspaceTodoDocument {
     lastSyncedAt: string;
 }
 
+export interface WorkspaceTodoArchiveItem extends WorkspaceTodoItem {
+    archivedAt: string;
+    archiveReason: 'completed' | 'legacy-migration';
+}
+
+export interface WorkspaceTodoArchiveDocument {
+    schemaVersion: number;
+    workspaceId: string;
+    todos: WorkspaceTodoArchiveItem[];
+    lastSyncedAt: string;
+}
+
 export interface WorkspaceTodoCreateInput {
     title: string;
     description?: string | null;
@@ -51,7 +63,9 @@ export interface WorkspaceTodoPromoteResult {
 export type WorkspaceTodoListener = (doc: WorkspaceTodoDocument) => void;
 
 const WORKSPACE_TODO_SCHEMA_VERSION = 1;
+const WORKSPACE_TODO_ARCHIVE_SCHEMA_VERSION = 1;
 const WORKSPACE_TODO_STORE_REL_PATH = path.join('.harness', 'workspace-todos.json');
+const WORKSPACE_TODO_ARCHIVE_REL_PATH = path.join('.harness', 'workspace-todos-archive.json');
 const SUPPORTED_PROMOTION_POLICIES: WorkspaceTodoPromotionPolicy[] = ['keep', 'mark-promoted'];
 
 /**
@@ -59,12 +73,16 @@ const SUPPORTED_PROMOTION_POLICIES: WorkspaceTodoPromotionPolicy[] = ['keep', 'm
  */
 export class WorkspaceTodoStoreService {
     private readonly storeFilePath: string;
+    private readonly archiveFilePath: string;
     private readonly listeners = new Set<WorkspaceTodoListener>();
     private doc: WorkspaceTodoDocument;
+    private archiveDoc: WorkspaceTodoArchiveDocument;
 
     constructor(private readonly workspaceRoot: string) {
         this.storeFilePath = path.join(this.workspaceRoot, WORKSPACE_TODO_STORE_REL_PATH);
+        this.archiveFilePath = path.join(this.workspaceRoot, WORKSPACE_TODO_ARCHIVE_REL_PATH);
         this.doc = this.createEmptyDocument();
+        this.archiveDoc = this.createEmptyArchiveDocument();
     }
 
     /**
@@ -73,6 +91,8 @@ export class WorkspaceTodoStoreService {
     load(): WorkspaceTodoDocument {
         try {
             this.doc = this.readDocumentFromDisk();
+            this.archiveDoc = this.readArchiveDocumentFromDisk();
+            this.migrateLegacyDoneTodosToArchive();
             return this.cloneDocument(this.doc);
         } catch {
             throw new Error('TODO-IO-001: 待办存储文件读取失败');
@@ -131,6 +151,11 @@ export class WorkspaceTodoStoreService {
         };
 
         this.mutateAndPersist(() => {
+            if (updated.status === 'done' && existing.status !== 'done') {
+                this.doc.todos = this.doc.todos.filter(todo => todo.id !== input.id);
+                this.archiveDoc.todos.push(this.createArchiveItem(updated, 'completed'));
+                return;
+            }
             this.doc.todos[idx] = updated;
         });
         return { ...updated };
@@ -194,9 +219,12 @@ export class WorkspaceTodoStoreService {
      */
     private persistAndBroadcast(): void {
         this.doc = this.normalizeDocument(this.doc);
+        this.archiveDoc = this.normalizeArchiveDocument(this.archiveDoc);
         this.doc.lastSyncedAt = new Date().toISOString();
+        this.archiveDoc.lastSyncedAt = new Date().toISOString();
         try {
             this.writeDocumentToDisk(this.doc);
+            this.writeArchiveDocumentToDisk(this.archiveDoc);
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error || 'unknown');
             appendTodoLog(this.workspaceRoot, 'TODO-IO-002', '待办存储文件写入失败', detail);
@@ -210,11 +238,13 @@ export class WorkspaceTodoStoreService {
      */
     private mutateAndPersist(mutator: () => void): void {
         const previous = this.cloneDocument(this.doc);
+        const previousArchive = this.cloneArchiveDocument(this.archiveDoc);
         mutator();
         try {
             this.persistAndBroadcast();
         } catch (error) {
             this.doc = previous;
+            this.archiveDoc = previousArchive;
             throw error;
         }
     }
@@ -247,6 +277,23 @@ export class WorkspaceTodoStoreService {
     }
 
     /**
+     * Read archive document from disk and fallback to an empty archive on parse/file errors.
+     */
+    private readArchiveDocumentFromDisk(): WorkspaceTodoArchiveDocument {
+        if (!fs.existsSync(this.archiveFilePath)) {
+            return this.createEmptyArchiveDocument();
+        }
+
+        try {
+            const raw = fs.readFileSync(this.archiveFilePath, 'utf8');
+            const parsed = JSON.parse(raw) as WorkspaceTodoArchiveDocument;
+            return this.normalizeArchiveDocument(parsed);
+        } catch {
+            return this.createEmptyArchiveDocument();
+        }
+    }
+
+    /**
      * Write the Todo document to disk as the serialized persistence entry point.
      */
     private writeDocumentToDisk(doc: WorkspaceTodoDocument): void {
@@ -254,6 +301,16 @@ export class WorkspaceTodoStoreService {
         fs.mkdirSync(path.dirname(this.storeFilePath), { recursive: true });
         this.ensureTodoStoreIgnoredByGit();
         fs.writeFileSync(this.storeFilePath, JSON.stringify(normalizedDoc, null, 2), 'utf8');
+    }
+
+    /**
+     * Write archive document to disk as the serialized persistence entry point.
+     */
+    private writeArchiveDocumentToDisk(doc: WorkspaceTodoArchiveDocument): void {
+        const normalizedDoc = this.normalizeArchiveDocument(doc);
+        fs.mkdirSync(path.dirname(this.archiveFilePath), { recursive: true });
+        this.ensureTodoStoreIgnoredByGit();
+        fs.writeFileSync(this.archiveFilePath, JSON.stringify(normalizedDoc, null, 2), 'utf8');
     }
 
     /**
@@ -267,7 +324,10 @@ export class WorkspaceTodoStoreService {
 
         const infoDir = path.join(gitDir, 'info');
         const excludeFile = path.join(infoDir, 'exclude');
-        const ignoreEntry = '/.harness/workspace-todos.json';
+        const ignoreEntries = [
+            '/.harness/workspace-todos.json',
+            '/.harness/workspace-todos-archive.json',
+        ];
 
         fs.mkdirSync(infoDir, { recursive: true });
         const current = fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, 'utf8') : '';
@@ -275,12 +335,13 @@ export class WorkspaceTodoStoreService {
             .split(/\r?\n/)
             .map(line => line.trim())
             .filter(Boolean);
-        if (lines.includes(ignoreEntry)) {
+        const missing = ignoreEntries.filter(entry => !lines.includes(entry));
+        if (missing.length === 0) {
             return;
         }
 
         const prefix = current && !current.endsWith('\n') ? '\n' : '';
-        fs.writeFileSync(excludeFile, `${current}${prefix}${ignoreEntry}\n`, 'utf8');
+        fs.writeFileSync(excludeFile, `${current}${prefix}${missing.join('\n')}\n`, 'utf8');
     }
 
     /**
@@ -289,6 +350,18 @@ export class WorkspaceTodoStoreService {
     private createEmptyDocument(): WorkspaceTodoDocument {
         return {
             schemaVersion: WORKSPACE_TODO_SCHEMA_VERSION,
+            workspaceId: this.workspaceRoot,
+            todos: [],
+            lastSyncedAt: new Date().toISOString(),
+        };
+    }
+
+    /**
+     * Build an empty Todo archive document for first-load and fallback scenarios.
+     */
+    private createEmptyArchiveDocument(): WorkspaceTodoArchiveDocument {
+        return {
+            schemaVersion: WORKSPACE_TODO_ARCHIVE_SCHEMA_VERSION,
             workspaceId: this.workspaceRoot,
             todos: [],
             lastSyncedAt: new Date().toISOString(),
@@ -307,6 +380,24 @@ export class WorkspaceTodoStoreService {
 
         return {
             schemaVersion: WORKSPACE_TODO_SCHEMA_VERSION,
+            workspaceId: typeof input?.workspaceId === 'string' && input.workspaceId.trim() ? input.workspaceId : this.workspaceRoot,
+            todos,
+            lastSyncedAt: typeof input?.lastSyncedAt === 'string' && input.lastSyncedAt ? input.lastSyncedAt : new Date().toISOString(),
+        };
+    }
+
+    /**
+     * Validate and normalize the archive document according to schema A-1.
+     */
+    private normalizeArchiveDocument(input: WorkspaceTodoArchiveDocument): WorkspaceTodoArchiveDocument {
+        const todos = Array.isArray(input?.todos)
+            ? input.todos
+                .map(todo => this.normalizeArchiveItem(todo))
+                .filter((todo): todo is WorkspaceTodoArchiveItem => todo !== null)
+            : [];
+
+        return {
+            schemaVersion: WORKSPACE_TODO_ARCHIVE_SCHEMA_VERSION,
             workspaceId: typeof input?.workspaceId === 'string' && input.workspaceId.trim() ? input.workspaceId : this.workspaceRoot,
             todos,
             lastSyncedAt: typeof input?.lastSyncedAt === 'string' && input.lastSyncedAt ? input.lastSyncedAt : new Date().toISOString(),
@@ -339,6 +430,47 @@ export class WorkspaceTodoStoreService {
     }
 
     /**
+     * Normalize an archive item and drop malformed rows.
+     */
+    private normalizeArchiveItem(input: WorkspaceTodoArchiveItem): WorkspaceTodoArchiveItem | null {
+        const normalized = this.normalizeTodoItem(input);
+        if (!normalized) {
+            return null;
+        }
+        return {
+            ...normalized,
+            archivedAt: typeof input.archivedAt === 'string' && input.archivedAt ? input.archivedAt : new Date().toISOString(),
+            archiveReason: input.archiveReason === 'legacy-migration' ? 'legacy-migration' : 'completed',
+        };
+    }
+
+    /**
+     * Build an archive record from a todo item.
+     */
+    private createArchiveItem(todo: WorkspaceTodoItem, reason: WorkspaceTodoArchiveItem['archiveReason']): WorkspaceTodoArchiveItem {
+        return {
+            ...todo,
+            status: 'done',
+            archivedAt: new Date().toISOString(),
+            archiveReason: reason,
+        };
+    }
+
+    /**
+     * One-time compatibility migration: move legacy done items from active store to archive.
+     */
+    private migrateLegacyDoneTodosToArchive(): void {
+        const doneTodos = this.doc.todos.filter(todo => todo.status === 'done');
+        if (doneTodos.length === 0) {
+            return;
+        }
+
+        this.doc.todos = this.doc.todos.filter(todo => todo.status !== 'done');
+        this.archiveDoc.todos.push(...doneTodos.map(todo => this.createArchiveItem(todo, 'legacy-migration')));
+        this.persistAndBroadcast();
+    }
+
+    /**
      * Enforce non-empty title invariant and throw TODO-VAL-001 on violation.
      */
     private validateTodoTitleOrThrow(title: string): void {
@@ -360,6 +492,18 @@ export class WorkspaceTodoStoreService {
      * Clone the Todo document to avoid exposing mutable internal references.
      */
     private cloneDocument(doc: WorkspaceTodoDocument): WorkspaceTodoDocument {
+        return {
+            schemaVersion: doc.schemaVersion,
+            workspaceId: doc.workspaceId,
+            todos: doc.todos.map(todo => ({ ...todo })),
+            lastSyncedAt: doc.lastSyncedAt,
+        };
+    }
+
+    /**
+     * Clone archive document to avoid exposing mutable internal references.
+     */
+    private cloneArchiveDocument(doc: WorkspaceTodoArchiveDocument): WorkspaceTodoArchiveDocument {
         return {
             schemaVersion: doc.schemaVersion,
             workspaceId: doc.workspaceId,
