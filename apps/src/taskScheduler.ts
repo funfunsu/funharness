@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Config, SubTask, TASK_PLAN_LEGACY_REL_PATH, TASK_PLAN_PRIMARY_REL_PATH, Task } from './models';
+import { Config, SubTask, Task, getSpecDocsDir, resolveTaskPlanFileForIteration } from './models';
 import { appendHarnessLog } from './services/harnessLog';
 
 export class TaskScheduler {
@@ -28,7 +28,7 @@ export class TaskScheduler {
     ) {
         this.iterDir = iterDir;
         this.workspaceRoot = workspaceRoot;
-        this.docsDir = path.join(iterDir, 'docs');
+        this.docsDir = getSpecDocsDir(iterDir, config);
         this.config = config;
         this.dispatchAi = dispatchAi;
         this.onStatusChange = onStatusChange;
@@ -213,6 +213,7 @@ export class TaskScheduler {
 
         const designFile = path.join(this.docsDir, 'design.md');
         const testcaseFile = path.join(this.docsDir, 'testcase.md');
+        const docsRel = (path.relative(this.iterDir, this.docsDir).replace(/\\/g, '/')) || 'docs';
         const designContext = this.buildDesignContext(subTask);
         const requirementsContext = this.buildRequirementsContext(subTask);
         const testcaseContext = fs.existsSync(testcaseFile) ? this.buildTestcaseContext(subTask) : '';
@@ -276,6 +277,7 @@ export class TaskScheduler {
             subTaskName: subTask.name,
             subTaskOwner: subTask.owner,
             currentWorkSpace: this.iterDir,
+            docsDir: docsRel,
             signalsDir,
             designContext: subTask.input || designContext,
             outputFiles,
@@ -300,7 +302,7 @@ export class TaskScheduler {
 - 技术栈：${techStack}
 - 当前工作空间（currentWorkSpace）：${this.iterDir}${subTask.depends.length > 0 ? `\n- 前置依赖任务：${subTask.depends.join(', ')}` : ''}
 
-**重要：所有依赖的上下文文件（docs/design.md、docs/requirements.md、 docs/tasks.md）均位于当前工作空间目录下，请优先在当前迭代目录内查找，不要去 workspace 根目录查找。**
+**重要：所有依赖的上下文文件（${docsRel}/design.md、${docsRel}/requirements.md、 ${docsRel}/tasks.md）均位于当前工作空间目录下，请优先在当前迭代目录内查找，不要去 workspace 根目录查找。**
 ${dependencySection}
 ## 输入依据
 文件路径：\`${designFile}\`
@@ -685,15 +687,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     }
 
     private resolveTaskPlanFile(): string {
-        const preferred = path.join(this.iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/'));
-        const legacy = path.join(this.iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/'));
-        if (fs.existsSync(preferred)) {
-            return preferred;
-        }
-        if (fs.existsSync(legacy)) {
-            return legacy;
-        }
-        return preferred;
+        return resolveTaskPlanFileForIteration(this.iterDir, this.config);
     }
 
     async dispatchTask(subTask: SubTask, iterTask: Task): Promise<void> {

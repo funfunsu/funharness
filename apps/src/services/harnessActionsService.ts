@@ -16,6 +16,10 @@ import {
     TASK_PLAN_PRIMARY_REL_PATH,
     Task,
     getScriptsSubdir,
+    getSpecFile,
+    getSpecFileRel,
+    resolveTaskPlanFileForIteration,
+    getDocsRootDirName,
     normalizeCustomButton,
 } from '../models';
 import { TaskScheduler } from '../taskScheduler';
@@ -91,8 +95,10 @@ export class HarnessActionsService {
         const signalsDir = path.join(iterDir, 'signals');
         const techStack = (this.deps.getConfig().techStack || '').trim();
         const codingStandards = (this.deps.getConfig().codingStandards || '').trim();
+        const docsRel = getSpecFileRel(iterDir, this.deps.getConfig(), '').replace(/[/\\]+$/, '') || 'docs';
         const vars: Record<string, string> = {
             currentWorkSpace: iterDir,
+            docsDir: docsRel,
             signalsDir,
             taskName: task.name || '',
             taskDesc: task.desc || '',
@@ -117,9 +123,10 @@ export class HarnessActionsService {
     }
 
     private hasTaskPlan(iterDir: string): boolean {
-        const preferred = path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/'));
-        const legacy = path.join(iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/'));
-        return fs.existsSync(preferred) || fs.existsSync(legacy);
+        const canonical = resolveTaskPlanFileForIteration(iterDir, this.deps.getConfig());
+        const legacyFlat = path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/'));
+        const legacyOld = path.join(iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/'));
+        return fs.existsSync(canonical) || fs.existsSync(legacyFlat) || fs.existsSync(legacyOld);
     }
 
     async createTask(name: string, desc: string, quickMode?: boolean): Promise<void> {
@@ -370,16 +377,15 @@ export class HarnessActionsService {
             this.reconcileStageArtifactPath(task, 'tcs');
         }
         const testScriptName = process.platform === 'win32' ? 'test-api.ps1' : 'test-api.sh';
+        const cfg = this.deps.getConfig();
         const fileMap = {
-            requirements: path.join('docs', 'requirements.md'),
-            design: path.join('docs', 'design.md'),
-            testcase: path.join('docs', 'testcase.md'),
+            requirements: getSpecFile(iterDir, cfg, 'requirements.md'),
+            design: getSpecFile(iterDir, cfg, 'design.md'),
+            testcase: getSpecFile(iterDir, cfg, 'testcase.md'),
             tasks: this.resolveTaskPlanFile(iterDir),
-            testScript: path.join('tests', testScriptName),
+            testScript: path.join(iterDir, 'tests', testScriptName),
         } as const;
-        const filePath = artifact === 'tasks'
-            ? fileMap.tasks
-            : path.join(iterDir, fileMap[artifact]);
+        const filePath = fileMap[artifact];
 
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
         if (!fs.existsSync(filePath)) {
@@ -1071,28 +1077,29 @@ export class HarnessActionsService {
     private validateStageArtifact(task: Task, step: Exclude<HarnessStep, 'dev'>): { valid: boolean; errors: string[] } {
         this.reconcileStageArtifactPath(task, step);
         const iterDir = this.deps.getIterationDir(task);
-        const fileMap = {
-            req: path.join('docs', 'requirements.md'),
-            des: path.join('docs', 'design.md'),
-            tcs: path.join('docs', 'testcase.md'),
+        const cfg = this.deps.getConfig();
+        const fileNameMap = {
+            req: 'requirements.md',
+            des: 'design.md',
+            tcs: 'testcase.md',
         } as const;
         const filePath = step === 'tsk'
             ? this.resolveTaskPlanFile(iterDir)
-            : path.join(iterDir, fileMap[step]);
+            : getSpecFile(iterDir, cfg, fileNameMap[step]);
         const errors: string[] = [];
 
         if (!fs.existsSync(filePath)) {
             if (step === 'tsk') {
-                return { valid: false, errors: [`缺少文件 ${TASK_PLAN_PRIMARY_REL_PATH}（兼容 ${TASK_PLAN_LEGACY_REL_PATH}）`] };
+                return { valid: false, errors: [`缺少文件 ${getSpecFileRel(iterDir, cfg, 'tasks.md')}（兼容 ${TASK_PLAN_LEGACY_REL_PATH}）`] };
             }
-            return { valid: false, errors: [`缺少文件 ${fileMap[step]}`] };
+            return { valid: false, errors: [`缺少文件 ${getSpecFileRel(iterDir, cfg, fileNameMap[step])}`] };
         }
 
         const content = fs.readFileSync(filePath, 'utf8');
         if (!content.trim()) {
             const relPath = step === 'tsk'
                 ? this.toRelativeIterationPath(iterDir, filePath)
-                : fileMap[step];
+                : getSpecFileRel(iterDir, cfg, fileNameMap[step]);
             return { valid: false, errors: [`${relPath} 为空`] };
         }
 
@@ -1329,38 +1336,30 @@ export class HarnessActionsService {
     }
 
     private buildArtifactSignature(task: Task, step: Exclude<HarnessStep, 'dev'>, errors: string[]): string {
-        const fileMap = {
-            req: path.join('docs', 'requirements.md'),
-            des: path.join('docs', 'design.md'),
-            tcs: path.join('docs', 'testcase.md'),
+        const fileNameMap = {
+            req: 'requirements.md',
+            des: 'design.md',
+            tcs: 'testcase.md',
         } as const;
         const iterDir = this.deps.getIterationDir(task);
         const file = step === 'tsk'
             ? this.resolveTaskPlanFile(iterDir)
-            : path.join(iterDir, fileMap[step]);
+            : getSpecFile(iterDir, this.deps.getConfig(), fileNameMap[step]);
         const statPart = fs.existsSync(file) ? `mtime:${fs.statSync(file).mtimeMs}` : 'missing';
         const errPart = errors.slice(0, 3).join('|');
         return `${statPart}|${errPart}`;
     }
 
     private resolveTaskPlanFile(iterDir: string): string {
-        const preferred = path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/'));
-        const legacy = path.join(iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/'));
-        if (fs.existsSync(preferred)) {
-            return preferred;
-        }
-        if (fs.existsSync(legacy)) {
-            return legacy;
-        }
-        return preferred;
+        return resolveTaskPlanFileForIteration(iterDir, this.deps.getConfig());
     }
 
-    private stageArtifactRelativePath(step: Exclude<HarnessStep, 'dev'>): string {
+    private stageArtifactFileName(step: Exclude<HarnessStep, 'dev'>): string {
         const fileMap = {
-            req: path.join('docs', 'requirements.md'),
-            des: path.join('docs', 'design.md'),
-            tcs: path.join('docs', 'testcase.md'),
-            tsk: TASK_PLAN_PRIMARY_REL_PATH,
+            req: 'requirements.md',
+            des: 'design.md',
+            tcs: 'testcase.md',
+            tsk: 'tasks.md',
         } as const;
         return fileMap[step];
     }
@@ -1371,16 +1370,20 @@ export class HarnessActionsService {
         }
 
         const iterDir = this.deps.getIterationDir(task);
-        const canonicalRel = this.stageArtifactRelativePath(step);
-        const canonicalAbs = path.join(iterDir, ...canonicalRel.split('/'));
+        const cfg = this.deps.getConfig();
+        const fileName = this.stageArtifactFileName(step);
+        const canonicalAbs = getSpecFile(iterDir, cfg, fileName);
+        const canonicalRel = getSpecFileRel(iterDir, cfg, fileName);
         fs.mkdirSync(path.dirname(canonicalAbs), { recursive: true });
         const canonicalReady = fs.existsSync(canonicalAbs) && fs.readFileSync(canonicalAbs, 'utf8').trim().length > 0;
         if (canonicalReady) {
             return true;
         }
 
-        const fileName = path.basename(canonicalAbs);
         const candidates = [
+            // Legacy flat docs-root location (docs/<file>), e.g. iterations created before the
+            // task-named subfolder was introduced in monorepo mode.
+            path.join(iterDir, getDocsRootDirName(cfg), fileName),
             path.join(iterDir, fileName),
             path.join(iterDir, 'doc', fileName),
             path.join(iterDir, '.harness', 'staging', fileName),

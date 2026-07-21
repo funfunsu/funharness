@@ -17,6 +17,7 @@
 # Local packaging and runtime-generated files
 **/*.vsix
 **/.harness/**
+**/logs/**
 **/package-lock.json
 
 # Optional local config

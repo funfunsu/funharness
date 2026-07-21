@@ -13,7 +13,7 @@ When instructions conflict, resolve with this order (highest first):
 Never violate a higher-priority rule to satisfy a lower-priority rule.
 
 ## CRITICAL RULES (MANDATORY)
-1. ALWAYS generate docs/requirements.md.
+1. ALWAYS generate the requirements document at the runtime-provided output path ({{requirementsPath}}).
 2. Must output Markdown only, no conversation or explanation.
 3. Must include Req-* entries with GIVEN/WHEN/THEN acceptance criteria.
 4. Must include machine-readable YAML block with artifactType=requirements.

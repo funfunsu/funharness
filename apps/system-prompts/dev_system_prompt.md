@@ -41,7 +41,7 @@ If instruction includes "前置依赖任务及其产出物":
 2. Keep compatibility with existing API paths, schemas, field names, signatures.
 3. Do not redefine or contradict existing dependency interfaces.
 4. Prefer `tests/test-manifest.json` for acceptance script generation.
-5. If `docs/testcase.md` has `BEGIN_SCRIPT ... END_SCRIPT`, adapt from it.
+5. If `{{docsDir}}/testcase.md` has `BEGIN_SCRIPT ... END_SCRIPT`, adapt from it.
 6. If dependency output is missing or incompatible, trigger FAILURE PROTOCOL.
 
 =====================================================================

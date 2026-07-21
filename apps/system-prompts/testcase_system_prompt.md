@@ -13,10 +13,10 @@ When instructions conflict, resolve with this order (highest first):
 Never violate a higher-priority rule to satisfy a lower-priority rule.
 
 ## CRITICAL RULES (MANDATORY)
-1. Must read docs/requirements.md and docs/design.md first.
+1. Must read {{requirementsPath}} and {{designPath}} first.
 2. Must focus only on backend API acceptance validation.
 3. ALL test cases must map to Req-* IDs.
-4. Must output docs/testcase.md and machine-readable YAML.
+4. Must output the testcase document at {{testcasePath}} and machine-readable YAML.
 5. Must write script file and tests/test-manifest.json unless script.required=false with reason.
 6. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
 

@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as path from 'path';
+
 export const BASE = '.harness';
 /** Directory under the master workspace root where shared custom-button scripts live. */
 export const CUSTOM_SCRIPT_DIR = 'script';
@@ -373,6 +376,85 @@ export const DEFAULT_MONOREPO_DIRS = {
 export function getScriptsSubdir(config: Pick<Config, 'monorepoDirs'>): string {
     const value = (config.monorepoDirs?.scripts || '').trim();
     return value || DEFAULT_MONOREPO_DIRS.scripts;
+}
+
+type SpecDocsConfig = Pick<Config, 'monorepoGit' | 'monorepoDirs'> | undefined;
+
+/** Whether the harness operates in single-repository (monorepo) mode. */
+export function isMonoMode(config: Pick<Config, 'monorepoGit'> | undefined): boolean {
+    return Boolean(config?.monorepoGit?.trim());
+}
+
+/** The docs root folder name under the iteration root ('docs' in multi mode, monorepoDirs.docs in mono mode). */
+export function getDocsRootDirName(config: SpecDocsConfig): string {
+    if (isMonoMode(config)) {
+        return (config?.monorepoDirs?.docs || '').trim() || DEFAULT_MONOREPO_DIRS.docs;
+    }
+    return 'docs';
+}
+
+/**
+ * Relative path segments (from the iteration root) to the folder holding per-iteration spec
+ * docs (requirements/design/testcase/tasks). In monorepo mode these live under a task-named
+ * subfolder (docs/<task>/) so that merging the iteration branch back into the shared repo does
+ * not collide with other iterations' docs; in multi-repo mode they stay directly under docs/.
+ * The task-name subfolder is derived from the iteration directory's own name (worktrees/<task>).
+ */
+export function getSpecDocsRelSegments(iterDir: string, config: SpecDocsConfig): string[] {
+    const root = getDocsRootDirName(config);
+    if (isMonoMode(config)) {
+        return [root, path.basename(iterDir)];
+    }
+    return [root];
+}
+
+/** Absolute directory holding per-iteration spec docs. */
+export function getSpecDocsDir(iterDir: string, config: SpecDocsConfig): string {
+    return path.join(iterDir, ...getSpecDocsRelSegments(iterDir, config));
+}
+
+/** Canonical absolute path to a per-iteration spec file (e.g. requirements.md). Use for write targets. */
+export function getSpecFile(iterDir: string, config: SpecDocsConfig, fileName: string): string {
+    return path.join(getSpecDocsDir(iterDir, config), fileName);
+}
+
+/** Canonical relative (from iterDir) path to a spec file, using OS separators. */
+export function getSpecFileRel(iterDir: string, config: SpecDocsConfig, fileName: string): string {
+    return path.join(...getSpecDocsRelSegments(iterDir, config), fileName);
+}
+
+/**
+ * Resolve an existing spec file for reads/detection: prefer the canonical (mode-aware) location,
+ * then fall back to the legacy flat location at the docs root (docs/<file>) for iterations created
+ * before the task-named subfolder was introduced. Returns the canonical path when none exist.
+ */
+export function resolveSpecFile(iterDir: string, config: SpecDocsConfig, fileName: string): string {
+    const canonical = getSpecFile(iterDir, config, fileName);
+    if (fs.existsSync(canonical)) {
+        return canonical;
+    }
+    const legacyFlat = path.join(iterDir, getDocsRootDirName(config), fileName);
+    if (legacyFlat !== canonical && fs.existsSync(legacyFlat)) {
+        return legacyFlat;
+    }
+    return canonical;
+}
+
+/**
+ * Resolve the tasks plan file, preferring the mode-aware canonical location, then falling back to
+ * the legacy flat docs-root location (docs/tasks.md) and the very-legacy doc/task.md. Returns the
+ * canonical path when none exist (for write targets).
+ */
+export function resolveTaskPlanFileForIteration(iterDir: string, config: SpecDocsConfig): string {
+    const canonical = getSpecFile(iterDir, config, 'tasks.md');
+    const legacyFlat = path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/'));
+    const legacyOld = path.join(iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/'));
+    for (const candidate of [canonical, legacyFlat, legacyOld]) {
+        if (fs.existsSync(candidate)) {
+            return candidate;
+        }
+    }
+    return canonical;
 }
 
 export const DEFAULT_CONFIG: Config = {

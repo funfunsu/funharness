@@ -23,6 +23,8 @@ import {
     TaskStats,
     getAiProvider,
     getScriptsSubdir,
+    resolveSpecFile,
+    resolveTaskPlanFileForIteration,
     isOsScriptFile,
     normalizeCustomButton
 } from './models';
@@ -287,9 +289,9 @@ class Harness {
                 continue;
             }
             const iterDir = this.getIterationDir(task);
-            const docsDir = path.join(iterDir, 'docs');
-            const hasTestcase = this.hasMeaningfulArtifactContent(path.join(docsDir, 'testcase.md'));
-            const hasTaskPlan = fs.existsSync(path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/')))
+            const hasTestcase = this.hasMeaningfulArtifactContent(resolveSpecFile(iterDir, this.config, 'testcase.md'));
+            const hasTaskPlan = fs.existsSync(resolveTaskPlanFileForIteration(iterDir, this.config))
+                || fs.existsSync(path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/')))
                 || fs.existsSync(path.join(iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/')));
 
             let target = task.stage;
@@ -451,20 +453,17 @@ class Harness {
             const monoDirs = this.config.monorepoDirs || DEFAULT_MONOREPO_DIRS;
             const frontendDir = path.join(iterDir, isMono ? (monoDirs.frontend || DEFAULT_MONOREPO_DIRS.frontend) : 'frontend');
             const backendDir = path.join(iterDir, isMono ? (monoDirs.backend || DEFAULT_MONOREPO_DIRS.backend) : 'backend');
-            const docsDir = path.join(iterDir, isMono ? (monoDirs.docs || DEFAULT_MONOREPO_DIRS.docs) : 'docs');
             const mainFrontendDir = isMono ? path.join(workspaceRoot, 'repos', 'mono-main') : path.join(workspaceRoot, 'repos', 'frontend-main');
             const mainBackendDir = isMono ? path.join(workspaceRoot, 'repos', 'mono-main') : path.join(workspaceRoot, 'repos', 'backend-main');
-            const requirementsFile = path.join(docsDir, 'requirements.md');
-            const designFile = path.join(docsDir, 'design.md');
-            const taskPlanFile = fs.existsSync(path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/')))
-                ? path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/'))
-                : path.join(iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/'));
+            const requirementsFile = resolveSpecFile(iterDir, this.config, 'requirements.md');
+            const designFile = resolveSpecFile(iterDir, this.config, 'design.md');
+            const taskPlanFile = resolveTaskPlanFileForIteration(iterDir, this.config);
             const artifacts = {
                 requirements: fs.existsSync(requirementsFile),
                 requirementsReady: this.hasMeaningfulArtifactContent(requirementsFile),
                 design: fs.existsSync(designFile),
                 designReady: this.hasMeaningfulArtifactContent(designFile),
-                testcase: fs.existsSync(path.join(docsDir, 'testcase.md')),
+                testcase: fs.existsSync(resolveSpecFile(iterDir, this.config, 'testcase.md')),
                 tasks: fs.existsSync(taskPlanFile),
                 testScript: fs.existsSync(path.join(iterDir, 'tests', testScriptName)),
             };

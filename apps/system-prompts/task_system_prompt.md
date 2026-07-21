@@ -20,7 +20,7 @@ Never violate a higher-priority rule to satisfy a lower-priority rule.
 5. Must include machine-readable YAML block with artifactType=tasks.
 6. Iterative development: generate tasks only for missing parts based on existing resources.
 7. .harness/*.json are runtime state files, never planning source-of-truth.
-8. `docs/testcase.md` and `tests/test-manifest.json` are OPTIONAL context in this stage; when they are missing, continue normal task planning based on requirements/design and do not treat them as blockers.
+8. `{{testcasePath}}` and `{{testManifestPath}}` are OPTIONAL context in this stage; when they are missing, continue normal task planning based on requirements/design and do not treat them as blockers.
 9. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
 
 ## OPTIONAL TEST INPUT POLICY (MANDATORY)

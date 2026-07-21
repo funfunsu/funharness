@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { BASE, Config, PROMPT_CONFIGS, PROMPTS_DIR } from '../models';
+import { BASE, Config, PROMPT_CONFIGS, PROMPTS_DIR, getDocsRootDirName, getSpecDocsDir } from '../models';
 
 export interface RenderedPrompt {
     content: string;
@@ -46,7 +46,8 @@ export class PromptService {
         let renderedContent = this.composeStagePrompt(
             step,
             userContent,
-            { taskName, taskDesc, currentWorkSpace }
+            { taskName, taskDesc, currentWorkSpace },
+            config
         );
 
         if (projectConventions && !/{{projectConventions}}/g.test(content)) {
@@ -128,9 +129,10 @@ export class PromptService {
     private composeStagePrompt(
         step: string,
         userContent: string,
-        context: { taskName: string; taskDesc: string; currentWorkSpace: string }
+        context: { taskName: string; taskDesc: string; currentWorkSpace: string },
+        config?: Partial<Config>
     ): string {
-        const locked = this.renderSystemPrompt(step, context);
+        const locked = this.renderSystemPrompt(step, context, config);
         if (!locked) {
             return userContent;
         }
@@ -151,7 +153,8 @@ export class PromptService {
 
     private renderSystemPrompt(
         step: string,
-        context: { taskName: string; taskDesc: string; currentWorkSpace: string }
+        context: { taskName: string; taskDesc: string; currentWorkSpace: string },
+        config?: Partial<Config>
     ): string {
         const fileName = this.systemPromptFiles[step];
         if (!fileName) {
@@ -164,15 +167,17 @@ export class PromptService {
         }
 
         const template = fs.readFileSync(filePath, 'utf8');
+        const specDocsDir = getSpecDocsDir(context.currentWorkSpace, config as Config | undefined);
+        const docsRootDir = path.join(context.currentWorkSpace, getDocsRootDirName(config as Config | undefined));
         const vars: Record<string, string> = {
             taskName: context.taskName,
             taskDesc: context.taskDesc,
             currentWorkSpace: context.currentWorkSpace,
-            requirementsPath: path.join(context.currentWorkSpace, 'docs', 'requirements.md'),
-            designPath: path.join(context.currentWorkSpace, 'docs', 'design.md'),
-            projectStructurePath: path.join(context.currentWorkSpace, 'docs', 'project-structure.md'),
-            testcasePath: path.join(context.currentWorkSpace, 'docs', 'testcase.md'),
-            tasksPath: path.join(context.currentWorkSpace, 'docs', 'tasks.md'),
+            requirementsPath: path.join(specDocsDir, 'requirements.md'),
+            designPath: path.join(specDocsDir, 'design.md'),
+            projectStructurePath: path.join(docsRootDir, 'project-structure.md'),
+            testcasePath: path.join(specDocsDir, 'testcase.md'),
+            tasksPath: path.join(specDocsDir, 'tasks.md'),
             testApiPs1Path: path.join(context.currentWorkSpace, 'tests', 'test-api.ps1'),
             testApiShPath: path.join(context.currentWorkSpace, 'tests', 'test-api.sh'),
             testManifestPath: path.join(context.currentWorkSpace, 'tests', 'test-manifest.json'),
