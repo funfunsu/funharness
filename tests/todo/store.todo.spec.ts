@@ -13,9 +13,9 @@ function createTempWorkspaceRoot(): string {
 }
 
 /**
- * Validate create/update/remove persistence flow and id stability.
+ * Validate completed todo is archived and removed from active list.
  */
-test('store: create update remove flow persists and keeps id stable', () => {
+test('store: mark done archives todo and removes it from active list', () => {
     const root = createTempWorkspaceRoot();
     const store = new WorkspaceTodoStoreService(root);
 
@@ -35,9 +35,25 @@ test('store: create update remove flow persists and keeps id stable', () => {
     assert.equal(updated.title, 'A1');
     assert.equal(updated.status, 'done');
 
-    store.remove(created.id);
     const all = store.list();
     assert.equal(all.length, 0);
+
+    assert.throws(() => {
+        store.remove(created.id);
+    }, /TODO-VAL-002/);
+
+    const archiveFile = path.join(root, '.harness', 'workspace-todos-archive.json');
+    assert.equal(fs.existsSync(archiveFile), true);
+    const archive = JSON.parse(fs.readFileSync(archiveFile, 'utf8')) as {
+        todos: Array<{ id: string; title: string; status: string; archiveReason: string; archivedAt: string }>;
+    };
+    assert.equal(Array.isArray(archive.todos), true);
+    assert.equal(archive.todos.length, 1);
+    assert.equal(archive.todos[0].id, created.id);
+    assert.equal(archive.todos[0].title, 'A1');
+    assert.equal(archive.todos[0].status, 'done');
+    assert.equal(archive.todos[0].archiveReason, 'completed');
+    assert.equal(typeof archive.todos[0].archivedAt, 'string');
 });
 
 /**
