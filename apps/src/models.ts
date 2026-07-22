@@ -184,6 +184,34 @@ export function getAiProvider(id: string): AiProviderDefinition {
  */
 export type CustomButtonScriptSource = 'master' | 'worktree';
 
+// ── Lifecycle hooks ───────────────────────────────────────────────
+
+/**
+ * A single lifecycle hook entry. Format mirrors CustomButton script fields so
+ * existing scripts can be reused without learning a new configuration schema.
+ */
+export interface HookEntry {
+    /** Script file name (no path), resolved against the scriptSource directory. */
+    script: string;
+    /**
+     * Where the script file lives.
+     * - 'master' (default): `<masterRoot>/script/` — shared, not committed to git.
+     * - 'worktree': committed scripts dir inside the task's iteration worktree.
+     */
+    scriptSource?: CustomButtonScriptSource;
+    /** Optional extra CLI arguments appended after the script invocation. */
+    args?: string;
+}
+
+/**
+ * Container for per-lifecycle-node hook lists.
+ * New hook nodes should be added here as optional arrays.
+ */
+export interface LifecycleHooks {
+    /** Scripts executed after a Worktree is first initialised (code checkout complete). */
+    worktreeOpen: HookEntry[];
+}
+
 /**
  * A user-defined button shown on task cards or the main panel. Clicking it opens a terminal
  * whose cwd is the task's worktree iteration dir (iteration buttons) or the master workspace
@@ -332,6 +360,8 @@ export interface Config {
     autoPollPrompt: string;
     /** Newline-separated "no pending task" markers; a matching pull is treated like an empty pull (no overwrite, no dispatch). */
     autoPollSkipMarkers: string;
+    /** Lifecycle hook scripts executed at key pipeline nodes (e.g. worktree first-open). */
+    lifecycleHooks: LifecycleHooks;
 }
 
 export interface TaskStats {
@@ -495,4 +525,5 @@ export const DEFAULT_CONFIG: Config = {
     autoPollScript: DEFAULT_POLL_SCRIPT,
     autoPollPrompt: DEFAULT_AUTO_POLL_PROMPT,
     autoPollSkipMarkers: DEFAULT_AUTO_POLL_SKIP_MARKERS,
+    lifecycleHooks: { worktreeOpen: [] },
 };
