@@ -116,8 +116,11 @@ export class SpecDeltaService {
         const rules = this.loadDomainRules(iterDir);
         const state = this.loadState(iterDir);
         const snapshot = this.buildSnapshot(stage, sourcePath, content, this.getConfig());
+        const cfg = this.getConfig();
+        const latestDigest = path.join(getSpecDocsDir(iterDir, cfg), 'delta', 'domain-digest.latest.md');
         if (state.stageHashes[stage] && state.stageHashes[stage] === snapshot.hash) {
-            return this.generateDomainDigest(task, iterDir, rules);
+            // Content unchanged — skip all I/O, just return existing digest path.
+            return fs.existsSync(latestDigest) ? latestDigest : this.generateDomainDigest(task, iterDir, rules);
         }
 
         const previous = state.stageSnapshots[stage];
@@ -177,7 +180,7 @@ export class SpecDeltaService {
         if (contractSensitiveChanged && !designChanged) {
             errors.push('DEV-DRIFT-002: 检测到契约敏感代码变更（controller/route/dto/schema/model），但 design.md 未更新');
         }
-        if (testFileChanged && !testcaseChanged) {
+        if (testFileChanged && !testcaseChanged && !task.quickMode) {
             warnings.push('DEV-DRIFT-003: 检测到测试脚本/测试代码变更，但 testcase.md 未更新');
         }
 
@@ -551,33 +554,11 @@ export class SpecDeltaService {
 
         const cfg = this.getConfig();
         const outputDir = path.join(getSpecDocsDir(iterDir, cfg), 'delta');
-        const domainDir = path.join(outputDir, 'domains');
         fs.mkdirSync(outputDir, { recursive: true });
-        fs.mkdirSync(domainDir, { recursive: true });
 
         const latestPath = path.join(outputDir, 'domain-digest.latest.md');
-        const timedPath = path.join(outputDir, `domain-digest-${Date.now()}.md`);
         const content = lines.join('\n') + '\n';
         fs.writeFileSync(latestPath, content, 'utf8');
-        fs.writeFileSync(timedPath, content, 'utf8');
-
-        for (const domain of domains) {
-            const items = grouped.get(domain) || [];
-            const domainPath = path.join(domainDir, `${domain}.md`);
-            const block = [
-                `## ${new Date().toISOString()}`,
-                '',
-                `- totalChanges: ${items.length}`,
-                `- blockedByGate: ${items.filter(v => v.gateBlocked).length}`,
-                `- highRisk: ${items.filter(v => v.severity === 'high').length}`,
-                '',
-            ].join('\n');
-            if (!fs.existsSync(domainPath)) {
-                fs.writeFileSync(domainPath, `# Domain Delta History: ${domain}\n\n${block}`, 'utf8');
-            } else {
-                fs.appendFileSync(domainPath, `\n${block}`, 'utf8');
-            }
-        }
 
         return latestPath;
     }
@@ -688,10 +669,7 @@ export class SpecDeltaService {
     private persistSnapshot(iterDir: string, stage: StageKey, snapshot: StageSnapshot): void {
         const dir = path.join(iterDir, BASE, 'spec-delta', 'snapshots');
         fs.mkdirSync(dir, { recursive: true });
-        const latest = path.join(dir, `${stage}.latest.json`);
-        const timed = path.join(dir, `${stage}.${Date.now()}.json`);
-        fs.writeFileSync(latest, JSON.stringify(snapshot, null, 2), 'utf8');
-        fs.writeFileSync(timed, JSON.stringify(snapshot, null, 2), 'utf8');
+        fs.writeFileSync(path.join(dir, `${stage}.latest.json`), JSON.stringify(snapshot, null, 2), 'utf8');
     }
 
     private appendLedger(iterDir: string, entry: LedgerEntry): void {

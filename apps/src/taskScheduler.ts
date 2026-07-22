@@ -56,6 +56,29 @@ export class TaskScheduler {
             .filter(Boolean);
     }
 
+    private parseDependencyEntries(raw: string): string[] {
+        const text = String(raw || '').trim();
+        if (!text) {
+            return [];
+        }
+
+        const normalized = text.replace(/^[\[]|[\]]$/g, '').trim();
+        if (!normalized) {
+            return [];
+        }
+
+        const emptyTokens = new Set(['无', 'none', 'n/a', 'na', '[]', 'nil', 'null', '无依赖']);
+        if (emptyTokens.has(normalized.toLowerCase())) {
+            return [];
+        }
+
+        return normalized
+            .split(/[,，]/)
+            .map(item => item.trim())
+            .filter(item => item.length > 0)
+            .filter(item => !emptyTokens.has(item.toLowerCase()));
+    }
+
     private parseInlineTracking(raw: string): { requirementIds: string[]; propertyIds: string[] } {
         const text = String(raw || '').trim();
         if (!text) {
@@ -124,9 +147,7 @@ export class TaskScheduler {
                 currentField = '';
             } else if (trimmed.startsWith('- 依赖:') || trimmed.startsWith('- 依赖：')) {
                 const depStr = trimmed.replace(/^- 依赖[：:]/, '').trim();
-                if (depStr) {
-                    current.depends = depStr.replace(/[\[\]]/g, '').split(/[,，]/).map(d => d.trim()).filter(Boolean);
-                }
+                current.depends = this.parseDependencyEntries(depStr);
                 currentField = '';
             } else if (trimmed.startsWith('- 输入:') || trimmed.startsWith('- 输入：')) {
                 current.input = trimmed.replace(/^- 输入[：:]/, '').trim();
@@ -691,10 +712,27 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         return resolveTaskPlanFileForIteration(this.iterDir, this.config);
     }
 
+    private clearStaleSignal(taskId: string): void {
+        const signalFile = path.join(this.iterDir, 'signals', `done-${taskId}`);
+        if (!fs.existsSync(signalFile)) {
+            return;
+        }
+        try {
+            fs.unlinkSync(signalFile);
+            this.writeLog(taskId, `🧹 已清理陈旧信号文件: done-${taskId}`);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.writeLog(taskId, `⚠️ 清理陈旧信号失败: done-${taskId} | ${message}`);
+        }
+    }
+
     async dispatchTask(subTask: SubTask, iterTask: Task): Promise<void> {
         fs.mkdirSync(path.join(this.iterDir, 'signals'), { recursive: true });
         fs.mkdirSync(path.join(this.iterDir, 'tests'), { recursive: true });
         fs.mkdirSync(path.join(this.iterDir, 'logs'), { recursive: true });
+
+        this.handledSignals.delete(subTask.id);
+        this.clearStaleSignal(subTask.id);
 
         this.updateSubTaskStatus(subTask.id, 'doing');
         this.onStatusChange();
@@ -1013,6 +1051,8 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         this.startWatching(iterTask);
         const currentDoing = this.getCurrentTask();
         if (currentDoing) {
+            this.handledSignals.delete(currentDoing.id);
+            this.clearStaleSignal(currentDoing.id);
             vscode.window.showInformationMessage(`⏳ 等待任务 ${currentDoing.id} 完成...`);
             this.startTimeout(currentDoing.id);
             return;
