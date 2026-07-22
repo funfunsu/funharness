@@ -1187,9 +1187,19 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <option value="local" ${config.projectStructureRefineMode === 'local' ? 'selected' : ''}>仅本地规则提炼（快速）</option>
 <option value="local+ai" ${config.projectStructureRefineMode !== 'local' ? 'selected' : ''}>本地提炼 + AI 二次审阅（更完整）</option>
 </select>
+<h5>Spec 产物根目录（默认 specs，人类文档仍在 docs）</h5>
+<input id="srd" value="${config.specRootDir || 'specs'}" placeholder="specs" ${disabled}>
+<h5>机器门禁力度（gateLevel）</h5>
+<select id="gl" ${disabled}>
+<option value="relaxed" ${config.gateLevel === 'relaxed' ? 'selected' : ''}>relaxed · 宽松（追溯仅查悬空引用，任务自动推进）</option>
+<option value="standard" ${config.gateLevel === 'strict' || config.gateLevel === 'relaxed' ? '' : 'selected'}>standard · 标准（追溯全量闭环，任务自动推进）</option>
+<option value="strict" ${config.gateLevel === 'strict' ? 'selected' : ''}>strict · 严格（追溯全量，任务阶段需人工确认）</option>
+</select>
+<h5>自定义项目目录结构（可选，优先级最高）</h5>
+<textarea id="cps" rows="12" placeholder="填写团队约定的目录结构。留空时：已有项目会自动提炼；新项目回退到默认模板。" ${disabled}>${config.customProjectStructure || ''}</textarea>
 <div class="inline-actions" style="flex-wrap:nowrap">
-<button onclick="initProjectStructure()" style="background:#8e8e93;min-width:0" ${disabled}>🧭 自动检测结构</button>
-<button onclick="applyProjectStructurePreview()" style="background:#5ac8fa;min-width:0" ${disabled}>✅ 应用预览结构</button>
+<button onclick="initProjectStructure()" style="background:#8e8e93" ${disabled}>🧭 自动检测并初始化项目结构</button>
+<button onclick="applyProjectStructurePreview()" style="background:#5ac8fa" ${disabled}>✅ 应用预览结构</button>
 </div>
 <h5>CLI 命令模板（CLI 类执行器可选，AI 执行器在各任务卡片上独立设置）</h5>
 <input id="cct" value="${config.cliCommandTemplate || config.claudeCliCommandTemplate || ''}" placeholder="例如：cat \"{promptFile}\" | claude" ${disabled}>
@@ -1295,7 +1305,7 @@ function switchGitMode(m){
     if(tx)tx.classList.toggle('active',m==='multi');
 }
 switchGitMode(gitMode);
-function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,prm:document.getElementById('prm').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
+function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
 function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
 function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
 function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}

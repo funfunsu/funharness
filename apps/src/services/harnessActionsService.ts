@@ -18,6 +18,9 @@ import {
     getScriptsSubdir,
     getSpecFile,
     getSpecFileRel,
+    getLegacySpecDocsRelSegments,
+    resolveGateLevel,
+    resolveSpecFile,
     resolveTaskPlanFileForIteration,
     getDocsRootDirName,
     isMonoMode,
@@ -26,6 +29,7 @@ import {
 import { TaskScheduler } from '../taskScheduler';
 import { GitService } from './gitService';
 import { appendHarnessLog } from './harnessLog';
+import { validateTraceability } from '../specTrace';
 import { safeRemovePath } from './fileOps';
 
 interface ArtifactIndexItem {
@@ -68,6 +72,11 @@ export class HarnessActionsService {
     private readonly lastAutoRepairSignature: Map<string, string> = new Map();
     private readonly repairingKeys: Set<string> = new Set();
     private readonly artifactRepairTimers: Map<string, NodeJS.Timeout> = new Map();
+    /** Per (task:step) count of auto-repair attempts, for max-retry + human escalation. */
+    private readonly repairAttempts: Map<string, number> = new Map();
+    /** Keys that exhausted auto-repair and were escalated to a human gate. */
+    private readonly escalatedRepairKeys: Set<string> = new Set();
+    private static readonly MAX_AUTO_REPAIR_ATTEMPTS = 3;
 
     private readonly stageArtifacts = {
         req: 'requirements',
@@ -356,7 +365,7 @@ export class HarnessActionsService {
         vscode.window.showInformationMessage(result.message);
     }
 
-    async runAgentByTaskId(taskId: string, step: HarnessStep): Promise<void> {
+    async runAgentByTaskId(taskId: string, step: HarnessStep, repairFeedback?: string): Promise<void> {
         const task = this.getTaskById(taskId);
         if (!task) return;
 
@@ -385,7 +394,8 @@ export class HarnessActionsService {
 
         const splitMode = this.resolveTaskSplitMode(task);
         const promptContent = step === 'dev' ? this.renderQuickDevPrompt(rendered.content, task, iterDir) : rendered.content;
-        const query = `${promptContent}\n\n---\n运行参数：taskSplitMode=${splitMode}`;
+        const repairSection = this.buildRepairFeedbackSection(repairFeedback);
+        const query = `${promptContent}${repairSection}\n\n---\n运行参数：taskSplitMode=${splitMode}`;
         await this.deps.dispatchAi(query, iterDir, 'stage-agent', task.aiProvider);
         vscode.window.showInformationMessage(`已派发 ${step.toUpperCase()} Agent（Prompt来源: ${rendered.source}）`);
         this.startArtifactRepairWatch(task, step);
@@ -523,7 +533,7 @@ export class HarnessActionsService {
     private parseWorktreeSyncEntries(raw: string): string[] {
         const input = (raw || '').trim();
         if (!input) {
-            return ['.github/instructions'];
+            return ['.github/instructions', '.spec'];
         }
 
         const parsed = input
@@ -758,8 +768,16 @@ export class HarnessActionsService {
                 continue;
             }
 
+            this.clearRepairState(task, step);
             if (step === 'tcs') task.stage = STAGE.WRITING_TASKS;
-            if (step === 'tsk') task.stage = STAGE.DEVELOPING;
+            if (step === 'tsk') {
+                // strict gate keeps the task plan as a human gate: pass machine checks,
+                // then wait for explicit human confirmation before entering development.
+                if (resolveGateLevel(this.deps.getConfig()) === 'strict') {
+                    continue;
+                }
+                task.stage = STAGE.DEVELOPING;
+            }
             changed = true;
         }
 
@@ -1202,6 +1220,19 @@ export class HarnessActionsService {
             }
         }
 
+        // Semantic traceability hard gate: cross-artifact Req-* ID closure.
+        if ((step === 'des' || step === 'tcs' || step === 'tsk')) {
+            const reqPath = getSpecFile(iterDir, cfg, 'requirements.md');
+            if (!fs.existsSync(reqPath)) {
+                errors.push('缺少 requirements.md，无法完成追溯闭环校验');
+            } else {
+                const reqContent = fs.readFileSync(reqPath, 'utf8');
+                // relaxed gate only enforces reference integrity (no dangling); coverage closure is off.
+                const enforceCoverage = resolveGateLevel(cfg) !== 'relaxed';
+                errors.push(...validateTraceability(reqContent, content, step, enforceCoverage));
+            }
+        }
+
         return { valid: errors.length === 0, errors };
     }
 
@@ -1347,6 +1378,11 @@ export class HarnessActionsService {
             return;
         }
 
+        // Already escalated to a human gate: stop auto-looping until a human intervenes.
+        if (this.escalatedRepairKeys.has(key)) {
+            return;
+        }
+
         const signature = this.buildArtifactSignature(task, step, errors);
         const lastSig = this.lastAutoRepairSignature.get(key);
         if (lastSig === signature) {
@@ -1358,16 +1394,70 @@ export class HarnessActionsService {
         if (now - last < 10000) {
             return;
         }
+
+        const attempts = (this.repairAttempts.get(key) || 0) + 1;
+        if (attempts > HarnessActionsService.MAX_AUTO_REPAIR_ATTEMPTS) {
+            this.escalateRepair(task, step, errors);
+            return;
+        }
+        this.repairAttempts.set(key, attempts);
+
         this.lastAutoRepairAt.set(key, now);
         this.lastAutoRepairSignature.set(key, signature);
         this.repairingKeys.add(key);
 
         try {
-            await this.runAgentByTaskId(task.id, step);
-            vscode.window.showInformationMessage(`已触发自动回修：${task.name} ${step}（${errors.slice(0, 2).join('；')}）`);
+            const feedback = this.buildRepairFeedbackContent(step, attempts, errors);
+            await this.runAgentByTaskId(task.id, step, feedback);
+            vscode.window.showInformationMessage(
+                `已触发自动回修（第 ${attempts}/${HarnessActionsService.MAX_AUTO_REPAIR_ATTEMPTS} 次）：${task.name} ${step}（${errors.slice(0, 2).join('；')}）`
+            );
         } finally {
             this.repairingKeys.delete(key);
         }
+    }
+
+    /** Escalate to a human gate after exhausting auto-repair attempts (no silent stop). */
+    private escalateRepair(task: Task, step: Exclude<HarnessStep, 'dev'>, errors: string[]): void {
+        const key = `${task.id}:${step}`;
+        this.escalatedRepairKeys.add(key);
+        const detail = errors.slice(0, 5).map((e) => `• ${e}`).join('\n');
+        vscode.window.showWarningMessage(
+            `自动回修已达上限（${HarnessActionsService.MAX_AUTO_REPAIR_ATTEMPTS} 次），需人工介入：${task.name} ${step.toUpperCase()}`,
+            { modal: false, detail }
+        );
+        appendHarnessLog(
+            this.deps.getIterationDir(task),
+            'auto-repair',
+            `escalated ${key} after ${HarnessActionsService.MAX_AUTO_REPAIR_ATTEMPTS} attempts: ${errors.join(' | ')}`
+        );
+    }
+
+    /** Reset repair bookkeeping once a stage validates cleanly (or a human re-triggers it). */
+    private clearRepairState(task: Task, step: Exclude<HarnessStep, 'dev'>): void {
+        const key = `${task.id}:${step}`;
+        this.repairAttempts.delete(key);
+        this.escalatedRepairKeys.delete(key);
+        this.lastAutoRepairSignature.delete(key);
+    }
+
+    /** Compose the runtime "回修指令" appended to a regenerated prompt so repair is targeted. */
+    private buildRepairFeedbackContent(step: Exclude<HarnessStep, 'dev'>, attempt: number, errors: string[]): string {
+        const list = errors.map((e, i) => `${i + 1}. ${e}`).join('\n');
+        return [
+            `本次为第 ${attempt} 次自动回修。上一版 ${step.toUpperCase()} 产物未通过机器门禁，请针对以下失败项做最小修正，并保持其余内容稳定：`,
+            list,
+            '要求：只修复上述问题，不要重写无关章节；确保机器可读 YAML 区与追溯 ID 闭环（无悬空引用、无未覆盖需求）。',
+        ].join('\n');
+    }
+
+    /** Wrap repair feedback as a clearly-delimited section for injection into the agent query. */
+    private buildRepairFeedbackSection(repairFeedback?: string): string {
+        const trimmed = (repairFeedback || '').trim();
+        if (!trimmed) {
+            return '';
+        }
+        return `\n\n---\n## 回修指令（最高优先，针对性修复）\n${trimmed}`;
     }
 
     private buildArtifactSignature(task: Task, step: Exclude<HarnessStep, 'dev'>, errors: string[]): string {
@@ -1421,6 +1511,13 @@ export class HarnessActionsService {
             path.join(iterDir, '.harness', 'staging', fileName),
             path.join(iterDir, '.harness', 'artifacts', fileName),
         ];
+
+        // Legacy docs-based spec location (docs/<file> or docs/<task>/<file>), used to migrate
+        // iterations created before specRootDir. Task-scoped in mono mode, so always safe to include.
+        const legacySpecCandidate = path.join(iterDir, ...getLegacySpecDocsRelSegments(iterDir, cfg), fileName);
+        if (this.normalize(legacySpecCandidate) !== this.normalize(canonicalAbs)) {
+            candidates.unshift(legacySpecCandidate);
+        }
 
         const docsRootCandidate = path.join(iterDir, getDocsRootDirName(cfg), fileName);
         if (!isMonoMode(cfg)) {
@@ -1518,8 +1615,8 @@ export class HarnessActionsService {
             if (Boolean(cfg.monorepoGit?.trim())) {
                 return;
             }
-            const sourceRequirements = path.join(iterDir, 'docs', 'requirements.md');
-            const sourceDesign = path.join(iterDir, 'docs', 'design.md');
+            const sourceRequirements = resolveSpecFile(iterDir, cfg, 'requirements.md');
+            const sourceDesign = resolveSpecFile(iterDir, cfg, 'design.md');
             const masterRoot = this.resolveMasterWorkspaceRoot();
             if (!masterRoot) {
                 return;
