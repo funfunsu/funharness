@@ -77,8 +77,7 @@
   - Owner: FullStack
   - 依赖: 1.1
   - 输入: design.md §3.1（IFACE-2、IFACE-3、IFACE-4）、design.md §4（INV-3、INV-4、INV-6、INV-7）、design.md §5（错误处理表）
-  - 输出: apps/src/services/harnessActionsService.ts
-  - 说明: 仅新增私有方法，不改动现有方法
+  - 输出: apps/src/services/harnessActionsService.ts（仅新增私有方法，不改动现有方法）
     - `resolveHookScriptPath(entry: HookEntry, iterDir: string): string`
       - `master` 来源 → `<masterRoot>/script/<entry.script>`
       - `worktree` 来源 → 复用 `resolveScriptDir` 路径逻辑（isIterationContext=true）
