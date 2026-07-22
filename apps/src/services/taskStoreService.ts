@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, STAGE, Stage, Task, normalizeCustomButton } from '../models';
+import { BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_ARCHIVE_FILE, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, ITERATION_ARCHIVE_SCHEMA_VERSION, IterationArchiveDocument, IterationArchiveItem, STAGE, Stage, Task, normalizeCustomButton } from '../models';
+import { appendHarnessLog } from './harnessLog';
 import { safeRemovePath } from './fileOps';
 
 const STAGE_ORDER: Stage[] = [
@@ -134,6 +135,11 @@ export class TaskStoreService {
                 } catch {
                     // ignore malformed files
                 }
+            }
+            // Do not write done tasks to per-worktree snapshots — they have already
+            // been archived at the authoritative root level by saveLocalTasks (INV-1).
+            if (taskToSave.stage === STAGE.DONE) {
+                continue;
             }
             fs.writeFileSync(file, JSON.stringify([taskToSave], null, 2), 'utf8');
             const legacy = path.join(harnessDir, HARNESS_STATE_FILE_LEGACY);
@@ -290,10 +296,25 @@ export class TaskStoreService {
         return candidateIdx > currentIdx;
     }
 
+    /**
+     * Persist the task list to the local state file, archiving completed tasks first.
+     * Done tasks are written to the archive document before being removed from the
+     * active state file. If archiving fails the done tasks are kept in the active file
+     * so they are not silently lost (Req-5, INV-6).
+     */
     private saveLocalTasks(tasks: Task[]): void {
+        // Split done tasks from active tasks (Req-1, Req-2, INV-1).
+        const completedTasks = tasks.filter(t => t.stage === STAGE.DONE);
+        const activeTasks = tasks.filter(t => t.stage !== STAGE.DONE);
+
+        // Archive done tasks first. On failure, retain them in the active file to
+        // prevent data loss and allow a self-healing retry on the next save (INV-6).
+        const archiveSucceeded = this.writeArchiveDocument(this.workspaceRoot, completedTasks);
+        const tasksToWrite = archiveSucceeded ? activeTasks : tasks;
+
         const file = this.getTaskFile();
         fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, JSON.stringify(tasks, null, 2), 'utf8');
+        fs.writeFileSync(file, JSON.stringify(tasksToWrite, null, 2), 'utf8');
         const legacy = this.getLegacyTaskFile();
         if (fs.existsSync(legacy)) {
             safeRemovePath(legacy);
@@ -301,16 +322,24 @@ export class TaskStoreService {
     }
 
     /**
-     * Called when saving from a worktree subview: merge the in-subview tasks into the
-     * master root's iteration-state.json so master reads the same state without needing
-     * to call loadTasks first. Each task is matched by id; tasks already in master but
-     * not in this subview's snapshot are preserved.
+     * Called when saving from a worktree subview: propagate the latest task state
+     * to the master root so it reads a consistent view without a full reload.
+     *
+     * Done tasks are archived to the master's archive file first (Req-6, INV-7).
+     * If archiving succeeds, done tasks are removed from the master's active state.
+     * If archiving fails, done tasks are retained in the master's active state so
+     * they can be re-tried on the next propagation and are not silently lost (INV-6).
+     * All propagation failures are swallowed so the worktree local save is never blocked.
      */
     private propagateTasksToMaster(masterRoot: string | undefined, tasks: Task[]): void {
         if (!masterRoot || !fs.existsSync(masterRoot)) {
             return;
         }
         try {
+            // Separate done tasks from active tasks for archive-first propagation.
+            const completedTasks = tasks.filter(t => t.stage === STAGE.DONE);
+            const activeTasks = tasks.filter(t => t.stage !== STAGE.DONE);
+
             const masterFile = path.join(masterRoot, BASE, HARNESS_STATE_FILE);
             fs.mkdirSync(path.dirname(masterFile), { recursive: true });
             let masterTasks: Task[] = [];
@@ -324,9 +353,25 @@ export class TaskStoreService {
                     // ignore malformed file, fall through to overwrite
                 }
             }
+
+            // Archive done tasks to the master's archive file before removal (INV-7).
+            const archiveOk = this.writeArchiveDocument(masterRoot, completedTasks);
+
+            // Merge active tasks into the master's task map.
             const byId = new Map<string, Task>(masterTasks.map(t => [t.id, t]));
-            for (const task of tasks) {
+            for (const task of activeTasks) {
                 byId.set(task.id, { ...byId.get(task.id), ...task });
+            }
+            if (archiveOk) {
+                // Archive succeeded: remove done tasks from master's active state.
+                for (const task of completedTasks) {
+                    byId.delete(task.id);
+                }
+            } else {
+                // Archive failed: merge done tasks back so master retains them for retry.
+                for (const task of completedTasks) {
+                    byId.set(task.id, { ...byId.get(task.id), ...task });
+                }
             }
             const merged = Array.from(byId.values());
             fs.writeFileSync(masterFile, JSON.stringify(merged, null, 2), 'utf8');
@@ -372,6 +417,92 @@ export class TaskStoreService {
         }
 
         return Array.from(taskMap.values());
+    }
+
+    /**
+     * Read the iteration archive document from disk for the given root directory.
+     * Returns an empty archive document if the file does not exist or is corrupt.
+     * Safe: never throws an uncaught exception.
+     */
+    private readArchiveDocument(root: string): IterationArchiveDocument {
+        const archiveFile = path.join(root, BASE, HARNESS_STATE_ARCHIVE_FILE);
+        if (!fs.existsSync(archiveFile)) {
+            return { schemaVersion: ITERATION_ARCHIVE_SCHEMA_VERSION, tasks: [], lastSyncedAt: '' };
+        }
+        try {
+            const raw = fs.readFileSync(archiveFile, 'utf8');
+            const parsed = JSON.parse(raw) as IterationArchiveDocument;
+            const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
+            return {
+                schemaVersion: ITERATION_ARCHIVE_SCHEMA_VERSION,
+                tasks,
+                lastSyncedAt: parsed?.lastSyncedAt || '',
+            };
+        } catch {
+            // Return empty doc — caller decides whether to treat this as corrupt.
+            return { schemaVersion: ITERATION_ARCHIVE_SCHEMA_VERSION, tasks: [], lastSyncedAt: '' };
+        }
+    }
+
+    /**
+     * Upsert completed tasks into the iteration archive document and persist to disk.
+     * Deduplicates by task id so repeated runs are idempotent.
+     * New entries are annotated with archivedAt (ISO-8601) and archiveReason='completed'.
+     * If the existing archive file is corrupt, logs the failure and returns false so that
+     * the caller can keep the task in the active state file rather than losing the record.
+     * Returns true on success, false on any failure.
+     */
+    private writeArchiveDocument(root: string, completedTasks: Task[]): boolean {
+        if (!completedTasks.length) {
+            return true;
+        }
+        const archiveFile = path.join(root, BASE, HARNESS_STATE_ARCHIVE_FILE);
+        let archiveDoc: IterationArchiveDocument;
+
+        // If the archive file exists, parse it first. A corrupt file blocks removal of
+        // the active task to prevent data loss (Req-4 / Req-5 invariant).
+        if (fs.existsSync(archiveFile)) {
+            try {
+                const raw = fs.readFileSync(archiveFile, 'utf8');
+                const parsed = JSON.parse(raw) as IterationArchiveDocument;
+                const existingTasks = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
+                archiveDoc = {
+                    schemaVersion: ITERATION_ARCHIVE_SCHEMA_VERSION,
+                    tasks: existingTasks,
+                    lastSyncedAt: parsed?.lastSyncedAt || '',
+                };
+            } catch {
+                appendHarnessLog(
+                    root,
+                    'archive',
+                    `CORRUPT_ARCHIVE: failed to parse ${HARNESS_STATE_ARCHIVE_FILE} — aborting archive to prevent data loss`,
+                );
+                return false;
+            }
+        } else {
+            archiveDoc = { schemaVersion: ITERATION_ARCHIVE_SCHEMA_VERSION, tasks: [], lastSyncedAt: '' };
+        }
+
+        // Upsert: skip tasks already present in the archive (idempotent by id).
+        const now = new Date().toISOString();
+        const existingIds = new Set(archiveDoc.tasks.map(t => t.id));
+        for (const task of completedTasks) {
+            if (!existingIds.has(task.id)) {
+                const archiveItem: IterationArchiveItem = { ...task, archivedAt: now, archiveReason: 'completed' };
+                archiveDoc.tasks.push(archiveItem);
+            }
+        }
+        archiveDoc.lastSyncedAt = now;
+
+        try {
+            fs.mkdirSync(path.dirname(archiveFile), { recursive: true });
+            fs.writeFileSync(archiveFile, JSON.stringify(archiveDoc, null, 2), 'utf8');
+            return true;
+        } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            appendHarnessLog(root, 'archive', `WRITE_FAILED: could not persist ${HARNESS_STATE_ARCHIVE_FILE} — ${detail}`);
+            return false;
+        }
     }
 
     private getTaskFile(): string {

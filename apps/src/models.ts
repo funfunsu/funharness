@@ -563,3 +563,34 @@ export const DEFAULT_CONFIG: Config = {
     autoPollSkipMarkers: DEFAULT_AUTO_POLL_SKIP_MARKERS,
     lifecycleHooks: { worktreeOpen: [] },
 };
+
+// ── Iteration archive ──────────────────────────────────────────────
+
+/** File name for the iteration archive document under <root>/.harness/. */
+export const HARNESS_STATE_ARCHIVE_FILE = 'iteration-state-archive.json';
+
+/** Schema version for the iteration archive document format. */
+export const ITERATION_ARCHIVE_SCHEMA_VERSION = 1;
+
+/**
+ * Snapshot of a completed iteration at archive time. Preserves all Task fields
+ * plus archive metadata (archivedAt, archiveReason). The id field acts as the
+ * idempotent deduplication key across repeated archive runs.
+ */
+export interface IterationArchiveItem extends Task {
+    /** ISO-8601 timestamp when this iteration was archived. */
+    archivedAt: string;
+    /** Reason for archival. 'completed' indicates the iteration reached STAGE.DONE. */
+    archiveReason: 'completed';
+}
+
+/**
+ * Top-level structure of the iteration archive file
+ * (.harness/iteration-state-archive.json).
+ * Stable contract: schemaVersion + tasks + lastSyncedAt.
+ */
+export interface IterationArchiveDocument {
+    schemaVersion: number;
+    tasks: IterationArchiveItem[];
+    lastSyncedAt: string;
+}
