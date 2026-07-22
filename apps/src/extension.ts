@@ -691,6 +691,8 @@ class Harness {
         this.config.worktreeSyncPaths = msg.wsd;
         this.config.customProjectStructure = msg.cps;
         this.config.projectStructureRefineMode = msg.prm === 'local' ? 'local' : 'local+ai';
+        this.config.specRootDir = (msg.srd || '').trim() || 'specs';
+        this.config.gateLevel = (msg.gl === 'relaxed' || msg.gl === 'strict') ? msg.gl : 'standard';
         this.config.cliCommandTemplate = msg.cct;
         this.config.aiFallbackToManual = msg.afm;
         this.config.aiPanelAutoSubmit = msg.pas;

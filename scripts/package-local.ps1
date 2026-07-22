@@ -8,9 +8,10 @@ $ErrorActionPreference = 'Stop'
 # 定位仓库根目录与扩展目录（apps）
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot  = Split-Path -Parent $scriptDir
+$worktreeRoot  = Split-Path -Parent $repoRoot
 $appsDir   = Join-Path $repoRoot 'apps'
 # vsix 输出到项目根目录（project-structure）的上一级目录，与其平级
-$outDir    = Split-Path -Parent $repoRoot
+$outDir    = Split-Path -Parent $worktreeRoot
 
 if (-not (Test-Path $appsDir)) {
     Write-Error "未找到扩展目录：$appsDir"

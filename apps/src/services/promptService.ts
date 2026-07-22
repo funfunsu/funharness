@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { BASE, Config, PROMPT_CONFIGS, PROMPTS_DIR, getDocsRootDirName, getSpecDocsDir } from '../models';
+import { resolveConstitution, summarizeConstitution } from '../constitution';
 
 export interface RenderedPrompt {
     content: string;
@@ -136,6 +137,7 @@ export class PromptService {
         if (!locked) {
             return userContent;
         }
+        const constitutionSection = this.renderConstitutionSection(context.currentWorkSpace);
         const custom = userContent.trim();
         const customSection = custom
             ? [
@@ -148,7 +150,31 @@ export class PromptService {
                 '## 用户可编辑补充（流程无关）',
                 '- （未提供）',
             ].join('\n');
-        return `${locked}\n\n${customSection}`;
+        return `${constitutionSection}${locked}\n\n${customSection}`;
+    }
+
+    /**
+     * Build the highest-priority Constitution block prepended to every stage/dev prompt.
+     * Precedence: only below the runtime instruction. Empty string when no constitution found.
+     */
+    private renderConstitutionSection(currentWorkSpace: string): string {
+        const resolved = resolveConstitution(currentWorkSpace, this.workspaceRoot, this.extensionPath);
+        if (!resolved.content.trim()) {
+            return '';
+        }
+        const { body, version } = summarizeConstitution(resolved.content);
+        const provenance = resolved.source === 'project'
+            ? `项目宪法${version ? `（v${version}）` : ''}`
+            : `内置默认宪法${version ? `（v${version}）` : ''}`;
+        return [
+            '# ⚖️ 工程宪法（最高治理层 · 优先级仅次于运行时指令）',
+            `> 来源：${provenance} — 下述条款为硬约束，高于本系统提示词之外的一切内容；如与运行时指令冲突，以运行时为准。`,
+            '',
+            body,
+            '',
+            '---',
+            '',
+        ].join('\n');
     }
 
     private renderSystemPrompt(
