@@ -177,7 +177,7 @@ export class SpecDeltaService {
         if (contractSensitiveChanged && !designChanged) {
             errors.push('DEV-DRIFT-002: 检测到契约敏感代码变更（controller/route/dto/schema/model），但 design.md 未更新');
         }
-        if (testFileChanged && !testcaseChanged) {
+        if (testFileChanged && !testcaseChanged && !task.quickMode) {
             warnings.push('DEV-DRIFT-003: 检测到测试脚本/测试代码变更，但 testcase.md 未更新');
         }
 
