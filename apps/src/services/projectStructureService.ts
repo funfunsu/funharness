@@ -61,8 +61,23 @@ src/
     └── XxxApplication.java
 `;
 
+type DetectedAppKind = 'vue3' | 'react' | 'java-ddd' | 'node' | 'vscode-extension' | 'ts-lib' | 'node-generic';
+
+interface DetectedApp {
+    root: string;
+    kind: DetectedAppKind;
+}
+
+/** Source-code file extensions worth surfacing in a concise structure tree. */
+const SOURCE_FILE_PATTERN = /\.(ts|tsx|js|jsx|mjs|cjs|vue|java|kt|py|go|rs)$/i;
+/** Max notable files listed per directory before collapsing into a summary line. */
+const NOTABLE_FILE_LIMIT = 12;
+
 export class ProjectStructureService {
     private monorepoMainDir: string | undefined;
+    private monorepoFrontendDir: string | undefined;
+    private monorepoBackendDir: string | undefined;
+    private monorepoMode = false;
 
     constructor(
         private readonly workspaceRoot: string,
@@ -77,8 +92,58 @@ export class ProjectStructureService {
         this.monorepoMainDir = dir;
     }
 
+    /**
+     * Whether the harness operates in monorepo (single-repo) mode. Only in this
+     * mode does detection treat the configured dir as an apps container that may
+     * hold multiple sub-applications. Multi-repo mode keeps the frontend/backend
+     * split intact.
+     */
+    setMonorepoMode(isMono: boolean): void {
+        this.monorepoMode = isMono;
+    }
+
+    /**
+     * Configure the frontend/backend subdirectories (from `monorepoDirs`) so that
+     * detection scans exactly the folders the user declared instead of only the
+     * hardcoded conventional candidates. Empty/undefined values are ignored.
+     */
+    setMonorepoDirs(dirs: { frontend?: string; backend?: string } | undefined): void {
+        this.monorepoFrontendDir = (dirs?.frontend || '').trim() || undefined;
+        this.monorepoBackendDir = (dirs?.backend || '').trim() || undefined;
+    }
+
     private getStructureRoot(): string {
         return this.monorepoMainDir || this.workspaceRoot;
+    }
+
+    /**
+     * Base roots to resolve monorepo subdirectories against, most-specific first.
+     * In monorepo mode the real clone usually lives at repos/mono-main, but the
+     * current worktree checkout itself may also hold the code, so include both.
+     */
+    private getDetectionBaseRoots(): string[] {
+        const roots: string[] = [];
+        if (this.monorepoMainDir) {
+            roots.push(this.monorepoMainDir);
+        }
+        roots.push(this.workspaceRoot);
+        return Array.from(new Set(roots));
+    }
+
+    /** Candidate frontend roots derived from the configured monorepoDirs.frontend. */
+    private getConfiguredFrontendCandidates(): string[] {
+        if (!this.monorepoFrontendDir) {
+            return [];
+        }
+        return this.getDetectionBaseRoots().map(base => path.join(base, this.monorepoFrontendDir as string));
+    }
+
+    /** Candidate backend roots derived from the configured monorepoDirs.backend. */
+    private getConfiguredBackendCandidates(): string[] {
+        if (!this.monorepoBackendDir) {
+            return [];
+        }
+        return this.getDetectionBaseRoots().map(base => path.join(base, this.monorepoBackendDir as string));
     }
 
     getRootStructureFilePath(): string {
@@ -100,19 +165,12 @@ export class ProjectStructureService {
     /**
      * Ensure the root project-structure.md baseline exists and report which source produced it.
      * The returned `source` is a single, mutually-exclusive origin of the final document:
-     *   - 'custom'   : written from user-provided custom structure
      *   - 'existing' : an existing non-empty root document was kept
      *   - 'detected' : content derived from the real workspace directory scan
      *   - 'default'  : fell back to the built-in default template
      * (The 'detected' branch wiring is implemented in a later task; this signature declares the contract.)
      */
-    ensureBaseline(customProjectStructure: string): { source: 'custom' | 'existing' | 'detected' | 'default'; filePath: string } {
-        const custom = (customProjectStructure || '').trim();
-        if (custom) {
-            this.writeRootStructure(custom);
-            return { source: 'custom', filePath: this.getRootStructureFilePath() };
-        }
-
+    ensureBaseline(): { source: 'existing' | 'detected' | 'default'; filePath: string } {
         const existing = this.readRootStructure();
         if (existing) {
             if (!fs.existsSync(this.getRootStructureFilePath())) {
@@ -187,6 +245,23 @@ export class ProjectStructureService {
     }
 
     detectStructureFromWorkspace(): { content: string; detected: boolean; summary: string } {
+        // Monorepo mode: the configured dir is an apps container that may hold one
+        // or many sub-applications (frontend/backend/TS lib/VS Code extension).
+        if (this.monorepoMode) {
+            const apps = this.detectAppsFromContainers();
+            if (apps.length > 0) {
+                const sections = apps.map(app => {
+                    const rel = this.toWorkspaceRelative(app.root);
+                    return `## 应用 ${rel}（${this.appKindLabel(app.kind)}）\n\n${this.buildAppSection(app)}`;
+                });
+                const summary = apps
+                    .map(app => `${path.basename(app.root)}: ${this.appKindLabel(app.kind)}`)
+                    .join(' | ');
+                return { content: sections.join('\n\n'), detected: true, summary };
+            }
+        }
+
+        // Multi-repo mode (and monorepo fallback): keep the frontend/backend split.
         const frontend = this.findFrontendProject();
         const backend = this.findBackendProject();
 
@@ -218,6 +293,318 @@ export class ProjectStructureService {
         };
     }
 
+    // ── Monorepo apps-container detection ──────────────────────────────
+
+    /**
+     * Existing container directories to scan for sub-applications. In monorepo
+     * mode this is driven by the configured monorepoDirs (frontend/backend), plus
+     * the conventional `apps` folder as a fallback.
+     */
+    private getAppContainerRoots(): string[] {
+        const roots = [
+            ...this.getConfiguredFrontendCandidates(),
+            ...this.getConfiguredBackendCandidates(),
+            ...this.getDetectionBaseRoots().map(base => path.join(base, 'apps')),
+        ];
+        return Array.from(new Set(roots)).filter(root => fs.existsSync(root));
+    }
+
+    /**
+     * Enumerate applications inside the configured container(s). If a container
+     * holds recognizable app sub-directories, each becomes an app; otherwise the
+     * container itself is treated as a single application.
+     */
+    private detectAppsFromContainers(): DetectedApp[] {
+        const apps: DetectedApp[] = [];
+        const seen = new Set<string>();
+
+        const addApp = (root: string): void => {
+            const key = path.resolve(root);
+            if (seen.has(key)) {
+                return;
+            }
+            const kind = this.classifyApp(root);
+            if (!kind) {
+                return;
+            }
+            seen.add(key);
+            apps.push({ root, kind });
+        };
+
+        for (const container of this.getAppContainerRoots()) {
+            const childApps = this.listRealSubDirs(container, 40)
+                .map(name => path.join(container, name))
+                .filter(childRoot => this.isAppRoot(childRoot) && this.classifyApp(childRoot));
+
+            if (childApps.length > 0) {
+                childApps.forEach(addApp);
+            } else if (this.isAppRoot(container)) {
+                addApp(container);
+            }
+        }
+
+        return apps;
+    }
+
+    /** A directory looks like an application root when it carries a build manifest. */
+    private isAppRoot(root: string): boolean {
+        return fs.existsSync(path.join(root, 'package.json'))
+            || fs.existsSync(path.join(root, 'pom.xml'))
+            || fs.existsSync(path.join(root, 'build.gradle'))
+            || fs.existsSync(path.join(root, 'build.gradle.kts'));
+    }
+
+    /** Classify a single application root into a supported kind, or null. */
+    private classifyApp(root: string): DetectedAppKind | null {
+        const pkg = path.join(root, 'package.json');
+        const srcDir = path.join(root, 'src');
+
+        if (fs.existsSync(pkg)) {
+            if (this.containsVueFile(srcDir, 3)) {
+                return 'vue3';
+            }
+            if (this.containsReactDependency(pkg) || this.containsReactFile(srcDir, 3)) {
+                return 'react';
+            }
+        }
+
+        if (this.isJavaBackendProject(root)) {
+            return 'java-ddd';
+        }
+
+        if (fs.existsSync(pkg)) {
+            if (this.containsNodeServerHints(pkg)) {
+                return 'node';
+            }
+            if (this.isVscodeExtension(pkg)) {
+                return 'vscode-extension';
+            }
+            if (this.isTsLibrary(root, pkg)) {
+                return 'ts-lib';
+            }
+            return 'node-generic';
+        }
+
+        return null;
+    }
+
+    private isVscodeExtension(pkgPath: string): boolean {
+        try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
+                engines?: Record<string, string>;
+                contributes?: unknown;
+                dependencies?: Record<string, string>;
+                devDependencies?: Record<string, string>;
+            };
+            const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+            return Boolean(pkg.engines?.vscode || pkg.contributes || deps['@types/vscode']);
+        } catch {
+            return false;
+        }
+    }
+
+    private isTsLibrary(root: string, pkgPath: string): boolean {
+        const hasTsconfig = fs.existsSync(path.join(root, 'tsconfig.json'));
+        try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
+                types?: string;
+                typings?: string;
+                dependencies?: Record<string, string>;
+                devDependencies?: Record<string, string>;
+            };
+            const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+            return hasTsconfig || Boolean(deps.typescript || pkg.types || pkg.typings);
+        } catch {
+            return hasTsconfig;
+        }
+    }
+
+    private listRealSubDirs(dir: string, max: number): string[] {
+        if (!fs.existsSync(dir)) {
+            return [];
+        }
+        try {
+            return fs.readdirSync(dir, { withFileTypes: true })
+                .filter((entry: fs.Dirent) => entry.isDirectory())
+                .map((entry: fs.Dirent) => entry.name)
+                .filter(name => !name.startsWith('.') && !['node_modules', 'out', 'dist', 'build', 'target', 'coverage'].includes(name))
+                .sort()
+                .slice(0, max);
+        } catch {
+            return [];
+        }
+    }
+
+    private appKindLabel(kind: DetectedAppKind): string {
+        switch (kind) {
+            case 'vue3': return '前端 Vue3';
+            case 'react': return '前端 React';
+            case 'java-ddd': return '后端 Java';
+            case 'node': return '后端 Node.js';
+            case 'vscode-extension': return 'VS Code 扩展';
+            case 'ts-lib': return 'TypeScript 库';
+            default: return 'Node.js 应用';
+        }
+    }
+
+    private buildAppSection(app: DetectedApp): string {
+        switch (app.kind) {
+            case 'vue3':
+            case 'react':
+                return this.buildFrontendConciseTree({ root: app.root, kind: app.kind });
+            case 'java-ddd':
+                return this.buildBackendConciseTree({ root: app.root, kind: 'java-ddd' });
+            case 'node':
+                return this.buildBackendConciseTree({ root: app.root, kind: 'node' });
+            case 'vscode-extension':
+                return this.buildGenericTsTree(app.root, 'VS Code 扩展（TypeScript）');
+            case 'ts-lib':
+                return this.buildGenericTsTree(app.root, 'TypeScript 库');
+            default:
+                return this.buildGenericTsTree(app.root, 'Node.js / TypeScript 应用');
+        }
+    }
+
+    private buildGenericTsTree(root: string, label: string): string {
+        const relRoot = this.toWorkspaceRelative(root);
+        const lines: string[] = [`# ${label}`, `${relRoot}/`];
+
+        // Top level: list directories (structure skeleton) plus notable root files.
+        const topDirs = this.listRealSubDirs(root, 20);
+        const rootFiles = this.listNotableFiles(root);
+        const entries: Array<{ name: string; kind: 'dir' | 'file' | 'more' }> = [
+            ...topDirs.map(name => ({ name, kind: 'dir' as const })),
+            ...this.collapseFiles(rootFiles),
+        ];
+
+        if (entries.length === 0) {
+            lines.push('└── (源码文件位于此目录)');
+            return lines.join('\n');
+        }
+
+        entries.forEach((entry, i) => {
+            const isLast = i === entries.length - 1;
+            const prefix = isLast ? '└──' : '├──';
+            const childIndent = isLast ? '    ' : '│   ';
+            if (entry.kind === 'dir') {
+                const role = this.inferGenericTsDirRoleBrief(entry.name);
+                const padding = ' '.repeat(Math.max(1, 16 - entry.name.length));
+                lines.push(role
+                    ? `${prefix} ${entry.name}/${padding}# ${role}`
+                    : `${prefix} ${entry.name}/`);
+                // Expand src/ one level so its dirs AND source files are visible.
+                if (entry.name === 'src') {
+                    this.appendGenericDirContents(lines, path.join(root, 'src'), childIndent);
+                }
+            } else {
+                lines.push(`${prefix} ${entry.name}`);
+            }
+        });
+        return lines.join('\n');
+    }
+
+    /**
+     * Append a directory's contents (sub-directories first, then notable source
+     * files) to the tree. Files are collapsed into a summary line once they
+     * exceed NOTABLE_FILE_LIMIT so structure is complete without drowning in leaves.
+     */
+    private appendGenericDirContents(lines: string[], dir: string, indent: string): void {
+        const dirs = this.listRealSubDirs(dir, 20);
+        const files = this.listNotableFiles(dir);
+        const entries: Array<{ name: string; kind: 'dir' | 'file' | 'more' }> = [
+            ...dirs.map(name => ({ name, kind: 'dir' as const })),
+            ...this.collapseFiles(files),
+        ];
+
+        entries.forEach((entry, i) => {
+            const isLast = i === entries.length - 1;
+            const prefix = isLast ? '└──' : '├──';
+            if (entry.kind === 'dir') {
+                const role = this.inferGenericTsDirRoleBrief(entry.name);
+                const padding = ' '.repeat(Math.max(1, 16 - entry.name.length));
+                lines.push(role
+                    ? `${indent}${prefix} ${entry.name}/${padding}# ${role}`
+                    : `${indent}${prefix} ${entry.name}/`);
+            } else {
+                lines.push(`${indent}${prefix} ${entry.name}`);
+            }
+        });
+    }
+
+    /** List source files in a directory, entry points first, tests/declarations excluded. */
+    private listNotableFiles(dir: string): string[] {
+        if (!fs.existsSync(dir)) {
+            return [];
+        }
+        let files: string[];
+        try {
+            files = fs.readdirSync(dir, { withFileTypes: true })
+                .filter((entry: fs.Dirent) => entry.isFile())
+                .map((entry: fs.Dirent) => entry.name)
+                .filter(name => SOURCE_FILE_PATTERN.test(name)
+                    && !/\.d\.ts$/i.test(name)
+                    && !/\.(test|spec)\.[jt]sx?$/i.test(name));
+        } catch {
+            return [];
+        }
+        const entryRank = (name: string): number =>
+            /^(index|main|extension|app|server|bootstrap)\./i.test(name) ? 0 : 1;
+        files.sort((a, b) => entryRank(a) - entryRank(b) || a.localeCompare(b));
+        return files;
+    }
+
+    /**
+     * Turn a file list into renderable entries: list up to NOTABLE_FILE_LIMIT files
+     * verbatim, then a single summary entry when there are more.
+     */
+    private collapseFiles(files: string[]): Array<{ name: string; kind: 'file' | 'more' }> {
+        if (files.length <= NOTABLE_FILE_LIMIT) {
+            return files.map(name => ({ name, kind: 'file' as const }));
+        }
+        const shown: Array<{ name: string; kind: 'file' | 'more' }> =
+            files.slice(0, NOTABLE_FILE_LIMIT).map(name => ({ name, kind: 'file' as const }));
+        shown.push({ name: `…（共 ${files.length} 个源码文件）`, kind: 'more' as const });
+        return shown;
+    }
+
+    private inferGenericTsDirRoleBrief(name: string): string {
+        const n = name.toLowerCase();
+        const map: Record<string, string> = {
+            src: '源码',
+            services: '业务服务',
+            service: '业务服务',
+            commands: '命令处理',
+            providers: '视图/功能提供者',
+            provider: '视图/功能提供者',
+            webview: 'Webview 界面',
+            views: '视图',
+            view: '视图',
+            components: '组件',
+            models: '数据模型',
+            model: '数据模型',
+            types: '类型定义',
+            type: '类型定义',
+            utils: '通用工具',
+            util: '工具函数',
+            helpers: '工具函数',
+            lib: '库代码',
+            core: '核心逻辑',
+            api: 'API 层',
+            config: '配置',
+            constants: '常量与枚举',
+            test: '测试',
+            tests: '测试',
+            __tests__: '测试',
+            scripts: '脚本',
+            media: '静态资源',
+            assets: '静态资源',
+            resources: '资源文件',
+            i18n: '国际化',
+            locales: '国际化',
+        };
+        return map[n] || '';
+    }
+
     getDefaultStructure(): string {
         const bundledCandidates = [
             path.join(this.extensionPath, BASE, PROMPTS_DIR, 'default_project_structure.md'),
@@ -243,6 +630,8 @@ export class ProjectStructureService {
 
     private findFrontendProject(): { root: string; kind: 'vue3' | 'react' } | null {
         const candidates = [
+            // Highest priority: the folder the user configured via monorepoDirs.frontend.
+            ...this.getConfiguredFrontendCandidates(),
             this.workspaceRoot,
             path.join(this.workspaceRoot, 'repos', 'frontend-main'),
             path.join(this.workspaceRoot, 'frontend'),
@@ -272,6 +661,8 @@ export class ProjectStructureService {
 
     private findBackendProject(): { root: string; kind: 'java-ddd' | 'node' } | null {
         const candidates = [
+            // Highest priority: the folder the user configured via monorepoDirs.backend.
+            ...this.getConfiguredBackendCandidates(),
             path.join(this.workspaceRoot, 'repos', 'backend-main'),
             path.join(this.workspaceRoot, 'backend'),
             this.workspaceRoot,

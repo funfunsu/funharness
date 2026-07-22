@@ -118,7 +118,6 @@ npm run publish:remote   # 编译后通过 vsce 发布到市场
 | `maxConcurrentAutoTasks` | 子任务调度的最大并发数 |
 | `compactTaskDecomposition` | 启用简化任务拆解（适合简单需求） |
 | `worktreeSyncPaths` | worktree 与主仓共享的目录（例如 instructions） |
-| `customProjectStructure` | 自定义项目结构描述（覆盖自动识别结果） |
 
 ---
 
