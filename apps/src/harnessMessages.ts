@@ -11,6 +11,7 @@ export interface TodoMessageItem {
     status: TodoStatus;
     createdAt: string;
     updatedAt: string;
+    sourcePanel: TodoSourcePanel;
 }
 
 export type HarnessMessage =
@@ -61,4 +62,5 @@ export type HarnessMessage =
     | { type: 'todo.delete'; id: string }
     | { type: 'todo.list' }
     | { type: 'todo.promoteToTask'; todoId: string; promotionPolicy: TodoPromotionPolicy }
-    | { type: 'todo.changed'; reason: 'created' | 'updated' | 'deleted' | 'promoted' | 'reloaded'; todos: TodoMessageItem[] };
+    | { type: 'todo.changed'; reason: 'created' | 'updated' | 'deleted' | 'promoted' | 'reloaded'; todos: TodoMessageItem[] }
+    | { type: 'todo.error'; code: string; message: string; detail?: string };

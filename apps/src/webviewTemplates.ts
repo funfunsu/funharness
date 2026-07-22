@@ -454,6 +454,7 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .todo-item-meta{margin-top:6px;font-size:11px;color:#8f8f96}
 .todo-item-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .todo-item-actions button{flex:1;min-width:72px;padding:6px 8px;border:none;border-radius:7px;font-size:11px}
+.todo-error{margin:0 0 8px;padding:8px 10px;border:1px solid #7a5d00;border-radius:8px;background:#2b2308;color:#ffd56a;font-size:12px;line-height:1.5}
 .todo-empty{padding:12px;border:1px dashed #4a4a52;border-radius:8px;color:#a9a9b0;font-size:12px;line-height:1.5;text-align:center}
 .todo-editor{display:none;margin:10px 0 8px;padding:10px;background:#232326;border:1px solid #34343a;border-radius:8px}
 .todo-editor.open{display:block}
@@ -506,6 +507,7 @@ ${`<div class="todo-card" id="workspace-todo-panel">
 <button class="btn-blue" style="padding:6px 10px;font-size:11px;min-width:auto;flex:none" onclick="openTodoCreateEditor()">＋ 添加待办</button>
 </div>
 <div id="todo-loading" class="todo-loading" style="display:none">正在加载待办列表...</div>
+<div id="todo-error" class="todo-error" style="display:none"></div>
 <div class="todo-editor" id="todo-editor">
 <div class="todo-editor-head" id="todo-editor-head">新增待办</div>
 <input id="todo-title-input" placeholder="标题（必填）">
@@ -708,6 +710,7 @@ function createDefaultTodoState(){
         todos:Array.isArray(TODO_INITIAL_TODOS)?TODO_INITIAL_TODOS:[],
         loading:false,
         editor:{mode:'',id:'',title:'',description:'',status:'open'},
+        error:null,
     };
 }
 
@@ -760,6 +763,7 @@ function renderTodoPanel(){
     if(!panel){return;}
 
     const loading=document.getElementById('todo-loading');
+    const errorBox=document.getElementById('todo-error');
     const empty=document.getElementById('todo-empty');
     const list=document.getElementById('todo-list');
     const editor=document.getElementById('todo-editor');
@@ -767,9 +771,12 @@ function renderTodoPanel(){
     const titleInput=document.getElementById('todo-title-input');
     const descInput=document.getElementById('todo-desc-input');
     const statusSelect=document.getElementById('todo-status-select');
-    if(!loading||!empty||!list||!editor||!editorHead||!titleInput||!descInput||!statusSelect){return;}
+    if(!loading||!errorBox||!empty||!list||!editor||!editorHead||!titleInput||!descInput||!statusSelect){return;}
 
     loading.style.display=todoState.loading?'block':'none';
+    const inlineError=todoState.error&&todoState.error.message?String(todoState.error.message):'';
+    errorBox.style.display=inlineError?'block':'none';
+    errorBox.innerText=inlineError;
 
     const editorOpen=todoState.editor.mode==='create'||todoState.editor.mode==='edit';
     editor.classList.toggle('open',editorOpen);
@@ -779,14 +786,18 @@ function renderTodoPanel(){
     statusSelect.value=todoState.editor.status||'open';
     statusSelect.style.display=todoState.editor.mode==='edit'?'block':'none';
 
-    if(todoState.todos.length===0){
+    const visibleTodos=isWorktreeSubview
+        ? todoState.todos.filter((todo)=>String(todo.sourcePanel||'master')!=='worktree')
+        : todoState.todos;
+
+    if(visibleTodos.length===0){
         empty.style.display='block';
         list.innerHTML='';
         return;
     }
 
     empty.style.display='none';
-    list.innerHTML=todoState.todos.map((todo)=>{
+    list.innerHTML=visibleTodos.map((todo)=>{
         const safeId=escapeTodoHtml(todo.id);
         const safeTitle=escapeTodoHtml(todo.title||'');
         const safeDesc=escapeTodoHtml(todo.description||'');
@@ -861,6 +872,8 @@ function submitTodoEditor(){
         return;
     }
 
+    todoState.error=null;
+
     if(todoState.editor.mode==='edit'&&todoState.editor.id){
         const nextTodos=todoState.todos.map((todo)=>todo.id===todoState.editor.id
             ? {...todo,title,description:description||null,status,updatedAt:new Date().toISOString()}
@@ -893,6 +906,7 @@ function toggleTodoStatus(id,nextStatus){
     todoState.todos=todoState.todos.map((item)=>item.id===id
         ? {...item,status:nextStatus,updatedAt:new Date().toISOString()}
         : item);
+    todoState.error=null;
     saveTodoState();
     renderTodoPanel();
     v.postMessage({
@@ -911,6 +925,7 @@ function deleteTodo(id){
         return;
     }
     todoState.todos=todoState.todos.filter((item)=>item.id!==id);
+    todoState.error=null;
     saveTodoState();
     renderTodoPanel();
     v.postMessage({type:'todo.delete',id});
@@ -923,6 +938,7 @@ function promoteTodoToTask(id){
         return;
     }
     todoState.todos=todoState.todos.filter((item)=>item.id!==id);
+    todoState.error=null;
     saveTodoState();
     renderTodoPanel();
     v.postMessage({
@@ -947,8 +963,22 @@ function handleTodoChangedEvent(message){
         status:todo.status==='done'||todo.status==='promoted'?todo.status:'open',
         createdAt:String(todo.createdAt||''),
         updatedAt:String(todo.updatedAt||''),
+        sourcePanel:todo.sourcePanel==='worktree'?'worktree':'master',
     }));
     todoState.loading=false;
+    todoState.error=null;
+    saveTodoState();
+    renderTodoPanel();
+}
+
+/** Consume todo.error events and show an inline prompt in the todo panel. */
+function handleTodoErrorEvent(message){
+    todoState.loading=false;
+    todoState.error={
+        code:String(message&&message.code?message.code:'TODO-IO-002'),
+        message:String(message&&message.message?message.message:'TODO-IO-002: 待办存储文件写入失败'),
+        detail:message&&message.detail?String(message.detail):'',
+    };
     saveTodoState();
     renderTodoPanel();
 }
@@ -958,6 +988,8 @@ window.addEventListener('message',(event)=>{
     const message=event&&event.data?event.data:{};
     if(message.type==='todo.changed'){
         handleTodoChangedEvent(message);
+    }else if(message.type==='todo.error'){
+        handleTodoErrorEvent(message);
     }
 });
 
@@ -1083,6 +1115,7 @@ function specReview(id){v.postMessage({type:'specDeltaReview',id})}
 
 document.addEventListener('DOMContentLoaded',()=>{
     if(document.getElementById('workspace-todo-panel')){
+        todoState.error=null;
         renderTodoPanel();
         v.postMessage({type:'todo.list'});
     }

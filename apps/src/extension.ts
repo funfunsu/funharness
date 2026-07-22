@@ -225,6 +225,10 @@ class Harness {
                     const webview = this.sidebarView?.webview ?? this.panel?.webview;
                     webview?.postMessage(msg);
                 },
+                todoError: (msg) => {
+                    const webview = this.sidebarView?.webview ?? this.panel?.webview;
+                    webview?.postMessage(msg);
+                },
             });
             startMasterArtifactWatcher(this.context, {
                 workspaceRoot,
