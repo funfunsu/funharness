@@ -689,7 +689,6 @@ class Harness {
         this.config.simpleTaskKeywords = msg.sk;
         this.config.complexTaskKeywords = msg.ck;
         this.config.worktreeSyncPaths = msg.wsd;
-        this.config.customProjectStructure = msg.cps;
         this.config.projectStructureRefineMode = msg.prm === 'local' ? 'local' : 'local+ai';
         this.config.cliCommandTemplate = msg.cct;
         this.config.aiFallbackToManual = msg.afm;
@@ -839,10 +838,12 @@ class Harness {
         }
         // In monorepo mode, project-structure.md lives in the git-managed mono-main repo.
         const isMono = Boolean((this.config.monorepoGit || '').trim());
+        this.projectStructureService.setMonorepoMode(isMono);
         this.projectStructureService.setMonorepoMainDir(
             isMono ? path.join(workspaceRoot, 'repos', 'mono-main') : undefined
         );
-        this.projectStructureService.ensureBaseline(this.config.customProjectStructure || '');
+        this.projectStructureService.setMonorepoDirs(isMono ? this.config.monorepoDirs : undefined);
+        this.projectStructureService.ensureBaseline();
     }
 
     /**
@@ -867,7 +868,7 @@ class Harness {
         // Preferred fallback: if both copies missed, seed MASTER baseline first so
         // future worktrees can reuse one shared docs/project-structure.md.
         if (!fs.existsSync(target)) {
-            masterService.ensureBaseline('');
+            masterService.ensureBaseline();
             masterService.copyRootStructureToIteration(iterDir);
         }
 
@@ -887,22 +888,24 @@ class Harness {
             return;
         }
 
-        const custom = (this.config.customProjectStructure || '').trim();
-        if (custom) {
-            this.projectStructureService.writeRootStructure(custom);
-            const customDoc = await vscode.workspace.openTextDocument(this.projectStructureService.getRootStructureFilePath());
-            await vscode.window.showTextDocument(customDoc, { preview: false, preserveFocus: false });
-            vscode.window.showInformationMessage('已应用自定义项目结构。Design Agent 将以该文档为准。');
-            return;
-        }
+        // Align detection roots with monorepo config so it scans the configured
+        // frontend/backend subdirectories (and the mono-main clone) rather than
+        // only the hardcoded conventional candidates.
+        const isMono = Boolean((this.config.monorepoGit || '').trim());
+        this.projectStructureService.setMonorepoMode(isMono);
+        this.projectStructureService.setMonorepoMainDir(
+            isMono ? path.join(workspaceRoot, 'repos', 'mono-main') : undefined
+        );
+        this.projectStructureService.setMonorepoDirs(isMono ? this.config.monorepoDirs : undefined);
 
         const detected = this.projectStructureService.detectStructureFromWorkspace();
         const previewPath = this.projectStructureService.writePreviewStructure(detected.content);
         const structureDoc = await vscode.workspace.openTextDocument(previewPath);
         await vscode.window.showTextDocument(structureDoc, { preview: false, preserveFocus: false });
 
-        if (detected.detected && this.config.projectStructureRefineMode !== 'local') {
-            const reviewPrompt = this.buildProjectStructureAiReviewPrompt(detected.content, detected.summary);
+        const aiReviewMode = detected.detected && this.config.projectStructureRefineMode !== 'local';
+        if (aiReviewMode) {
+            const reviewPrompt = this.buildProjectStructureAiReviewPrompt(detected.content, detected.summary, previewPath);
             try {
                 await this.aiDispatchService.dispatch(reviewPrompt, workspaceRoot, 'stage-agent');
                 vscode.window.showInformationMessage('已触发 AI 二次审阅：请根据 AI 建议完善预览文档后再点击“应用预览结构”。');
@@ -913,11 +916,13 @@ class Harness {
         }
 
         if (detected.detected) {
-            const action = await vscode.window.showInformationMessage(
-                `已生成项目结构预览（${detected.summary}）。请先检查并可直接编辑该预览，完成后点击“应用预览结构到正式文档”。`,
-                '改用默认结构',
-                '立即应用预览'
-            );
+            // In AI review mode the preview is still being refined, so the immediate
+            // apply option is omitted to avoid applying the un-reviewed tree.
+            const promptMessage = aiReviewMode
+                ? `已生成项目结构预览（${detected.summary}），并已触发 AI 二次审阅。请等待 AI 完善预览后，再点击“应用预览结构”。`
+                : `已生成项目结构预览（${detected.summary}）。请先检查并可直接编辑该预览，完成后点击“应用预览结构到正式文档”。`;
+            const actions = aiReviewMode ? ['改用默认结构'] : ['改用默认结构', '立即应用预览'];
+            const action = await vscode.window.showInformationMessage(promptMessage, ...actions);
             if (action === '改用默认结构') {
                 this.projectStructureService.writeRootStructure(this.projectStructureService.getDefaultStructure());
                 const defaultDoc = await vscode.workspace.openTextDocument(this.projectStructureService.getRootStructureFilePath());
@@ -937,28 +942,24 @@ class Harness {
         vscode.window.showInformationMessage('未检测到可提炼的现有结构，已写入默认项目结构模板。');
     }
 
-    private buildProjectStructureAiReviewPrompt(detectedContent: string, summary: string): string {
-        const requirementsPath = path.join(workspaceRoot, 'docs', 'requirements.md');
-        const hasRequirements = fs.existsSync(requirementsPath);
-        const requirementsHint = hasRequirements
-            ? `需求文档存在：${requirementsPath}，请结合 Req-* 输出“本次需求潜在改动包路径模板”。`
-            : '未检测到需求文档，先输出通用“需求类型 -> 包路径”映射模板。';
+    private buildProjectStructureAiReviewPrompt(detectedContent: string, summary: string, previewPath: string): string {
+        const previewRel = path.relative(workspaceRoot, previewPath).replace(/\\/g, '/') || previewPath;
 
         return [
-            '# 任务：项目结构二次审阅（仅输出可落地结构文档）',
+            '# 任务：为项目结构目录树补充简要说明（轻量标注，勿扩写）',
             '',
-            '请基于下方已提炼结构进行增强，目标是让后续 AI 开发可直接定位改动包与新增类落位。',
+            `请直接编辑预览文件：${previewRel}`,
             '',
-            '输出要求：',
-            '1. 只输出 Markdown，可直接作为 docs/project-structure.md 内容。',
-            '2. 保留“现有目录（检测结果）”，但必须补充：模块职责、改动包映射、新增类落包规则。',
-            '3. 明确“当新增需求时，优先修改哪些 module/package”。',
-            '4. 禁止泛泛建议，优先使用已出现的真实包路径。',
-            `5. ${requirementsHint}`,
+            '严格要求：',
+            `1. 只修改预览文件 ${previewRel}，不要改动任何其它文件（尤其不要写 docs/project-structure.md）。`,
+            '2. 完整保留现有目录树的结构、层级与缩进，不得增删目录节点、不得调整顺序。',
+            '3. 仅在每个目录/关键节点行尾用 “# 说明” 补充一句话职责描述（已有说明则保持或微调）。',
+            '4. 每条说明不超过 20 个字，只描述该目录的职责，不写改动指引、不写落包规则、不写示例代码。',
+            '5. 不要新增章节、表格、前言或总结，输出仍是一棵带注释的目录树。',
             '',
             `检测摘要：${summary}`,
             '',
-            '--- 已提炼结构（待增强）---',
+            '--- 当前预览目录树（在此基础上补充说明）---',
             detectedContent,
         ].join('\n');
     }

@@ -319,7 +319,6 @@ export interface Config {
     /** Auto-submit (press Return) after a 'panel' executor pre-fills its prompt via deep link (macOS only). */
     aiPanelAutoSubmit: boolean;
     worktreeSyncPaths: string;
-    customProjectStructure: string;
     projectStructureRefineMode: 'local' | 'local+ai';
     /** User-defined buttons rendered on task cards (main panel + worktree subview). */
     customButtons: CustomButton[];
@@ -489,7 +488,6 @@ export const DEFAULT_CONFIG: Config = {
     aiFallbackToManual: true,
     aiPanelAutoSubmit: true,
     worktreeSyncPaths: 'worktree/.github/instructions',
-    customProjectStructure: '',
     projectStructureRefineMode: 'local+ai',
     customButtons: [],
     autoPollEnabled: false,
