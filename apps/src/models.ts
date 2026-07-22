@@ -347,7 +347,22 @@ export interface Config {
     /** Auto-submit (press Return) after a 'panel' executor pre-fills its prompt via deep link (macOS only). */
     aiPanelAutoSubmit: boolean;
     worktreeSyncPaths: string;
+    customProjectStructure: string;
     projectStructureRefineMode: 'local' | 'local+ai';
+    /**
+     * Root folder name (under the iteration root) holding per-iteration spec artifacts
+     * (requirements/design/testcase/tasks). Default 'specs'. Human docs like
+     * project-structure.md stay under 'docs'. Legacy 'docs'-based iterations are still
+     * read via fallback and auto-migrated on the next agent/validation run.
+     */
+    specRootDir: string;
+    /**
+     * Machine-gate strictness for auto-advance / auto-repair paths.
+     * - relaxed: 追溯只校验悬空引用（不强制覆盖闭环）；任务阶段自动推进。
+     * - standard: 追溯全量（悬空 + 未覆盖需求）；任务阶段自动推进。(默认)
+     * - strict: 追溯全量；任务阶段需人工确认（额外人工门禁）。
+     */
+    gateLevel: 'relaxed' | 'standard' | 'strict';
     /** User-defined buttons rendered on task cards (main panel + worktree subview). */
     customButtons: CustomButton[];
     /** Master toggle for auto-poll config. When off, the detailed settings are collapsed. */
@@ -407,7 +422,15 @@ export function getScriptsSubdir(config: Pick<Config, 'monorepoDirs'>): string {
     return value || DEFAULT_MONOREPO_DIRS.scripts;
 }
 
-type SpecDocsConfig = Pick<Config, 'monorepoGit' | 'monorepoDirs'> | undefined;
+export type GateLevel = 'relaxed' | 'standard' | 'strict';
+
+/** Normalize the configured gate level, defaulting to 'standard'. */
+export function resolveGateLevel(config: Pick<Config, 'gateLevel'> | undefined): GateLevel {
+    const value = config?.gateLevel;
+    return value === 'relaxed' || value === 'strict' ? value : 'standard';
+}
+
+type SpecDocsConfig = Pick<Config, 'monorepoGit' | 'monorepoDirs' | 'specRootDir'> | undefined;
 
 /** Whether the harness operates in single-repository (monorepo) mode. */
 export function isMonoMode(config: Pick<Config, 'monorepoGit'> | undefined): boolean {
@@ -422,14 +445,31 @@ export function getDocsRootDirName(config: SpecDocsConfig): string {
     return 'docs';
 }
 
+/** The spec-artifacts root folder name under the iteration root (configurable, default 'specs'). */
+export function getSpecRootDirName(config: SpecDocsConfig): string {
+    return (config?.specRootDir || '').trim() || 'specs';
+}
+
 /**
  * Relative path segments (from the iteration root) to the folder holding per-iteration spec
  * docs (requirements/design/testcase/tasks). In monorepo mode these live under a task-named
- * subfolder (docs/<task>/) so that merging the iteration branch back into the shared repo does
- * not collide with other iterations' docs; in multi-repo mode they stay directly under docs/.
+ * subfolder (specs/<task>/) so that merging the iteration branch back into the shared repo does
+ * not collide with other iterations' docs; in multi-repo mode they stay directly under specs/.
  * The task-name subfolder is derived from the iteration directory's own name (worktrees/<task>).
  */
 export function getSpecDocsRelSegments(iterDir: string, config: SpecDocsConfig): string[] {
+    const root = getSpecRootDirName(config);
+    if (isMonoMode(config)) {
+        return [root, path.basename(iterDir)];
+    }
+    return [root];
+}
+
+/**
+ * Legacy (pre-'specs') spec-doc location segments, rooted at the docs folder. Used only for
+ * read fallback and one-time migration of iterations created before specRootDir existed.
+ */
+export function getLegacySpecDocsRelSegments(iterDir: string, config: SpecDocsConfig): string[] {
     const root = getDocsRootDirName(config);
     if (isMonoMode(config)) {
         return [root, path.basename(iterDir)];
@@ -453,41 +493,34 @@ export function getSpecFileRel(iterDir: string, config: SpecDocsConfig, fileName
 }
 
 /**
- * Resolve an existing spec file for reads/detection: prefer the canonical (mode-aware) location,
- * then fall back to the legacy flat location at the docs root (docs/<file>) for iterations created
- * before the task-named subfolder was introduced. Returns the canonical path when none exist.
+ * Resolve an existing spec file for reads/detection: prefer the canonical (mode-aware) location
+ * under the spec root, then fall back to the legacy docs-based location (docs/ or docs/<task>/)
+ * for iterations created before specRootDir was introduced. Returns the canonical path when none
+ * exist (for write targets).
  */
 export function resolveSpecFile(iterDir: string, config: SpecDocsConfig, fileName: string): string {
     const canonical = getSpecFile(iterDir, config, fileName);
     if (fs.existsSync(canonical)) {
         return canonical;
     }
-    // In monorepo mode, docs/<task>/ is the canonical and only supported location.
-    // Do not fall back to docs/<file> because many repositories keep project-level
-    // documents there and they are not iteration artifacts.
-    if (isMonoMode(config)) {
-        return canonical;
-    }
-    const legacyFlat = path.join(iterDir, getDocsRootDirName(config), fileName);
-    if (legacyFlat !== canonical && fs.existsSync(legacyFlat)) {
-        return legacyFlat;
+    const legacySpec = path.join(iterDir, ...getLegacySpecDocsRelSegments(iterDir, config), fileName);
+    if (legacySpec !== canonical && fs.existsSync(legacySpec)) {
+        return legacySpec;
     }
     return canonical;
 }
 
 /**
- * Resolve the tasks plan file, preferring the mode-aware canonical location, then falling back to
- * the legacy flat docs-root location (docs/tasks.md) and the very-legacy doc/task.md. Returns the
- * canonical path when none exist (for write targets).
+ * Resolve the tasks plan file, preferring the mode-aware canonical location under the spec root,
+ * then falling back to the legacy docs-based location (docs/tasks.md or docs/<task>/tasks.md) and
+ * the very-legacy doc/task.md. Returns the canonical path when none exist (for write targets).
  */
 export function resolveTaskPlanFileForIteration(iterDir: string, config: SpecDocsConfig): string {
     const canonical = getSpecFile(iterDir, config, 'tasks.md');
-    if (isMonoMode(config)) {
-        return canonical;
-    }
+    const legacySpec = path.join(iterDir, ...getLegacySpecDocsRelSegments(iterDir, config), 'tasks.md');
     const legacyFlat = path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/'));
     const legacyOld = path.join(iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/'));
-    for (const candidate of [canonical, legacyFlat, legacyOld]) {
+    for (const candidate of [canonical, legacySpec, legacyFlat, legacyOld]) {
         if (fs.existsSync(candidate)) {
             return candidate;
         }
@@ -517,8 +550,11 @@ export const DEFAULT_CONFIG: Config = {
     cliCommandTemplate: '',
     aiFallbackToManual: true,
     aiPanelAutoSubmit: true,
-    worktreeSyncPaths: 'worktree/.github/instructions',
+    worktreeSyncPaths: 'worktree/.github/instructions\nworktree/.spec',
+    customProjectStructure: '',
     projectStructureRefineMode: 'local+ai',
+    specRootDir: 'specs',
+    gateLevel: 'standard',
     customButtons: [],
     autoPollEnabled: false,
     autoPollIntervalSec: 60,

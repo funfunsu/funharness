@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Config, SubTask, Task, getSpecDocsDir, resolveTaskPlanFileForIteration } from './models';
+import { spawn } from 'child_process';
+import { Config, GateLevel, SubTask, Task, getSpecDocsDir, resolveGateLevel, resolveTaskPlanFileForIteration } from './models';
 import { appendHarnessLog } from './services/harnessLog';
 
 export class TaskScheduler {
@@ -793,9 +794,6 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         this.clearTimeout();
         this.writeLog(taskId, `信号文件检测到: done-${taskId}`);
 
-        const testScript = path.join(this.iterDir, 'tests', `test-${taskId}.sh`);
-        const testScriptPs = path.join(this.iterDir, 'tests', `test-${taskId}.ps1`);
-
         const subTasks = this.parseTasksMd();
         const subTask = subTasks.find(t => t.id === taskId);
         let outputOk = true;
@@ -818,20 +816,40 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         if (outputOk) {
             const source = expectedOutputFiles.length > 0 ? 'tasks.md' : 'signal file';
             this.writeLog(taskId, `📦 输出校验详情 expected=${expectedOutputFiles.length} signal=${signalFiles.length} checked=${filesToCheck.length} source=${source}`);
-            if (fs.existsSync(testScriptPs)) {
-                this.writeLog(taskId, `ℹ 检测到测试脚本，可按需手动执行: ${testScriptPs}`);
-            } else if (fs.existsSync(testScript)) {
-                this.writeLog(taskId, `ℹ 检测到测试脚本，可按需手动执行: ${testScript}`);
-            }
+
+            // Real-execution Hard Gate: run task/acceptance scripts instead of merely
+            // noting they exist. Controlled by gateLevel (relaxed = skip, standard =
+            // per-task script, strict = per-task + iteration acceptance script).
+            const gate = resolveGateLevel(this.config);
+            const gateResults = await this.runExecutionGate(taskId, gate);
+            const gateFailed = gateResults.some(r => !r.passed);
 
             if (this.autoMode) {
+                if (gateFailed) {
+                    this.updateSubTaskStatus(taskId, 'failed');
+                    const summary = gateResults.filter(r => !r.passed).map(r => `${r.name}(exit=${r.code})`).join('、');
+                    this.writeLog(taskId, `❌ 执行门禁未通过（gateLevel=${gate}）：${summary}`);
+                    appendHarnessLog(this.iterDir, 'scheduler', `[${taskId}] 执行门禁失败 gate=${gate} | ${summary}`);
+                    this.onStatusChange();
+                    this.autoMode = false;
+                    vscode.window.showWarningMessage(`❌ 任务 ${taskId} 执行门禁未通过：${summary}`);
+                    return;
+                }
                 this.updateSubTaskStatus(taskId, 'done');
-                this.writeLog(taskId, `✅ 输出校验通过（检查文件数: ${filesToCheck.length}），自动标记完成`);
+                const passNote = gateResults.length > 0
+                    ? `，执行门禁通过（${gateResults.map(r => r.name).join('、')}）`
+                    : '';
+                this.writeLog(taskId, `✅ 输出校验通过（检查文件数: ${filesToCheck.length}）${passNote}，自动标记完成`);
                 this.onStatusChange();
                 await this.dispatchNext(iterTask);
             } else {
+                const gateNote = gateResults.length === 0
+                    ? ''
+                    : gateFailed
+                        ? `（⚠ 执行门禁未通过：${gateResults.filter(r => !r.passed).map(r => r.name).join('、')}）`
+                        : `（✅ 执行门禁通过：${gateResults.map(r => r.name).join('、')}）`;
                 const choice = await vscode.window.showInformationMessage(
-                    `✅ 任务 ${taskId} 信号已到达，确认推进？`,
+                    `✅ 任务 ${taskId} 信号已到达${gateNote}，确认推进？`,
                     '确认完成', '人工检查'
                 );
                 if (choice === '确认完成') {
@@ -881,10 +899,106 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         }
     }
 
+    /**
+     * Real-execution Hard Gate: run the task/acceptance scripts and require exit code 0.
+     * relaxed → no scripts run; standard → per-task script; strict → per-task + acceptance.
+     * Absence of scripts is non-blocking (falls back to file-existence gate).
+     */
+    private async runExecutionGate(taskId: string, gate: GateLevel): Promise<Array<{ name: string; passed: boolean; code: number }>> {
+        const results: Array<{ name: string; passed: boolean; code: number }> = [];
+        if (gate === 'relaxed') {
+            return results;
+        }
+
+        const isWin = process.platform === 'win32';
+        const scripts: Array<{ name: string; file: string }> = [];
+
+        const perTask = path.join(this.iterDir, 'tests', isWin ? `test-${taskId}.ps1` : `test-${taskId}.sh`);
+        if (fs.existsSync(perTask)) {
+            scripts.push({ name: `test-${taskId}`, file: perTask });
+        }
+
+        if (gate === 'strict') {
+            const acceptance = path.join(this.iterDir, 'tests', isWin ? 'test-api.ps1' : 'test-api.sh');
+            if (fs.existsSync(acceptance)) {
+                scripts.push({ name: 'test-api', file: acceptance });
+            }
+        }
+
+        if (scripts.length === 0) {
+            this.writeLog(taskId, `ℹ 执行门禁(gate=${gate})：未发现可执行测试脚本，按文件存在放行`);
+            return results;
+        }
+
+        for (const s of scripts) {
+            this.writeLog(taskId, `▶ 执行门禁运行脚本: ${s.file}`);
+            const { code, timedOut, output } = await this.runScript(s.file);
+            const passed = code === 0 && !timedOut;
+            this.writeLog(taskId, `${passed ? '✅' : '❌'} 脚本 ${s.name} 结束 exit=${code}${timedOut ? '（超时）' : ''}`);
+            if (!passed && output.trim()) {
+                this.writeLog(taskId, `脚本 ${s.name} 输出(尾部): ${output.trim().slice(-1500)}`);
+            }
+            results.push({ name: s.name, passed, code: timedOut ? -1 : code });
+        }
+        return results;
+    }
+
+    /** Execute a single .ps1/.sh script, capturing exit code and (truncated) output, with a hard timeout. */
+    private runScript(scriptFile: string): Promise<{ code: number; timedOut: boolean; output: string }> {
+        return new Promise((resolve) => {
+            const isPs = scriptFile.toLowerCase().endsWith('.ps1');
+            const cmd = isPs ? 'powershell' : (process.platform === 'win32' ? 'bash' : 'sh');
+            const args = isPs
+                ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptFile]
+                : [scriptFile];
+
+            let settled = false;
+            let output = '';
+            const capture = (buf: Buffer): void => {
+                output += buf.toString();
+                if (output.length > 8000) {
+                    output = output.slice(-8000);
+                }
+            };
+
+            let child;
+            try {
+                child = spawn(cmd, args, { cwd: this.iterDir, shell: false });
+            } catch {
+                resolve({ code: -1, timedOut: false, output });
+                return;
+            }
+
+            const timer = setTimeout(() => {
+                if (!settled) {
+                    settled = true;
+                    try { child.kill(); } catch { /* ignore */ }
+                    resolve({ code: -1, timedOut: true, output });
+                }
+            }, 120_000);
+
+            child.stdout?.on('data', capture);
+            child.stderr?.on('data', capture);
+            child.on('error', () => {
+                if (!settled) {
+                    settled = true;
+                    clearTimeout(timer);
+                    resolve({ code: -1, timedOut: false, output });
+                }
+            });
+            child.on('close', (code) => {
+                if (!settled) {
+                    settled = true;
+                    clearTimeout(timer);
+                    resolve({ code: code ?? -1, timedOut: false, output });
+                }
+            });
+        });
+    }
+
     async startAuto(iterTask: Task): Promise<void> {
         this.autoMode = true;
         this.startWatching(iterTask);
-
         const currentDoing = this.getCurrentTask();
         if (currentDoing) {
             vscode.window.showInformationMessage(`⏳ 等待任务 ${currentDoing.id} 完成...`);
