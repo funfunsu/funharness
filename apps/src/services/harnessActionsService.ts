@@ -72,6 +72,8 @@ interface HarnessActionsDeps {
 export class HarnessActionsService {
     constructor(private readonly deps: HarnessActionsDeps) {}
     private specDeltaService?: SpecDeltaService;
+    /** Prevent duplicate prompt dispatch for the same (task, step) while one is in-flight. */
+    private readonly inFlightStageDispatchKeys: Set<string> = new Set();
     private readonly lastAutoRepairAt: Map<string, number> = new Map();
     private readonly lastAutoRepairSignature: Map<string, string> = new Map();
     private readonly repairingKeys: Set<string> = new Set();
@@ -397,41 +399,53 @@ export class HarnessActionsService {
         const task = this.getTaskById(taskId);
         if (!task) return;
 
-        const iterDir = this.deps.getIterationDir(task);
-        const shouldUseSchedulerForDev = step === 'dev' && this.hasTaskPlan(iterDir);
-
-        if (step === 'dev' && (!task.quickMode || shouldUseSchedulerForDev)) {
-            const scheduler = this.deps.getScheduler(task);
-            await scheduler.startAuto(task);
-            this.deps.saveAndRender();
-            vscode.window.showInformationMessage('已按 tasks.md 子任务链启动开发调度（自动检查并继续下一个）。');
+        const dispatchKey = `${task.id}:${step}`;
+        if (this.inFlightStageDispatchKeys.has(dispatchKey)) {
+            vscode.window.showWarningMessage(`已忽略重复触发：${task.name} 的 ${step.toUpperCase()} Agent 正在执行中`);
             return;
         }
+        this.inFlightStageDispatchKeys.add(dispatchKey);
 
-        if (step === 'des') {
-            this.deps.copyProjectStructureToIteration(iterDir);
-        }
+        try {
 
-        this.reconcileStageArtifactPath(task, step);
+            const iterDir = this.deps.getIterationDir(task);
+            const shouldUseSchedulerForDev = step === 'dev' && this.hasTaskPlan(iterDir);
 
-        const rendered = this.deps.renderAgentPrompt(step, task.name, task.desc, iterDir);
-        if (!rendered.content.trim()) {
-            vscode.window.showErrorMessage(`未找到可用的 ${step} Prompt，请检查扩展内置 prompts/ 目录。`);
-            return;
-        }
+            if (step === 'dev' && (!task.quickMode || shouldUseSchedulerForDev)) {
+                const scheduler = this.deps.getScheduler(task);
+                await scheduler.startAuto(task);
+                this.deps.saveAndRender();
+                vscode.window.showInformationMessage('已按 tasks.md 子任务链启动开发调度（自动检查并继续下一个）。');
+                return;
+            }
 
-        const splitMode = this.resolveTaskSplitMode(task);
-        const promptContent = step === 'dev' ? this.renderQuickDevPrompt(rendered.content, task, iterDir) : rendered.content;
-        const repairSection = this.buildRepairFeedbackSection(repairFeedback);
-        const query = `${promptContent}${repairSection}\n\n---\n运行参数：taskSplitMode=${splitMode}`;
-        await this.deps.dispatchAi(query, iterDir, 'stage-agent', task.aiProvider);
-        vscode.window.showInformationMessage(`已派发 ${step.toUpperCase()} Agent（Prompt来源: ${rendered.source}）`);
-        this.startArtifactRepairWatch(task, step);
+            if (step === 'des') {
+                this.deps.copyProjectStructureToIteration(iterDir);
+            }
 
-        if (step === 'tcs') {
-            await this.openArtifactByTaskId(taskId, 'testcase');
-        } else if (step === 'tsk') {
-            await this.openArtifactByTaskId(taskId, 'tasks');
+            this.reconcileStageArtifactPath(task, step);
+
+            const rendered = this.deps.renderAgentPrompt(step, task.name, task.desc, iterDir);
+            if (!rendered.content.trim()) {
+                vscode.window.showErrorMessage(`未找到可用的 ${step} Prompt，请检查扩展内置 prompts/ 目录。`);
+                return;
+            }
+
+            const splitMode = this.resolveTaskSplitMode(task);
+            const promptContent = step === 'dev' ? this.renderQuickDevPrompt(rendered.content, task, iterDir) : rendered.content;
+            const repairSection = this.buildRepairFeedbackSection(repairFeedback);
+            const query = `${promptContent}${repairSection}\n\n---\n运行参数：taskSplitMode=${splitMode}`;
+            await this.deps.dispatchAi(query, iterDir, 'stage-agent', task.aiProvider);
+            vscode.window.showInformationMessage(`已派发 ${step.toUpperCase()} Agent（Prompt来源: ${rendered.source}）`);
+            this.startArtifactRepairWatch(task, step);
+
+            if (step === 'tcs') {
+                await this.openArtifactByTaskId(taskId, 'testcase');
+            } else if (step === 'tsk') {
+                await this.openArtifactByTaskId(taskId, 'tasks');
+            }
+        } finally {
+            this.inFlightStageDispatchKeys.delete(dispatchKey);
         }
     }
 
