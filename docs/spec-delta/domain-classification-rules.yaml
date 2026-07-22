@@ -1,0 +1,212 @@
+version: 1.0.0
+updatedAt: 2026-07-22
+description: Domain classification rules for Spec Delta grouping and digest generation.
+
+policy:
+  resolutionOrder:
+    - explicitDomainField
+    - reqIdPrefix
+    - artifactPathPattern
+    - contractPattern
+    - keywordMap
+    - fallback
+  conflictStrategy: highestPriority
+  allowMultiDomain: true
+  primaryDomainRule: strongestScore
+  unknownDomain: uncategorized
+  maxCandidateDomains: 3
+
+weights:
+  explicitDomainField: 100
+  reqIdPrefix: 80
+  artifactPathPattern: 70
+  contractPattern: 60
+  keywordMap: 40
+  fallback: 0
+
+domainDefinitions:
+  - id: auth
+    name: Authentication
+    aliases:
+      - authentication
+      - login
+      - session
+      - token
+      - identity
+    reqIdPrefixes:
+      - Req-auth-
+      - Req-login-
+      - Req-session-
+    artifactPathPatterns:
+      - "/auth/"
+      - "/identity/"
+      - "/session/"
+    contractPatterns:
+      - "^/api/auth"
+      - "^/api/session"
+    keywords:
+      - signin
+      - sign-in
+      - signout
+      - refresh token
+      - remember me
+
+  - id: user
+    name: User Profile
+    aliases:
+      - user
+      - profile
+      - account
+    reqIdPrefixes:
+      - Req-user-
+      - Req-profile-
+    artifactPathPatterns:
+      - "/user/"
+      - "/profile/"
+      - "/account/"
+    contractPatterns:
+      - "^/api/users"
+      - "^/api/profile"
+    keywords:
+      - avatar
+      - nickname
+      - account settings
+
+  - id: order
+    name: Order
+    aliases:
+      - order
+      - checkout
+      - fulfillment
+    reqIdPrefixes:
+      - Req-order-
+      - Req-checkout-
+    artifactPathPatterns:
+      - "/order/"
+      - "/checkout/"
+      - "/fulfillment/"
+    contractPatterns:
+      - "^/api/orders"
+      - "^/api/checkout"
+    keywords:
+      - cart
+      - place order
+      - shipment
+
+  - id: payment
+    name: Payment
+    aliases:
+      - payment
+      - billing
+      - invoice
+    reqIdPrefixes:
+      - Req-payment-
+      - Req-billing-
+    artifactPathPatterns:
+      - "/payment/"
+      - "/billing/"
+      - "/invoice/"
+    contractPatterns:
+      - "^/api/payments"
+      - "^/api/billing"
+    keywords:
+      - refund
+      - charge
+      - settlement
+
+  - id: notification
+    name: Notification
+    aliases:
+      - notification
+      - message
+      - alert
+    reqIdPrefixes:
+      - Req-notify-
+      - Req-message-
+    artifactPathPatterns:
+      - "/notification/"
+      - "/message/"
+      - "/alert/"
+    contractPatterns:
+      - "^/api/notifications"
+      - "^/api/messages"
+    keywords:
+      - email
+      - sms
+      - push
+
+mappingRules:
+  explicitDomainField:
+    enabled: true
+    fields:
+      - "domain"
+      - "businessDomain"
+      - "domainId"
+    normalizeToDomainId: true
+
+  reqIdPrefix:
+    enabled: true
+    caseSensitive: false
+
+  artifactPathPattern:
+    enabled: true
+    sources:
+      - requirementSourcePath
+      - designSourcePath
+      - testcaseSourcePath
+      - taskSourcePath
+
+  contractPattern:
+    enabled: true
+    sources:
+      - apiPath
+      - modelName
+      - eventName
+
+  keywordMap:
+    enabled: true
+    minKeywordHits: 2
+    scanTargets:
+      - requirementTitle
+      - requirementBody
+      - acceptanceGivenWhenThen
+      - taskDescription
+
+fallback:
+  assign: uncategorized
+  requiredReview: true
+  reviewNote: "Domain could not be resolved automatically. Human classification required before strict gate passes."
+
+multiDomainRules:
+  enabled: true
+  minSecondaryScoreGap: 10
+  maxSecondaryDomains: 2
+  relationLabels:
+    - depends-on
+    - impacts
+    - shared-contract
+
+strictGateRequirements:
+  denyIfUncategorized: true
+  denyIfDomainChangedWithoutSpecDelta: true
+  denyIfContractDomainAndRequirementDomainMismatch: true
+
+examples:
+  - input:
+      reqId: Req-auth-session-timeout
+      apiPath: /api/session/refresh
+      requirementTitle: Support remember me and session timeout.
+      domain: auth
+    output:
+      primaryDomain: auth
+      secondaryDomains: []
+
+  - input:
+      reqId: Req-order-refund-flow
+      apiPath: /api/payments/refund
+      requirementTitle: Refund an order and issue billing adjustment.
+      domain: ""
+    output:
+      primaryDomain: payment
+      secondaryDomains:
+        - order

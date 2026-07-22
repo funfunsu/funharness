@@ -33,6 +33,7 @@ import { GitService } from './gitService';
 import { appendHarnessLog } from './harnessLog';
 import { validateTraceability } from '../specTrace';
 import { safeRemovePath } from './fileOps';
+import { SpecDeltaService } from './specDeltaService';
 
 interface ArtifactIndexItem {
     taskId: string;
@@ -70,6 +71,7 @@ interface HarnessActionsDeps {
 
 export class HarnessActionsService {
     constructor(private readonly deps: HarnessActionsDeps) {}
+    private specDeltaService?: SpecDeltaService;
     private readonly lastAutoRepairAt: Map<string, number> = new Map();
     private readonly lastAutoRepairSignature: Map<string, string> = new Map();
     private readonly repairingKeys: Set<string> = new Set();
@@ -86,6 +88,25 @@ export class HarnessActionsService {
         tcs: 'testcase',
         tsk: 'tasks',
     } as const;
+
+    private getSpecDeltaService(): SpecDeltaService {
+        if (!this.specDeltaService) {
+            this.specDeltaService = new SpecDeltaService(
+                this.deps.getMasterRoot(),
+                () => this.deps.getConfig(),
+            );
+        }
+        return this.specDeltaService;
+    }
+
+    private runDevDriftGateOrNotify(task: Task): { passed: boolean; errors: string[]; warnings: string[]; digestPath: string } {
+        const iterDir = this.deps.getIterationDir(task);
+        const result = this.getSpecDeltaService().evaluateDriftGate(task, iterDir);
+        if (result.warnings.length > 0) {
+            vscode.window.showWarningMessage(`Spec Delta 漂移告警：${result.warnings.slice(0, 2).join('；')}（详情见 ${result.digestPath}）`);
+        }
+        return result;
+    }
 
     private showLocalBaseFallbackNoticeIfAny(): void {
         const notice = this.deps.gitService.consumeLocalBaseFallbackNotice();
@@ -353,6 +374,11 @@ export class HarnessActionsService {
     async commitToBaselineByTaskId(taskId: string): Promise<void> {
         const task = this.getTaskById(taskId);
         if (!task) return;
+        const drift = this.runDevDriftGateOrNotify(task);
+        if (!drift.passed) {
+            vscode.window.showErrorMessage(`Spec Delta 漂移门禁阻断提交：${drift.errors.slice(0, 3).join('；')}（详情见 ${drift.digestPath}）`, { modal: true });
+            return;
+        }
         const iterDir = this.deps.getIterationDir(task);
         vscode.window.showInformationMessage('正在提交并合并到基线...');
         const result = await this.deps.gitService.mergeIterationToTarget(task, iterDir, { cleanup: false });
@@ -744,6 +770,11 @@ export class HarnessActionsService {
         if (step === 'tcs') task.stage = STAGE.WRITING_TASKS;
         if (step === 'tsk') task.stage = STAGE.DEVELOPING;
         if (step === 'dev') {
+            const drift = this.runDevDriftGateOrNotify(task);
+            if (!drift.passed) {
+                vscode.window.showErrorMessage(`Spec Delta 漂移门禁阻断阶段推进：${drift.errors.slice(0, 3).join('；')}（详情见 ${drift.digestPath}）`, { modal: true });
+                return;
+            }
             task.stage = STAGE.READY_FOR_REVIEW;
             this.deps.stopScheduler(task.id);
         }
@@ -801,6 +832,12 @@ export class HarnessActionsService {
     async passByTaskId(taskId: string): Promise<void> {
         const task = this.getTaskById(taskId);
         if (!task) return;
+
+        const drift = this.runDevDriftGateOrNotify(task);
+        if (!drift.passed) {
+            vscode.window.showErrorMessage(`Spec Delta 漂移门禁阻断合并：${drift.errors.slice(0, 3).join('；')}（详情见 ${drift.digestPath}）`, { modal: true });
+            return;
+        }
 
         const iterDir = this.deps.getIterationDir(task);
         const mergeResult = await this.deps.gitService.mergeIterationToTarget(task, iterDir);
@@ -1102,6 +1139,52 @@ export class HarnessActionsService {
         await this.nextStageByTaskId(taskId, 'dev');
     }
 
+    getTaskSpecDeltaStatus(taskId: string): { severity: 'low' | 'medium' | 'high'; gateBlocked: boolean; at: string; summary: string; digestPath: string } | null {
+        const task = this.getTaskById(taskId);
+        if (!task) { return null; }
+        const iterDir = this.deps.getIterationDir(task);
+        try {
+            return this.getSpecDeltaService().getLastReviewStatus(task, iterDir);
+        } catch {
+            return null;
+        }
+    }
+
+    getSpecDeltaOverview(): Array<{ domain: string; total: number; high: number; blocked: number; lastAt: string }> {
+        try {
+            const inputs = this.deps.getTasks()
+                .filter(t => t.stage !== STAGE.DONE)
+                .map(t => ({ task: t, iterDir: this.deps.getIterationDir(t) }));
+            return this.getSpecDeltaService().getSpecDeltaOverview(inputs);
+        } catch {
+            return [];
+        }
+    }
+
+    async reviewSpecDeltaByTaskId(taskId: string): Promise<void> {
+        const task = this.getTaskById(taskId);
+        if (!task) return;
+
+        const iterDir = this.deps.getIterationDir(task);
+        const review = this.getSpecDeltaService().runFullSpecReview(task, iterDir);
+        await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(review.digestPath));
+
+        if (!review.passed) {
+            vscode.window.showWarningMessage(
+                `Spec 评审发现高风险问题：${review.errors.slice(0, 3).join('；')}（详情已打开）`,
+                { modal: true },
+            );
+            return;
+        }
+
+        if (review.warnings.length > 0) {
+            vscode.window.showWarningMessage(`Spec 评审完成：${review.warnings.slice(0, 2).join('；')}（详情已打开）`);
+            return;
+        }
+
+        vscode.window.showInformationMessage('Spec 评审完成：未发现阻断项（详情已打开）');
+    }
+
     private async initializeTaskGit(task: Task): Promise<void> {
         task.stage = STAGE.INITIALIZING;
         this.deps.saveAndRender();
@@ -1241,6 +1324,20 @@ export class HarnessActionsService {
                 // relaxed gate only enforces reference integrity (no dangling); coverage closure is off.
                 const enforceCoverage = resolveGateLevel(cfg) !== 'relaxed';
                 errors.push(...validateTraceability(reqContent, content, step, enforceCoverage));
+            }
+        }
+
+        if (errors.length === 0) {
+            try {
+                const digestPath = this.getSpecDeltaService().recordStageSnapshot(task, iterDir, step, filePath, content);
+                appendHarnessLog(
+                    this.deps.getIterationDir(task),
+                    'spec-delta',
+                    `[${task.id}] snapshot stage=${step} digest=${digestPath}`,
+                );
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                errors.push(`Spec Delta 快照沉淀失败：${message}`);
             }
         }
 

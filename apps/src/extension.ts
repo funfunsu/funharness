@@ -191,6 +191,7 @@ class Harness {
                 resetTask: async (taskId) => this.actionsService.resetTaskByTaskId(taskId),
                 pushAllCode: async (taskId) => this.actionsService.pushAllByTaskId(taskId),
                 runAgent: async (taskId, step) => this.actionsService.runAgentByTaskId(taskId, step),
+                specDeltaReview: async (taskId) => this.actionsService.reviewSpecDeltaByTaskId(taskId),
                 startAuto: async (taskId) => this.actionsService.startAutoByTaskId(taskId),
                 pauseAuto: (taskId) => this.actionsService.pauseAutoByTaskId(taskId),
                 nextTask: async (taskId) => this.actionsService.nextTaskByTaskId(taskId),
@@ -531,6 +532,7 @@ class Harness {
                     severity,
                     summary: healthReasons.length > 0 ? healthReasons.join('；') : '状态正常',
                 },
+                specDeltaStatus: this.actionsService.getTaskSpecDeltaStatus(task.id),
             };
         });
         taskViews.sort((left, right) => {
@@ -556,6 +558,7 @@ class Harness {
             customButtons: this.config.customButtons || [],
             autoPollEnabled: this.config.autoPollEnabled,
             autoPoll: this.isWorktreeSubview() ? this.autoPollService.getStatus() : undefined,
+            specDeltaOverview: this.isWorktreeSubview() ? undefined : this.actionsService.getSpecDeltaOverview(),
         });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
