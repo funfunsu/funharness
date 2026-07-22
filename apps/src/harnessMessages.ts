@@ -31,6 +31,7 @@ export type HarnessMessage =
     | { type: 'resetTask'; id: string }
     | { type: 'pushAll'; id: string }
     | { type: 'runAgent'; id: string; step: HarnessStep }
+    | { type: 'specDeltaReview'; id: string }
     | { type: 'startAuto'; id: string }
     | { type: 'pauseAuto'; id: string }
     | { type: 'nextTask'; id: string }

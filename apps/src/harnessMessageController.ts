@@ -24,6 +24,7 @@ interface HarnessMessageControllerDeps {
     resetTask: (taskId: string) => Promise<void>;
     pushAllCode: (taskId: string) => Promise<void>;
     runAgent: (taskId: string, step: Extract<HarnessMessage, { type: 'runAgent' }>['step']) => Promise<void>;
+    specDeltaReview: (taskId: string) => Promise<void>;
     startAuto: (taskId: string) => Promise<void>;
     pauseAuto: (taskId: string) => void;
     nextTask: (taskId: string) => Promise<void>;
@@ -194,6 +195,7 @@ export class HarnessMessageController {
             case 'updateTaskDesc':
             case 'resetTask':
             case 'runAgent':
+            case 'specDeltaReview':
             case 'startAuto':
             case 'pauseAuto':
             case 'nextTask':
@@ -289,6 +291,9 @@ export class HarnessMessageController {
                 return;
             case 'runAgent':
                 await this.deps.runAgent(msg.id, msg.step);
+                return;
+            case 'specDeltaReview':
+                await this.deps.specDeltaReview(msg.id);
                 return;
             case 'startAuto':
                 await this.deps.startAuto(msg.id);

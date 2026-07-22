@@ -32,7 +32,7 @@ export function collectDefinedReqIds(requirementsContent: string): string[] {
     const block = extractMachineBlock(requirementsContent);
     const source = block || requirementsContent;
     const ids = new Set<string>();
-    const re = /^\s*-\s*id\s*:\s*(Req-\w+)/gim;
+    const re = /^\s*-\s*id\s*:\s*(Req-[\w-]+)/gim;
     let m: RegExpExecArray | null;
     while ((m = re.exec(source)) !== null) {
         ids.add(m[1]);
@@ -51,7 +51,7 @@ export function collectReferencedReqIds(artifactContent: string): string[] {
     let m: RegExpExecArray | null;
     while ((m = listRe.exec(source)) !== null) {
         const inner = m[1];
-        const tokenRe = /Req-\w+/g;
+        const tokenRe = /Req-[\w-]+/g;
         let t: RegExpExecArray | null;
         while ((t = tokenRe.exec(inner)) !== null) {
             ids.add(t[0]);
@@ -59,7 +59,7 @@ export function collectReferencedReqIds(artifactContent: string): string[] {
     }
 
     // requirementId: Req-1  (singular scalar form)
-    const scalarRe = /requirementId\s*:\s*(Req-\w+)/gi;
+    const scalarRe = /requirementId\s*:\s*(Req-[\w-]+)/gi;
     while ((m = scalarRe.exec(source)) !== null) {
         ids.add(m[1]);
     }

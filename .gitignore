@@ -18,6 +18,8 @@
 **/*.vsix
 **/.harness/**
 **/logs/**
+logs/**
+tests/**
 **/package-lock.json
 
 # Optional local config
