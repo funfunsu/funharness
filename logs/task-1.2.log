@@ -4,3 +4,7 @@
 [2026-07-22T04:06:44.486Z] 信号文件检测到: done-1.2
 [2026-07-22T04:06:44.493Z] ❌ 输出文件不完整（检查文件数: 1，缺失: `apps/src/services/taskStoreService.ts`）
 [2026-07-22T04:06:44.495Z] ❌ 输出校验详细信息: expectedOutputFiles=["`apps/src/services/taskStoreService.ts`"] | signalFiles=["apps/src/harnessMessages.ts","signals/done-1.2"] | checked=["`apps/src/services/taskStoreService.ts`"] | missing=["`apps/src/services/taskStoreService.ts`"] | existing=[]
+[2026-07-22T04:28:23.431Z] 信号文件检测到: done-1.2
+[2026-07-22T04:28:23.435Z] 📦 输出校验详情 expected=1 signal=2 checked=1
+[2026-07-22T04:28:23.436Z] ℹ 执行门禁(gate=standard)：未发现可执行测试脚本，按文件存在放行
+[2026-07-22T04:28:23.439Z] ✅ 输出校验通过（检查文件数: 1），自动标记完成

@@ -11,6 +11,7 @@ import {
     DEFAULT_MONOREPO_DIRS,
     HARNESS_STATE_FILE,
     HARNESS_STATE_FILE_LEGACY,
+    HookEntry,
     STAGE,
     TASK_PLAN_LEGACY_REL_PATH,
     TASK_PLAN_PRIMARY_REL_PATH,
@@ -24,6 +25,7 @@ import {
     resolveTaskPlanFileForIteration,
     getDocsRootDirName,
     isMonoMode,
+    isOsScriptFile,
     normalizeCustomButton,
 } from '../models';
 import { TaskScheduler } from '../taskScheduler';
@@ -470,9 +472,15 @@ export class HarnessActionsService {
 
         // Lazy-init entry point: initialize only when user explicitly opens iteration folders.
         if (location === 'worktree' || location === 'mono' || location === 'frontend' || location === 'backend') {
-            const compensated = await this.ensureIterationCodeBeforeOpen(task, iterDir);
-            if (!compensated) {
+            const initResult = await this.ensureIterationCodeBeforeOpen(task, iterDir);
+            if (!initResult.ok) {
                 return;
+            }
+
+            // When newly initialized (first time), run worktree-open hooks before opening the window.
+            // This keeps first-open behavior consistent for worktree/mono/frontend/backend entries.
+            if (initResult.wasNewlyCreated) {
+                await this.runWorktreeOpenHooks(task, iterDir);
             }
         }
 
@@ -601,7 +609,10 @@ export class HarnessActionsService {
         }
     }
 
-    private async ensureIterationCodeBeforeOpen(task: Task, iterDir: string): Promise<boolean> {
+    private async ensureIterationCodeBeforeOpen(
+        task: Task,
+        iterDir: string
+    ): Promise<{ ok: boolean; wasNewlyCreated: boolean }> {
         const cfg = this.deps.getConfig();
         let missing: boolean;
         if (cfg.monorepoGit?.trim()) {
@@ -614,14 +625,14 @@ export class HarnessActionsService {
         }
 
         if (!missing) {
-            return true;
+            return { ok: true, wasNewlyCreated: false };
         }
 
         vscode.window.showInformationMessage(`检测到代码目录缺失，正在补偿重建：${task.name}`);
         const result = await this.deps.gitService.createIterationBranches(task, iterDir);
         if (!result.success) {
             vscode.window.showErrorMessage(`补偿拉取失败：${result.message || '未知错误'}`);
-            return false;
+            return { ok: false, wasNewlyCreated: false };
         }
 
         if (result.baseBranch) {
@@ -633,7 +644,7 @@ export class HarnessActionsService {
         this.deps.saveAndRender();
         vscode.window.showInformationMessage(`代码补偿完成：${task.name}`);
         this.showLocalBaseFallbackNoticeIfAny();
-        return true;
+        return { ok: true, wasNewlyCreated: true };
     }
 
     async startAutoByTaskId(taskId: string): Promise<void> {
@@ -907,8 +918,8 @@ export class HarnessActionsService {
         }
 
         const iterDir = this.deps.getIterationDir(task);
-        const compensated = await this.ensureIterationCodeBeforeOpen(task, iterDir);
-        if (!compensated) return;
+        const initResult = await this.ensureIterationCodeBeforeOpen(task, iterDir);
+        if (!initResult.ok) return;
         if (!fs.existsSync(iterDir)) {
             vscode.window.showWarningMessage(`迭代目录不存在，无法执行：${iterDir}`);
             return;
@@ -1796,5 +1807,140 @@ export class HarnessActionsService {
             .split(',')
             .map(item => item.trim().toLowerCase())
             .filter(Boolean);
+    }
+
+    /**
+     * Resolve the absolute path to a Hook script based on its scriptSource.
+     * Mirrors the CustomButton path resolution logic.
+     * - master: <masterRoot>/script/<entry.script>
+     * - worktree: iteration-context scripts directory (from resolveScriptDir)
+     */
+    private resolveHookScriptPath(entry: HookEntry, iterDir: string): string {
+        const masterRoot = this.deps.getMasterRoot();
+        const config = this.deps.getConfig();
+        const source = entry.scriptSource || 'master';
+
+        if (source === 'master') {
+            return path.join(masterRoot, CUSTOM_SCRIPT_DIR, entry.script);
+        }
+
+        // For 'worktree' source, reuse resolveScriptDir by adapting HookEntry to CustomButton shape
+        const adaptedButton: CustomButton = {
+            id: 'hook-temp',
+            name: 'hook-temp',
+            script: entry.script,
+            scriptSource: 'worktree',
+            placement: 'iteration',
+        };
+        const scriptDir = this.resolveScriptDir(adaptedButton, iterDir, true);
+        return path.join(scriptDir, entry.script);
+    }
+
+    /**
+     * Spawn and execute a single Hook script asynchronously.
+     * Handles missing files, OS incompatibility, and non-zero exit codes gracefully.
+     * All errors are non-blocking: the promise always resolves (never rejects).
+     */
+    private spawnHookAsync(
+        entry: HookEntry,
+        iterDir: string,
+        taskName: string,
+        logDir: string
+    ): Promise<void> {
+        return new Promise<void>((resolve) => {
+            const scriptName = entry.script;
+            const scriptArgs = (entry.args || '').trim();
+
+            // Skip scripts incompatible with the current OS
+            if (!isOsScriptFile(scriptName)) {
+                appendHarnessLog(logDir, 'hook', `SKIP_OS: ${scriptName}`);
+                resolve();
+                return;
+            }
+
+            const scriptPath = this.resolveHookScriptPath(entry, iterDir);
+
+            // Check if script file exists
+            if (!fs.existsSync(scriptPath)) {
+                const msg = `脚本不存在：${scriptPath}`;
+                appendHarnessLog(logDir, 'hook', `MISSING: ${scriptPath}`);
+                vscode.window.showWarningMessage(msg);
+                resolve();
+                return;
+            }
+
+            // Parse script arguments
+            const args = scriptArgs ? scriptArgs.split(/\s+/) : [];
+
+            // Spawn the script process
+            let stdout = '';
+            let stderr = '';
+            const proc = spawn(scriptPath, args, {
+                cwd: iterDir,
+                stdio: ['pipe', 'pipe', 'pipe'],
+            });
+
+            proc.stdout?.on('data', (data) => {
+                stdout += data.toString();
+            });
+
+            proc.stderr?.on('data', (data) => {
+                stderr += data.toString();
+            });
+
+            proc.on('error', (error) => {
+                const errMsg = error instanceof Error ? error.message : String(error);
+                appendHarnessLog(logDir, 'hook', `SPAWN_ERROR: ${scriptName} ${errMsg}`);
+                vscode.window.showWarningMessage(`Hook 脚本执行失败：${scriptName} - ${errMsg}`);
+                resolve();
+            });
+
+            proc.on('exit', (exitCode) => {
+                if (exitCode === 0) {
+                    appendHarnessLog(logDir, 'hook', `OK: ${scriptName} exit=0`);
+                    resolve();
+                } else {
+                    const stderrSnippet = stderr.trim().split('\n').slice(0, 3).join(' | ');
+                    appendHarnessLog(logDir, 'hook', `FAILED: ${scriptName} exit=${exitCode} stderr=${stderrSnippet}`);
+                    vscode.window.showWarningMessage(`Hook 脚本执行失败：${scriptName} (exit=${exitCode})`);
+                    resolve();
+                }
+            });
+        });
+    }
+
+    /**
+     * Execute all worktree-open Hook scripts in sequence when Worktree is first initialized.
+     * Reads hooks from config.lifecycleHooks.worktreeOpen and runs them under a progress notification.
+     * Single hook failures do not stop subsequent hooks (all are independent).
+     */
+    private async runWorktreeOpenHooks(task: Task, iterDir: string): Promise<void> {
+        const config = this.deps.getConfig();
+        const hooks = config.lifecycleHooks?.worktreeOpen || [];
+
+        // Silent skip if no hooks configured (INV-6)
+        if (hooks.length === 0) {
+            return;
+        }
+
+        const logDir = iterDir;
+        const taskName = task.name;
+
+        return vscode.window.withProgress(
+            {
+                location: vscode.ProgressLocation.Notification,
+                title: `正在执行 Worktree 初始化 Hook...`,
+                cancellable: false,
+            },
+            async (progress) => {
+                for (let i = 0; i < hooks.length; i++) {
+                    const hook = hooks[i];
+                    progress.report({
+                        message: `[${i + 1}/${hooks.length}] ${hook.script}`,
+                    });
+                    await this.spawnHookAsync(hook, iterDir, taskName, logDir);
+                }
+            }
+        );
     }
 }

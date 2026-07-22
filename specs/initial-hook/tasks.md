@@ -38,7 +38,7 @@
 
 ---
 
-- [ ] 1.2 配置持久化：taskStoreService 合并 lifecycleHooks
+- [x] 1.2 配置持久化：taskStoreService 合并 lifecycleHooks
   - Owner: FullStack
   - 依赖: 1.1
   - 输入: design.md §2.2（taskStoreService.ts 说明）、现有 `loadConfig` 合并逻辑
@@ -54,7 +54,7 @@
 
 ---
 
-- [ ] 1.3 设置页面 UI：新增 Lifecycle Hooks 配置区块
+- [x] 1.3 设置页面 UI：新增 Lifecycle Hooks 配置区块
   - Owner: FullStack
   - 依赖: 1.1
   - 输入: design.md §3.3（设置页面 UI 规格）
@@ -73,7 +73,7 @@
 
 ---
 
-- [ ] 1.4 Hook 执行引擎：新增 resolveHookScriptPath / spawnHookAsync / runWorktreeOpenHooks
+- [x] 1.4 Hook 执行引擎：新增 resolveHookScriptPath / spawnHookAsync / runWorktreeOpenHooks
   - Owner: FullStack
   - 依赖: 1.1
   - 输入: design.md §3.1（IFACE-2、IFACE-3、IFACE-4）、design.md §4（INV-3、INV-4、INV-6、INV-7）、design.md §5（错误处理表）
@@ -102,7 +102,7 @@
 
 ---
 
-- [ ] 1.5 接入主流程：修改 ensureIterationCodeBeforeOpen 返回值并接入 openFolderLocationByTaskId
+- [x] 1.5 接入主流程：修改 ensureIterationCodeBeforeOpen 返回值并接入 openFolderLocationByTaskId
   - Owner: FullStack
   - 依赖: 1.4
   - 输入: design.md §3.1（IFACE-1）、design.md §4（INV-1、INV-2）
@@ -123,7 +123,7 @@
 
 ---
 
-- [ ] 1.6 检查点：编译验证 & 功能走查
+- [x] 1.6 检查点：编译验证 & 功能走查
   - Owner: FullStack
   - 依赖: 1.2, 1.3, 1.5
   - 输入: 所有上游任务产出

@@ -198,6 +198,12 @@ export class TaskStoreService {
             merged.customButtons = Array.isArray(loaded.customButtons)
                 ? (loaded.customButtons as CustomButton[]).map(normalizeCustomButton)
                 : [];
+            // Ensure lifecycleHooks exists and deep-merge with defaults so old configs auto-fill.
+            merged.lifecycleHooks = {
+                worktreeOpen: Array.isArray(loaded?.lifecycleHooks?.worktreeOpen)
+                    ? loaded.lifecycleHooks.worktreeOpen
+                    : [],
+            };
             return merged;
         } catch {
             return { ...DEFAULT_CONFIG };
