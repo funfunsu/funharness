@@ -48,6 +48,7 @@ export type HarnessMessage =
     | { type: 'pushAndNextStage'; id: string }
     | { type: 'commitToBaseline'; id: string }
     | { type: 'saveCustomButtons'; buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string; placement?: 'iteration' | 'main' }[] }
+    | { type: 'saveLifecycleHooks'; hooks: { script: string; scriptSource?: string; args?: string }[] }
     | { type: 'runCustomButton'; id: string; buttonId: string }
     | { type: 'runMainCustomButton'; buttonId: string }
     | { type: 'openScriptDir' }

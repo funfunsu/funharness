@@ -782,11 +782,21 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     private async handleSignal(taskId: string, signalFilePath: string, iterTask: Task): Promise<void> {
         if (this.handledSignals.has(taskId)) return;
 
-        // Skip tasks already marked done — avoids re-prompting after VS Code restart.
+        // Only handle signals for known subtasks in the current tasks.md.
+        // This prevents stale done-* files from previous runs/specs from causing false prompts.
         const currentTasks = this.parseTasksMd();
         const currentTask = currentTasks.find(t => t.id === taskId);
-        if (currentTask && currentTask.status === 'done') {
+        if (!currentTask) {
             this.handledSignals.add(taskId);
+            this.writeLog(taskId, `ℹ 忽略未知信号: done-${taskId}（当前 tasks.md 不包含该子任务）`);
+            return;
+        }
+
+        // Skip signals for non-active subtasks to avoid replaying old files.
+        // Expected lifecycle: a subtask becomes 'doing' before its done signal is emitted.
+        if (currentTask.status !== 'doing') {
+            this.handledSignals.add(taskId);
+            this.writeLog(taskId, `ℹ 忽略非进行中任务信号: done-${taskId}（status=${currentTask.status}）`);
             return;
         }
 
@@ -798,7 +808,9 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         const subTask = subTasks.find(t => t.id === taskId);
         let outputOk = true;
         const expectedOutputFiles = this.getPathLikeOutputs(subTask);
-        const signalFiles = this.readSignalFiles(signalFilePath);
+        const signalFiles = this.readSignalFiles(signalFilePath)
+            .map(item => this.normalizePotentialPath(item))
+            .filter(item => this.looksLikeFilePath(item));
         const filesToCheck = expectedOutputFiles.length > 0 ? expectedOutputFiles : signalFiles;
         const missingPaths: string[] = [];
         const existingPaths: string[] = [];
@@ -814,7 +826,8 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         }
 
         if (outputOk) {
-            this.writeLog(taskId, `📦 输出校验详情 expected=${expectedOutputFiles.length} signal=${signalFiles.length} checked=${filesToCheck.length}`);
+            const source = expectedOutputFiles.length > 0 ? 'tasks.md' : 'signal file';
+            this.writeLog(taskId, `📦 输出校验详情 expected=${expectedOutputFiles.length} signal=${signalFiles.length} checked=${filesToCheck.length} source=${source}`);
 
             // Real-execution Hard Gate: run task/acceptance scripts instead of merely
             // noting they exist. Controlled by gateLevel (relaxed = skip, standard =
@@ -859,19 +872,42 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             }
         } else {
             this.updateSubTaskStatus(taskId, 'failed');
+            const source = expectedOutputFiles.length > 0 ? 'tasks.md' : 'signal file';
             const detail = [
+                `source=${source}`,
                 `expectedOutputFiles=${JSON.stringify(expectedOutputFiles)}`,
                 `signalFiles=${JSON.stringify(signalFiles)}`,
-                `checked=${JSON.stringify(filesToCheck)}`,
                 `missing=${JSON.stringify(missingPaths)}`,
                 `existing=${JSON.stringify(existingPaths)}`,
             ].join(' | ');
-            this.writeLog(taskId, `❌ 输出文件不完整（检查文件数: ${filesToCheck.length}，缺失: ${missingPaths.join(', ') || '(unknown)'}）`);
-            this.writeLog(taskId, `❌ 输出校验详细信息: ${detail}`);
-            appendHarnessLog(this.iterDir, 'scheduler', `[${taskId}] 输出文件不完整 | ${detail}`);
+            this.writeLog(taskId, `❌ 输出文件不完整（来源: ${source}, 检查文件数: ${filesToCheck.length}，缺失: ${missingPaths.join(', ') || '(unknown)'}）`);
+            this.writeLog(taskId, `❌ 诊断: ${detail}`);
+            appendHarnessLog(this.iterDir, 'scheduler', `[${taskId}] 输出验证失败 | ${detail}`);
             this.onStatusChange();
-            this.autoMode = false;
-            vscode.window.showWarningMessage(`❌ 任务 ${taskId} 输出文件不完整`);
+            
+            // Ask user if they want to retry or ignore this failure
+            const choice = await vscode.window.showWarningMessage(
+                `❌ 任务 ${taskId} 输出文件不完整（缺失: ${missingPaths.join(', ')}）`,
+                '查看日志', '忽略并继续', '标记重试'
+            );
+            
+            if (choice === '查看日志') {
+                appendHarnessLog(this.iterDir, 'scheduler', `[${taskId}] 用户查看日志以诊断问题`);
+            } else if (choice === '忽略并继续') {
+                this.updateSubTaskStatus(taskId, 'done');
+                this.writeLog(taskId, '⚠️ 用户选择忽略验证继续推进');
+                this.onStatusChange();
+                if (this.autoMode) {
+                    await this.dispatchNext(iterTask);
+                }
+            } else if (choice === '标记重试') {
+                this.updateSubTaskStatus(taskId, 'todo');
+                this.handledSignals.delete(taskId);
+                this.writeLog(taskId, '🔄 用户标记重试');
+                this.onStatusChange();
+            } else {
+                this.autoMode = false;
+            }
         }
     }
 
@@ -1093,15 +1129,24 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         if (!value) {
             return false;
         }
-        // Reject values that contain Chinese characters — these are descriptions, not paths.
-        // e.g. "修改 backend/schedule-service 模块以实现..." is NOT a file path.
-        if (/[\u4e00-\u9fa5]/.test(value)) {
+        // Extract the path part before any parenthetical remark.
+        // Supports formats like: "apps/src/file.ts" or "apps/src/file.ts（仅新增方法）" or "apps/src/file.ts (additional method only)"
+        let pathPart = value.split('（')[0].split('(')[0].trim();
+        
+        if (!pathPart) {
             return false;
         }
-        if (/[\\/]/.test(value)) {
+        
+        // Reject values where the PATH PART contains Chinese characters — these are descriptions, not paths.
+        // e.g. "修改 backend/schedule-service 模块以实现..." is NOT a file path.
+        if (/[\u4e00-\u9fa5]/.test(pathPart)) {
+            return false;
+        }
+        
+        if (/[\\/]/.test(pathPart)) {
             return true;
         }
-        return /^[\w.-]+\.[a-zA-Z0-9]+$/.test(value);
+        return /^[\w.-]+\.[a-zA-Z0-9]+$/.test(pathPart);
     }
 
     private readSignalFiles(signalPath: string): string[] {
@@ -1125,7 +1170,11 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
 
                 const match = line.match(/^\s*-\s+(.+)$/);
                 if (match) {
-                    files.push(match[1].trim());
+                    const candidate = match[1].trim();
+                    // Ignore placeholder markers that mean "no file outputs".
+                    if (!/^(?:\(none\)|none|n\/a|na|无|无新文件|\(无\)|-)$/.test(candidate.toLowerCase())) {
+                        files.push(candidate);
+                    }
                     continue;
                 }
 

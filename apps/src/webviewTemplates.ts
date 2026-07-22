@@ -1122,6 +1122,11 @@ export function buildSettingsPageHtml(
         args: b.args,
         placement: b.placement,
     }));
+    const initialHooks = (config.lifecycleHooks?.worktreeOpen || []).map(h => ({
+        script: h.script || '',
+        scriptSource: h.scriptSource || 'worktree',
+        args: h.args || '',
+    }));
     const monorepoGitValue = config.monorepoGit || '';
     // Initial active Git-mode tab: monorepo when a single-repo URL is configured;
     // multi-repo only when the user has front/back URLs but no monorepo URL.
@@ -1180,6 +1185,12 @@ button{width:100%;padding:10px;border-radius:8px;border:none;color:white;margin-
 .cb-args{flex:1 1 110px}
 .cb-del{width:auto;flex:0 0 auto;margin:0;padding:10px 14px;background:#ff3b30}
 .cb-empty{margin:10px 0;padding:10px;border-radius:8px;background:#2b2308;border:1px solid #7a5d00;color:#ffd56a;font-size:12px}
+.hook-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
+.hook-row input,.hook-row select{margin:0;min-width:0;box-sizing:border-box}
+.hook-script{flex:2 1 150px}
+.hook-source{flex:1 1 100px}
+.hook-args{flex:2 1 150px}
+.hook-del{width:auto;flex:0 0 auto;margin:0;padding:10px 14px;background:#ff3b30}
 </style>
 </head>
 <body>
@@ -1306,6 +1317,19 @@ ${inv.dirs.repoBackend ? `<div class="kv">后端迭代脚本(候选)：<b>${esca
 </div>
 
 <div class="section">
+<div class="section-title">⚡ 生命周期 Hook</div>
+<div class="sub-title">Worktree 初始化后（worktree-open）</div>
+<div class="hint">脚本在 Worktree 首次初始化完成后自动执行（仅首次，不重复触发）。每条 Hook 按顺序执行，若某条失败，后续仍继续执行。</div>
+<div class="hint">脚本来源与自定义按钮一致，统一使用 <b>迭代脚本</b> = Worktree 中已提交的 <code>${escapeHtml(scriptsSubdir)}/</code>。</div>
+<div id="hookList"></div>
+<div style="margin-top:8px; padding:8px; background:#2a2a2d; border-radius:8px; display:none" id="hookEmpty">暂无配置的 Hook 脚本</div>
+<div class="inline-actions">
+<button onclick="addLifecycleHook()" style="background:#3a3a3f" ${disabled}>➕ 添加 Hook</button>
+<button onclick="saveLifecycleHooks()" style="background:#007aff" ${disabled}>💾 保存 Hook 配置</button>
+</div>
+</div>
+
+<div class="section">
 <div class="section-title">自动轮询远程任务</div>
 <div class="toggle-row">
 <span>启用自动轮询远程任务</span>
@@ -1383,6 +1407,7 @@ function toggleAutoPollDetails(){const d=document.getElementById('ap_details');i
 function createPollScriptTemplate(){v.postMessage({type:'createPollScriptTemplate'})}
 const INV=${JSON.stringify(inv).replace(/</g, '\\u003c')};
 const INIT_BTNS=${JSON.stringify(initialButtons).replace(/</g, '\\u003c')};
+const INIT_HOOKS=${JSON.stringify(initialHooks).replace(/</g, '\\u003c')};
 const CB_READONLY=${readOnly ? 'true' : 'false'};
 function cbEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function cbListFor(source){
@@ -1398,6 +1423,9 @@ function cbSourceOptions(selected){
   var opts='';
   arr.forEach(function(p){opts+='<option value="'+p[0]+'"'+(p[0]===selected?' selected':'')+'>'+p[1]+'</option>';});
   return opts;
+}
+function hookSourceOptions(selected){
+    return '<option value="worktree"'+(selected==='worktree'?' selected':'')+'>迭代脚本(scripts)</option>';
 }
 function cbPlacementOptions(selected){
   var place=selected==='main'?'main':'iteration';
@@ -1479,7 +1507,78 @@ function saveCustomButtons(){
   });
   v.postMessage({type:'saveCustomButtons',buttons:buttons});
 }
+// Lifecycle Hooks (worktree-open)
+function hookOnScriptChange(el){el.setAttribute('data-val',el.value);}
+function hookOnSourceChange(el){var s=el.closest('.hook-row').querySelector('.hook-script');s.setAttribute('data-val','');hookRefreshScripts();}
+function hookRefreshScripts(){
+  var rows=[].slice.call(document.querySelectorAll('#hookList .hook-row'));
+  rows.forEach(function(r){
+    var src=r.querySelector('.hook-source').value;
+    var cmd=r.querySelector('.hook-script');
+    var cur=cmd.getAttribute('data-val')||'';
+    var avail=cbListFor(src);
+    var opts='<option value="">（选择脚本）</option>';
+    var matched=false;
+    avail.forEach(function(f){
+      var isCur=(f===cur);
+      if(isCur)matched=true;
+      opts+='<option value="'+cbEsc(f)+'"'+(isCur?' selected':'')+'>'+cbEsc(f)+'</option>';
+    });
+    if(cur&&!matched){opts+='<option value="'+cbEsc(cur)+'" selected>'+cbEsc(cur)+'（缺失）</option>';}
+    cmd.innerHTML=opts;
+    cmd.value=cur;
+    cmd.setAttribute('data-val',cmd.value);
+  });
+}
+function hookRowHtml(h){
+  h=h||{};
+  var dis=CB_READONLY?' disabled':'';
+  return '<div class="hook-row">'+
+    '<select class="hook-script" title="脚本" data-val="'+cbEsc(h.script||'')+'" onchange="hookOnScriptChange(this)"'+dis+'></select>'+
+    '<select class="hook-source" title="脚本来源" onchange="hookOnSourceChange(this)"'+dis+'>'+hookSourceOptions(h.scriptSource||'worktree')+'</select>'+
+    '<input class="hook-args" placeholder="参数(可选，如 --legacy-peer-deps)" value="'+cbEsc(h.args||'')+'"'+dis+'>'+
+    '<button class="hook-del" onclick="removeLifecycleHook(this)"'+dis+'>✕</button>'+
+    '</div>';
+}
+function renderLifecycleHooks(){
+  var list=document.getElementById('hookList');
+  if(!list)return;
+  list.innerHTML='';
+  (INIT_HOOKS||[]).forEach(function(h){list.insertAdjacentHTML('beforeend',hookRowHtml(h));});
+  hookRefreshScripts();
+  updateHookEmpty();
+}
+function updateHookEmpty(){var e=document.getElementById('hookEmpty');if(e)e.style.display=(INIT_HOOKS||[]).length===0?'block':'none';}
+function addLifecycleHook(){
+  var list=document.getElementById('hookList');
+  if(!list)return;
+    INIT_HOOKS.push({script:'',scriptSource:'worktree',args:''});
+  list.insertAdjacentHTML('beforeend',hookRowHtml({}));
+  hookRefreshScripts();
+  updateHookEmpty();
+}
+function removeLifecycleHook(btn){
+  var r=btn.closest('.hook-row');
+  if(r){
+    var idx=[].slice.call(document.querySelectorAll('#hookList .hook-row')).indexOf(r);
+    if(idx>=0)INIT_HOOKS.splice(idx,1);
+    r.remove();
+    updateHookEmpty();
+  }
+}
+function saveLifecycleHooks(){
+  var rows=document.querySelectorAll('#hookList .hook-row');
+  var hooks=[];
+  rows.forEach(function(r){
+    var script=r.querySelector('.hook-script').value.trim();
+    var scriptSource=r.querySelector('.hook-source').value;
+    var args=r.querySelector('.hook-args').value.trim();
+    if(script){hooks.push({script:script,scriptSource:scriptSource,args:args});}
+  });
+  v.postMessage({type:'saveLifecycleHooks',hooks:hooks});
+}
 cbRenderAll();
+renderLifecycleHooks();
 </script>
 </body>
 </html>`;

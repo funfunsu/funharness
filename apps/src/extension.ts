@@ -12,6 +12,7 @@ import {
     DEFAULT_MONOREPO_DIRS,
     DEFAULT_POLL_SCRIPT,
     HARNESS_LOG_FILE,
+    HookEntry,
     PROMPTS_DIR,
     ScriptInventory,
     TODO_FILE,
@@ -212,6 +213,7 @@ class Harness {
                 pushAndNextStage: async (taskId) => this.actionsService.pushAndNextStage(taskId),
                 commitToBaseline: async (taskId) => this.actionsService.commitToBaselineByTaskId(taskId),
                 saveCustomButtons: (buttons) => this.handleSaveCustomButtons(buttons),
+                saveLifecycleHooks: (hooks) => this.handleSaveLifecycleHooks(hooks),
                 runCustomButton: async (taskId, buttonId) => this.actionsService.runCustomButtonByTaskId(taskId, buttonId),
                 runMainCustomButton: async (buttonId) => this.actionsService.runStandaloneCustomButton(buttonId),
                 openScriptDir: () => this.handleOpenScriptDir(),
@@ -736,6 +738,29 @@ class Harness {
         }
         this.renderSettings();
         vscode.window.showInformationMessage(`✅ 已保存 ${normalized.length} 个自定义按钮`);
+    }
+
+    private handleSaveLifecycleHooks(hooks: { script: string; scriptSource?: string; args?: string }[]): void {
+        if (this.configMeta.readOnly) {
+            vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改 Hook 配置');
+            return;
+        }
+
+        const normalized: HookEntry[] = (hooks || [])
+            .map((h): HookEntry => ({
+                script: (h.script || '').trim(),
+                scriptSource: 'worktree',
+                args: (h.args || '').trim(),
+            }))
+            .filter(h => h.script);
+
+        if (!this.config.lifecycleHooks) {
+            this.config.lifecycleHooks = { worktreeOpen: [] };
+        }
+        this.config.lifecycleHooks.worktreeOpen = normalized;
+        this.saveConfig();
+        this.renderSettings();
+        vscode.window.showInformationMessage(`✅ 已保存 ${normalized.length} 个 Hook 配置`);
     }
 
     private handleSaveAutoPollConfig(msg: Extract<HarnessMessage, { type: 'saveAutoPollConfig' }>): void {

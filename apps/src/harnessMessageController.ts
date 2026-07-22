@@ -41,6 +41,7 @@ interface HarnessMessageControllerDeps {
     pushAndNextStage: (taskId: string) => Promise<void>;
     commitToBaseline: (taskId: string) => Promise<void>;
     saveCustomButtons: (buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string; placement?: 'iteration' | 'main' }[]) => void;
+    saveLifecycleHooks: (hooks: { script: string; scriptSource?: string; args?: string }[]) => void;
     runCustomButton: (taskId: string, buttonId: string) => Promise<void>;
     runMainCustomButton: (buttonId: string) => Promise<void>;
     openScriptDir: () => Promise<void>;
@@ -342,6 +343,9 @@ export class HarnessMessageController {
                 return;
             case 'saveCustomButtons':
                 this.deps.saveCustomButtons(msg.buttons);
+                return;
+            case 'saveLifecycleHooks':
+                this.deps.saveLifecycleHooks(msg.hooks);
                 return;
             case 'runCustomButton':
                 await this.deps.runCustomButton(msg.id, msg.buttonId);
