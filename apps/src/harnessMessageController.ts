@@ -56,6 +56,7 @@ interface HarnessMessageControllerDeps {
     todoList?: (msg: Extract<HarnessMessage, { type: 'todo.list' }>) => Promise<void>;
     todoPromoteToTask?: (msg: Extract<HarnessMessage, { type: 'todo.promoteToTask' }>) => Promise<void>;
     todoChanged?: (msg: Extract<HarnessMessage, { type: 'todo.changed' }>) => void;
+    todoError?: (msg: Extract<HarnessMessage, { type: 'todo.error' }>) => void;
 }
 
 export class HarnessMessageController {
@@ -126,6 +127,7 @@ export class HarnessMessageController {
                 status: todo.status,
                 createdAt: todo.createdAt,
                 updatedAt: todo.updatedAt,
+                sourcePanel: todo.sourcePanel,
             })),
         };
         let posted = false;
@@ -141,6 +143,15 @@ export class HarnessMessageController {
         // the entire webview HTML which resets client-side todo state to [].
         if (!posted) {
             this.deps.render();
+        }
+    }
+
+    private emitTodoError(code: string, message: string, detail?: string): void {
+        try {
+            this.deps.todoError?.({ type: 'todo.error', code, message, detail });
+        } catch (error) {
+            const fallbackDetail = error instanceof Error ? error.message : String(error || 'unknown');
+            this.logTodo('TODO-SYNC-001', '待办错误提示广播失败', fallbackDetail);
         }
     }
 
@@ -385,6 +396,7 @@ export class HarnessMessageController {
                     const mapped = this.mapTodoError(error);
                     this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                     vscode.window.showWarningMessage(mapped);
+                    this.emitTodoError(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                 }
                 return;
             case 'todo.update':
@@ -405,6 +417,7 @@ export class HarnessMessageController {
                     const mapped = this.mapTodoError(error);
                     this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                     vscode.window.showWarningMessage(mapped);
+                    this.emitTodoError(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                 }
                 return;
             case 'todo.delete':
@@ -420,6 +433,7 @@ export class HarnessMessageController {
                     const mapped = this.mapTodoError(error);
                     this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                     vscode.window.showWarningMessage(mapped);
+                    this.emitTodoError(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                 }
                 return;
             case 'todo.list':
@@ -434,6 +448,7 @@ export class HarnessMessageController {
                     const mapped = this.mapTodoError(error);
                     this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                     vscode.window.showWarningMessage(mapped);
+                    this.emitTodoError(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                 }
                 return;
             case 'todo.promoteToTask':
@@ -466,6 +481,7 @@ export class HarnessMessageController {
                     const mapped = this.mapTodoError(error);
                     this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                     vscode.window.showWarningMessage(mapped);
+                    this.emitTodoError(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                 }
                 return;
             case 'todo.changed':
