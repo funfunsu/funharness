@@ -1,3 +1,6 @@
 [2026-07-21T09:25:13.948Z] 信号文件检测到: done-1.1
 [2026-07-21T09:25:13.951Z] 📦 输出校验详情 expected=0 signal=2 checked=2
 [2026-07-21T09:25:13.953Z] ✅ 输出校验通过（检查文件数: 2），自动标记完成
+[2026-07-22T04:06:44.467Z] 信号文件检测到: done-1.1
+[2026-07-22T04:06:44.472Z] ❌ 输出文件不完整（检查文件数: 1，缺失: `apps/src/models.ts`）
+[2026-07-22T04:06:44.473Z] ❌ 输出校验详细信息: expectedOutputFiles=["`apps/src/models.ts`"] | signalFiles=["docs/tasks.md","signals/done-1.1"] | checked=["`apps/src/models.ts`"] | missing=["`apps/src/models.ts`"] | existing=[]
