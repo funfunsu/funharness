@@ -23,10 +23,10 @@
 
 ---
 
-- [failed] 1.1 数据模型：新增 HookEntry / LifecycleHooks 类型并扩展 Config
+- [x] 1.1 数据模型：新增 HookEntry / LifecycleHooks 类型并扩展 Config
   - Owner: FullStack
   - 输入: design.md §3.2（MODEL-1、MODEL-2、MODEL-3）
-  - 输出: `apps/src/models.ts`
+  - 输出: apps/src/models.ts
     - 新增接口 `HookEntry { script, scriptSource?, args? }`
     - 新增接口 `LifecycleHooks { worktreeOpen: HookEntry[] }`
     - `Config` 接口末尾追加字段 `lifecycleHooks: LifecycleHooks`
@@ -38,11 +38,11 @@
 
 ---
 
-- [failed] 1.2 配置持久化：taskStoreService 合并 lifecycleHooks
+- [ ] 1.2 配置持久化：taskStoreService 合并 lifecycleHooks
   - Owner: FullStack
   - 依赖: 1.1
   - 输入: design.md §2.2（taskStoreService.ts 说明）、现有 `loadConfig` 合并逻辑
-  - 输出: `apps/src/services/taskStoreService.ts`
+  - 输出: apps/src/services/taskStoreService.ts
     - 在 `loadConfig` 的 `merged` 对象后追加：
       `merged.lifecycleHooks = { worktreeOpen: Array.isArray(loaded?.lifecycleHooks?.worktreeOpen) ? loaded.lifecycleHooks.worktreeOpen : [] }`
     - 确保旧配置文件（无 `lifecycleHooks` 字段）加载后自动补默认值
@@ -54,11 +54,11 @@
 
 ---
 
-- [failed] 1.3 设置页面 UI：新增 Lifecycle Hooks 配置区块
+- [ ] 1.3 设置页面 UI：新增 Lifecycle Hooks 配置区块
   - Owner: FullStack
   - 依赖: 1.1
   - 输入: design.md §3.3（设置页面 UI 规格）
-  - 输出: `apps/src/webviewTemplates.ts`
+  - 输出: apps/src/webviewTemplates.ts
     - 在 CustomButton 配置区块之后新增"⚡ 生命周期 Hook"区块
     - 子区块标题：`Worktree 初始化后（worktree-open）`
     - 说明文字："脚本在 Worktree 首次初始化完成后自动执行（仅首次，不重复触发）"
@@ -73,11 +73,11 @@
 
 ---
 
-- [failed] 1.4 Hook 执行引擎：新增 resolveHookScriptPath / spawnHookAsync / runWorktreeOpenHooks
+- [ ] 1.4 Hook 执行引擎：新增 resolveHookScriptPath / spawnHookAsync / runWorktreeOpenHooks
   - Owner: FullStack
   - 依赖: 1.1
   - 输入: design.md §3.1（IFACE-2、IFACE-3、IFACE-4）、design.md §4（INV-3、INV-4、INV-6、INV-7）、design.md §5（错误处理表）
-  - 输出: `apps/src/services/harnessActionsService.ts`（仅新增私有方法，不改动现有方法）
+  - 输出: apps/src/services/harnessActionsService.ts（仅新增私有方法，不改动现有方法）
     - `resolveHookScriptPath(entry: HookEntry, iterDir: string): string`
       - `master` 来源 → `<masterRoot>/script/<entry.script>`
       - `worktree` 来源 → 复用 `resolveScriptDir` 路径逻辑（isIterationContext=true）
@@ -106,7 +106,7 @@
   - Owner: FullStack
   - 依赖: 1.4
   - 输入: design.md §3.1（IFACE-1）、design.md §4（INV-1、INV-2）
-  - 输出: `apps/src/services/harnessActionsService.ts`
+  - 输出: apps/src/services/harnessActionsService.ts
     - `ensureIterationCodeBeforeOpen` 返回类型改为 `Promise<{ ok: boolean; wasNewlyCreated: boolean }>`
       - 目录缺失且补偿成功 → `{ ok: true, wasNewlyCreated: true }`
       - 目录已存在 → `{ ok: true, wasNewlyCreated: false }`

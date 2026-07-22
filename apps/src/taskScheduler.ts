@@ -946,7 +946,33 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         }
         return subTask.output
             .flatMap(item => this.splitOutputEntries(item))
+            .map(item => this.normalizePotentialPath(item))
             .filter(item => this.looksLikeFilePath(item));
+    }
+
+    /**
+     * Normalizes path-like tokens copied from markdown/YAML by removing common wrappers
+     * (backticks or quotes), so existence checks remain stable across formatting styles.
+     */
+    private normalizePotentialPath(value: string): string {
+        const raw = String(value || '').trim();
+        if (!raw) {
+            return '';
+        }
+
+        let normalized = raw;
+
+        // Strip one surrounding markdown inline-code wrapper: `path/to/file`
+        if (/^`[^`]+`$/.test(normalized)) {
+            normalized = normalized.slice(1, -1).trim();
+        }
+
+        // Strip one surrounding quote pair: "path/to/file" or 'path/to/file'
+        if ((/^"[^"]+"$/.test(normalized)) || (/^'[^']+'$/.test(normalized))) {
+            normalized = normalized.slice(1, -1).trim();
+        }
+
+        return normalized;
     }
 
     private looksLikeFilePath(value: string): boolean {
