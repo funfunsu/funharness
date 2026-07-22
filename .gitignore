@@ -19,6 +19,7 @@
 **/.harness/**
 **/logs/**
 logs/**
+signals/**
 tests/**
 **/package-lock.json
 
