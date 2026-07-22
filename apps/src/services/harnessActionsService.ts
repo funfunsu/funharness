@@ -101,6 +101,92 @@ export class HarnessActionsService {
         return this.specDeltaService;
     }
 
+    /**
+     * Build a targeted drift-repair prompt that instructs the AI which spec documents
+     * need to be updated to match the current code implementation.
+     */
+    private buildDriftRepairPrompt(task: Task, iterDir: string, driftErrors: string[]): string {
+        const cfg = this.deps.getConfig();
+        const errorList = driftErrors.map((e, i) => `${i + 1}. ${e}`).join('\n');
+        const reqPath = resolveSpecFile(iterDir, cfg, 'requirements.md');
+        const desPath = resolveSpecFile(iterDir, cfg, 'design.md');
+        const tcsPath = resolveSpecFile(iterDir, cfg, 'testcase.md');
+        return [
+            '## Spec 漂移修复指令（最高优先，覆盖其他指令）',
+            '',
+            `任务「${task.name}」的代码实现与 Spec 文档发生了不一致（漂移）。请根据下面的检测结果，最小化更新对应 Spec 文档，使文档与当前代码实现保持一致。`,
+            '',
+            '**检测到的漂移问题：**',
+            errorList,
+            '',
+            '**目标文件：**',
+            `- ${reqPath}`,
+            `- ${desPath}`,
+            `- ${tcsPath}`,
+            '',
+            '**修复要求：**',
+            '1. 根据代码实际实现，更新对应文档的相关章节（requirements / design / testcase）',
+            '2. 若 API 接口变更，更新 design.md 的 API 契约章节及机器可读 YAML 区的 apiContracts 字段',
+            '3. 若行为/业务规则变更，更新 requirements.md 的验收标准（GIVEN/WHEN/THEN 格式）',
+            '4. 若测试逻辑变更，更新 testcase.md 的用例清单',
+            '5. 保持 Req-* 追溯闭环：所有引用的 Req-* 必须在 requirements.md 中有定义，不得引入悬空引用',
+            '6. 只修改必要内容，不重写无关章节，不改变文档结构',
+            '7. 更新完成后，在每份文档的机器可读 YAML 区确保 artifactType 字段正确',
+        ].join('\n');
+    }
+
+    /**
+     * Run the drift gate and:
+     * - If passed: show warnings (non-blocking) and return true.
+     * - If blocked and autoRepair on: silently dispatch a repair prompt, then return false.
+     * - If blocked and autoRepair off: show modal error with one-click dispatch option, return false.
+     */
+    private async runDevDriftGateWithRepair(task: Task): Promise<boolean> {
+        const iterDir = this.deps.getIterationDir(task);
+        const result = this.getSpecDeltaService().evaluateDriftGate(task, iterDir);
+
+        if (result.warnings.length > 0) {
+            vscode.window.showWarningMessage(`Spec Delta 漂移告警：${result.warnings.slice(0, 2).join('；')}`);
+        }
+        if (result.passed) {
+            return true;
+        }
+
+        const cfg = this.deps.getConfig();
+        const autoRepair = this.isTaskAutoRepairEnabled(task, cfg);
+        const repairPrompt = this.buildDriftRepairPrompt(task, iterDir, result.errors);
+
+        if (autoRepair) {
+            vscode.window.showInformationMessage(
+                `Spec Delta 漂移已检测，正在自动派发文档修复 Agent（${result.errors.length} 个问题）…`,
+            );
+            try {
+                await this.deps.dispatchAi(repairPrompt, iterDir, 'stage-agent', task.aiProvider);
+            } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error);
+                vscode.window.showWarningMessage(`自动修复派发失败：${msg}，请手动点击 Spec 评审后修复`);
+            }
+            return false;
+        }
+
+        const briefErrors = result.errors.slice(0, 3).join('；');
+        const choice = await vscode.window.showErrorMessage(
+            `Spec Delta 漂移门禁阻断：${briefErrors}`,
+            { modal: true, detail: '代码实现与 Spec 文档不一致，需要先更新文档后才能推进。\n\n点击「派发修复 Agent」让 AI 自动更新文档，或手动修改后重试。' },
+            '派发修复 Agent',
+        );
+        if (choice === '派发修复 Agent') {
+            try {
+                await this.deps.dispatchAi(repairPrompt, iterDir, 'stage-agent', task.aiProvider);
+                vscode.window.showInformationMessage('已派发 Spec 文档修复 Agent，请在 AI 完成后重新触发本操作。');
+            } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error);
+                vscode.window.showWarningMessage(`修复派发失败：${msg}`);
+            }
+        }
+        return false;
+    }
+
     private runDevDriftGateOrNotify(task: Task): { passed: boolean; errors: string[]; warnings: string[]; digestPath: string } {
         const iterDir = this.deps.getIterationDir(task);
         const result = this.getSpecDeltaService().evaluateDriftGate(task, iterDir);
@@ -376,9 +462,8 @@ export class HarnessActionsService {
     async commitToBaselineByTaskId(taskId: string): Promise<void> {
         const task = this.getTaskById(taskId);
         if (!task) return;
-        const drift = this.runDevDriftGateOrNotify(task);
-        if (!drift.passed) {
-            vscode.window.showErrorMessage(`Spec Delta 漂移门禁阻断提交：${drift.errors.slice(0, 3).join('；')}（详情见 ${drift.digestPath}）`, { modal: true });
+        const passed = await this.runDevDriftGateWithRepair(task);
+        if (!passed) {
             return;
         }
         const iterDir = this.deps.getIterationDir(task);
@@ -784,9 +869,8 @@ export class HarnessActionsService {
         if (step === 'tcs') task.stage = STAGE.WRITING_TASKS;
         if (step === 'tsk') task.stage = STAGE.DEVELOPING;
         if (step === 'dev') {
-            const drift = this.runDevDriftGateOrNotify(task);
-            if (!drift.passed) {
-                vscode.window.showErrorMessage(`Spec Delta 漂移门禁阻断阶段推进：${drift.errors.slice(0, 3).join('；')}（详情见 ${drift.digestPath}）`, { modal: true });
+            const passed = await this.runDevDriftGateWithRepair(task);
+            if (!passed) {
                 return;
             }
             task.stage = STAGE.READY_FOR_REVIEW;
@@ -847,9 +931,8 @@ export class HarnessActionsService {
         const task = this.getTaskById(taskId);
         if (!task) return;
 
-        const drift = this.runDevDriftGateOrNotify(task);
-        if (!drift.passed) {
-            vscode.window.showErrorMessage(`Spec Delta 漂移门禁阻断合并：${drift.errors.slice(0, 3).join('；')}（详情见 ${drift.digestPath}）`, { modal: true });
+        const passed = await this.runDevDriftGateWithRepair(task);
+        if (!passed) {
             return;
         }
 
