@@ -102,7 +102,7 @@
 
 ---
 
-- [ ] 1.5 接入主流程：修改 ensureIterationCodeBeforeOpen 返回值并接入 openFolderLocationByTaskId
+- [x] 1.5 接入主流程：修改 ensureIterationCodeBeforeOpen 返回值并接入 openFolderLocationByTaskId
   - Owner: FullStack
   - 依赖: 1.4
   - 输入: design.md §3.1（IFACE-1）、design.md §4（INV-1、INV-2）
@@ -123,7 +123,7 @@
 
 ---
 
-- [ ] 1.6 检查点：编译验证 & 功能走查
+- [x] 1.6 检查点：编译验证 & 功能走查
   - Owner: FullStack
   - 依赖: 1.2, 1.3, 1.5
   - 输入: 所有上游任务产出

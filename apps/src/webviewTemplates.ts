@@ -1056,7 +1056,7 @@ export function buildSettingsPageHtml(
     }));
     const initialHooks = (config.lifecycleHooks?.worktreeOpen || []).map(h => ({
         script: h.script || '',
-        scriptSource: h.scriptSource || 'master',
+        scriptSource: h.scriptSource || 'worktree',
         args: h.args || '',
     }));
     const monorepoGitValue = config.monorepoGit || '';
@@ -1252,7 +1252,7 @@ ${inv.dirs.repoBackend ? `<div class="kv">后端迭代脚本(候选)：<b>${esca
 <div class="section-title">⚡ 生命周期 Hook</div>
 <div class="sub-title">Worktree 初始化后（worktree-open）</div>
 <div class="hint">脚本在 Worktree 首次初始化完成后自动执行（仅首次，不重复触发）。每条 Hook 按顺序执行，若某条失败，后续仍继续执行。</div>
-<div class="hint">脚本来源：<b>主目录(不提交)</b> = <code>script/</code>；<b>迭代脚本</b> = Worktree 中已提交的脚本目录。</div>
+<div class="hint">脚本来源与自定义按钮一致，统一使用 <b>迭代脚本</b> = Worktree 中已提交的 <code>${escapeHtml(scriptsSubdir)}/</code>。</div>
 <div id="hookList"></div>
 <div style="margin-top:8px; padding:8px; background:#2a2a2d; border-radius:8px; display:none" id="hookEmpty">暂无配置的 Hook 脚本</div>
 <div class="inline-actions">
@@ -1356,6 +1356,9 @@ function cbSourceOptions(selected){
   arr.forEach(function(p){opts+='<option value="'+p[0]+'"'+(p[0]===selected?' selected':'')+'>'+p[1]+'</option>';});
   return opts;
 }
+function hookSourceOptions(selected){
+    return '<option value="worktree"'+(selected==='worktree'?' selected':'')+'>迭代脚本(scripts)</option>';
+}
 function cbPlacementOptions(selected){
   var place=selected==='main'?'main':'iteration';
   return '<option value="iteration"'+(place==='iteration'?' selected':'')+'>子面板（迭代）</option>'+
@@ -1437,12 +1440,34 @@ function saveCustomButtons(){
   v.postMessage({type:'saveCustomButtons',buttons:buttons});
 }
 // Lifecycle Hooks (worktree-open)
+function hookOnScriptChange(el){el.setAttribute('data-val',el.value);}
+function hookOnSourceChange(el){var s=el.closest('.hook-row').querySelector('.hook-script');s.setAttribute('data-val','');hookRefreshScripts();}
+function hookRefreshScripts(){
+  var rows=[].slice.call(document.querySelectorAll('#hookList .hook-row'));
+  rows.forEach(function(r){
+    var src=r.querySelector('.hook-source').value;
+    var cmd=r.querySelector('.hook-script');
+    var cur=cmd.getAttribute('data-val')||'';
+    var avail=cbListFor(src);
+    var opts='<option value="">（选择脚本）</option>';
+    var matched=false;
+    avail.forEach(function(f){
+      var isCur=(f===cur);
+      if(isCur)matched=true;
+      opts+='<option value="'+cbEsc(f)+'"'+(isCur?' selected':'')+'>'+cbEsc(f)+'</option>';
+    });
+    if(cur&&!matched){opts+='<option value="'+cbEsc(cur)+'" selected>'+cbEsc(cur)+'（缺失）</option>';}
+    cmd.innerHTML=opts;
+    cmd.value=cur;
+    cmd.setAttribute('data-val',cmd.value);
+  });
+}
 function hookRowHtml(h){
   h=h||{};
   var dis=CB_READONLY?' disabled':'';
   return '<div class="hook-row">'+
-    '<input class="hook-script" placeholder="脚本文件名（如 npm-install.sh）" value="'+cbEsc(h.script||'')+'"'+dis+'>'+
-    '<select class="hook-source" title="脚本来源"'+dis+'>'+cbSourceOptions(h.scriptSource||'master')+'</select>'+
+    '<select class="hook-script" title="脚本" data-val="'+cbEsc(h.script||'')+'" onchange="hookOnScriptChange(this)"'+dis+'></select>'+
+    '<select class="hook-source" title="脚本来源" onchange="hookOnSourceChange(this)"'+dis+'>'+hookSourceOptions(h.scriptSource||'worktree')+'</select>'+
     '<input class="hook-args" placeholder="参数(可选，如 --legacy-peer-deps)" value="'+cbEsc(h.args||'')+'"'+dis+'>'+
     '<button class="hook-del" onclick="removeLifecycleHook(this)"'+dis+'>✕</button>'+
     '</div>';
@@ -1452,14 +1477,16 @@ function renderLifecycleHooks(){
   if(!list)return;
   list.innerHTML='';
   (INIT_HOOKS||[]).forEach(function(h){list.insertAdjacentHTML('beforeend',hookRowHtml(h));});
+  hookRefreshScripts();
   updateHookEmpty();
 }
 function updateHookEmpty(){var e=document.getElementById('hookEmpty');if(e)e.style.display=(INIT_HOOKS||[]).length===0?'block':'none';}
 function addLifecycleHook(){
   var list=document.getElementById('hookList');
   if(!list)return;
-  INIT_HOOKS.push({script:'',scriptSource:'master',args:''});
+    INIT_HOOKS.push({script:'',scriptSource:'worktree',args:''});
   list.insertAdjacentHTML('beforeend',hookRowHtml({}));
+  hookRefreshScripts();
   updateHookEmpty();
 }
 function removeLifecycleHook(btn){

@@ -477,8 +477,9 @@ export class HarnessActionsService {
                 return;
             }
 
-            // When newly initialized (first time), run worktree-open hooks before opening the window
-            if (initResult.wasNewlyCreated && location === 'worktree') {
+            // When newly initialized (first time), run worktree-open hooks before opening the window.
+            // This keeps first-open behavior consistent for worktree/mono/frontend/backend entries.
+            if (initResult.wasNewlyCreated) {
                 await this.runWorktreeOpenHooks(task, iterDir);
             }
         }

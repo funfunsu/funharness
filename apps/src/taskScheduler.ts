@@ -782,11 +782,21 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     private async handleSignal(taskId: string, signalFilePath: string, iterTask: Task): Promise<void> {
         if (this.handledSignals.has(taskId)) return;
 
-        // Skip tasks already marked done — avoids re-prompting after VS Code restart.
+        // Only handle signals for known subtasks in the current tasks.md.
+        // This prevents stale done-* files from previous runs/specs from causing false prompts.
         const currentTasks = this.parseTasksMd();
         const currentTask = currentTasks.find(t => t.id === taskId);
-        if (currentTask && currentTask.status === 'done') {
+        if (!currentTask) {
             this.handledSignals.add(taskId);
+            this.writeLog(taskId, `ℹ 忽略未知信号: done-${taskId}（当前 tasks.md 不包含该子任务）`);
+            return;
+        }
+
+        // Skip signals for non-active subtasks to avoid replaying old files.
+        // Expected lifecycle: a subtask becomes 'doing' before its done signal is emitted.
+        if (currentTask.status !== 'doing') {
+            this.handledSignals.add(taskId);
+            this.writeLog(taskId, `ℹ 忽略非进行中任务信号: done-${taskId}（status=${currentTask.status}）`);
             return;
         }
 
@@ -798,7 +808,9 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         const subTask = subTasks.find(t => t.id === taskId);
         let outputOk = true;
         const expectedOutputFiles = this.getPathLikeOutputs(subTask);
-        const signalFiles = this.readSignalFiles(signalFilePath);
+        const signalFiles = this.readSignalFiles(signalFilePath)
+            .map(item => this.normalizePotentialPath(item))
+            .filter(item => this.looksLikeFilePath(item));
         const filesToCheck = expectedOutputFiles.length > 0 ? expectedOutputFiles : signalFiles;
         const missingPaths: string[] = [];
         const existingPaths: string[] = [];
@@ -1158,7 +1170,11 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
 
                 const match = line.match(/^\s*-\s+(.+)$/);
                 if (match) {
-                    files.push(match[1].trim());
+                    const candidate = match[1].trim();
+                    // Ignore placeholder markers that mean "no file outputs".
+                    if (!/^(?:\(none\)|none|n\/a|na|无|无新文件|\(无\)|-)$/.test(candidate.toLowerCase())) {
+                        files.push(candidate);
+                    }
                     continue;
                 }
 

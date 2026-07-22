@@ -746,7 +746,7 @@ class Harness {
         const normalized: HookEntry[] = (hooks || [])
             .map((h) => ({
                 script: (h.script || '').trim(),
-                scriptSource: (h.scriptSource as 'master' | 'worktree' | undefined) || 'master',
+                scriptSource: 'worktree',
                 args: (h.args || '').trim(),
             }))
             .filter(h => h.script);
