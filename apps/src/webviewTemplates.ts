@@ -13,6 +13,37 @@ function escapeHtml(value: string): string {
         .replace(/'/g, '&#39;');
 }
 
+/** Badge showing last Spec Delta review status for a task. */
+function buildDeltaBadgeHtml(taskId: string, status: MainTaskViewModel['specDeltaStatus']): string {
+    if (status == null) {
+        return `<span class="delta-badge delta-none" onclick="specReview('${taskId}')" title="尚未评审，点击执行">Spec Δ 未评审</span>`;
+    }
+    const cls = status.gateBlocked || status.severity === 'high' ? 'delta-block' : status.severity === 'medium' ? 'delta-warn' : 'delta-pass';
+    const label = status.gateBlocked ? '⛔ 阻断' : status.severity === 'high' ? '⚠ 高风险' : status.severity === 'medium' ? '⚡ 告警' : '✓ 通过';
+    const tip = escapeHtml(`${status.summary} | ${status.at.slice(0, 16).replace('T', ' ')}`);
+    return `<span class="delta-badge ${cls}" onclick="specReview('${taskId}')" title="${tip}">${label}</span>`;
+}
+
+/** Collapsible cross-task Spec Delta domain overview panel (main panel only). */
+function buildSpecDeltaOverviewHtml(overview: Array<{ domain: string; total: number; high: number; blocked: number; lastAt: string }>): string {
+    if (overview.length === 0) { return ''; }
+    const rows = overview.map(item => {
+        const rowCls = item.blocked > 0 ? 'blocked' : item.high > 0 ? 'warn' : '';
+        const date = item.lastAt ? item.lastAt.slice(0, 10) : '-';
+        return `<tr class="${rowCls}"><td>${escapeHtml(item.domain)}</td><td>${item.total}</td><td>${item.high}</td><td>${item.blocked}</td><td>${date}</td></tr>`;
+    }).join('');
+    const highCount = overview.reduce((s, v) => s + v.high, 0);
+    const blockedCount = overview.reduce((s, v) => s + v.blocked, 0);
+    const summaryLabel = blockedCount > 0 ? `<span style="color:#ff9a9a;margin-left:8px">${blockedCount} 阻断</span>` : highCount > 0 ? `<span style="color:#ffd37a;margin-left:8px">${highCount} 高风险</span>` : `<span style="color:#7ee2a8;margin-left:8px">✓ 无阻断</span>`;
+    return `<details class="overview-card">
+<summary style="cursor:pointer;list-style:none;display:flex;align-items:center"><span class="overview-title">📊 Spec Delta 领域总览</span>${summaryLabel}<span style="margin-left:auto;font-size:11px;color:#8f8f94">${overview.length} 个领域</span></summary>
+<table class="overview-table" style="margin-top:8px">
+<thead><tr><th>领域</th><th>总变更</th><th>高风险</th><th>阻断</th><th>最后更新</th></tr></thead>
+<tbody>${rows}</tbody>
+</table>
+</details>`;
+}
+
 /** Worktree-subview card for the exclusive remote-task auto-poller. */
 function buildAutoPollPanelHtml(status: AutoPollStatus): string {
     const intervalLabel = `${status.intervalSec}s`;
@@ -70,6 +101,13 @@ export interface MainTaskViewModel {
         severity: 'good' | 'warn' | 'bad';
         summary: string;
     };
+    specDeltaStatus?: {
+        severity: 'low' | 'medium' | 'high';
+        gateBlocked: boolean;
+        at: string;
+        summary: string;
+        digestPath: string;
+    } | null;
 }
 
 type PanelMode = 'main' | 'worktree';
@@ -228,11 +266,25 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         render: (ctx) => `<button class="btn-blue" onclick="${ctx.isWorktreeSubview ? 'pushDev' : 'pushAll'}('${ctx.task.id}')">🚀 推送</button>`,
     },
     {
+        key: 'review-spec',
+        placement: 'primary',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.READY_FOR_REVIEW],
+        render: (ctx) => `<button class="btn-gray" onclick="specReview('${ctx.task.id}')">🧭 Spec 评审报告</button>`,
+    },
+    {
         key: 'review-pass',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.READY_FOR_REVIEW],
         render: (ctx) => `<button class="btn-green" onclick="pass('${ctx.task.id}')">🏁 完成任务并合并</button>`,
+    },
+    {
+        key: 'spec-review',
+        placement: 'primary',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.DEVELOPING],
+        render: (ctx) => `<button class="btn-gray" onclick="specReview('${ctx.task.id}')">🧭 Spec 评审</button>`,
     },
     {
         key: 'sync-code',
@@ -298,7 +350,7 @@ function collectTaskActions(ctx: TaskActionContext): { primaryActions: string[];
 export function buildMainPageHtml(
     taskViews: MainTaskViewModel[],
     dashboard: Record<string, never>,
-    config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; autoPollEnabled: boolean; autoPoll?: AutoPollStatus }
+    config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; autoPollEnabled: boolean; autoPoll?: AutoPollStatus; specDeltaOverview?: Array<{ domain: string; total: number; high: number; blocked: number; lastAt: string }> }
 ): string {
     const customButtons = config.customButtons || [];
     // 'main' buttons render in a dedicated main-panel area belonging to no iteration;
@@ -409,6 +461,18 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .todo-editor-actions{display:flex;gap:6px;flex-wrap:wrap}
 .todo-editor-actions button{flex:1;min-width:80px;padding:8px;border:none;border-radius:8px;font-size:11px}
 .todo-loading{font-size:12px;color:#a9a9b0;margin-bottom:6px}
+.delta-badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;cursor:pointer}
+.delta-pass{background:#163a24;color:#7ee2a8}
+.delta-warn{background:#4a3412;color:#ffd37a}
+.delta-block{background:#4a1818;color:#ff9a9a}
+.delta-none{background:#2c2c2e;color:#8f8f94}
+.overview-card{margin:0 0 12px;padding:10px 12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
+.overview-title{font-weight:600;font-size:13px}
+.overview-table{width:100%;border-collapse:collapse;font-size:11px}
+.overview-table th{color:#8f8f94;text-align:left;padding:2px 6px}
+.overview-table td{color:#ddd;padding:2px 6px}
+.overview-table tr.blocked td{color:#ff9a9a}
+.overview-table tr.warn td{color:#ffd37a}
 </style>
 </head>
 <body>
@@ -433,6 +497,8 @@ ${!isWorktreeSubview && mainButtons.length > 0 ? `<div class="main-actions-card"
 </div>` : ''}
 
 ${isWorktreeSubview && config.autoPollEnabled && config.autoPoll ? buildAutoPollPanelHtml(config.autoPoll) : ''}
+
+${!isWorktreeSubview && config.specDeltaOverview && config.specDeltaOverview.length > 0 ? buildSpecDeltaOverviewHtml(config.specDeltaOverview) : ''}
 
 ${`<div class="todo-card" id="workspace-todo-panel">
 <div class="todo-head">
@@ -543,6 +609,7 @@ placeholder="请输入需求描述"
 </div>
 ${!t.quickMode ? `<div>阶段：${STAGE_LABEL[t.stage] || t.stage}</div>
 <div class="task-status">原因：${health.summary || '-'}</div>
+${(t.stage === STAGE.DEVELOPING || t.stage === STAGE.READY_FOR_REVIEW) ? `<div class="health-line" style="margin:4px 0">${buildDeltaBadgeHtml(t.id, view.specDeltaStatus)}</div>` : ''}
 ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.latestFailureReason}</div>` : ''}
 <div class="task-status">待办:${stats.todo} 执行中:${stats.doing} 完成:${stats.done}${stats.failed > 0 ? ` 失败:${stats.failed}` : ''}</div>
 <div class="task-progress"><div class="progress-bar" style="width:${view.pct}%"></div></div>
@@ -1012,6 +1079,7 @@ function openFolderLocation(id,location){v.postMessage({type:'openFolderLocation
 function setTaskAutomation(id,aa,ar){v.postMessage({type:'setTaskAutomation',id,aa,ar})}
 function setTaskAiProvider(id,ap){v.postMessage({type:'setTaskAiProvider',id,ap})}
 function pushDev(id){v.postMessage({type:'pushAndNextStage',id})}
+function specReview(id){v.postMessage({type:'specDeltaReview',id})}
 
 document.addEventListener('DOMContentLoaded',()=>{
     if(document.getElementById('workspace-todo-panel')){
