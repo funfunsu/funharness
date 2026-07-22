@@ -79,7 +79,7 @@ const config = {
     autoRepairEnabled: true, autoContinueAfterManualDone: true, compactTaskDecomposition: false,
     autoDetectTaskSplitMode: false, simpleTaskKeywords: '', complexTaskKeywords: '',
     aiProvider: 'copilot', cliCommandTemplate: '', aiFallbackToManual: true, aiPanelAutoSubmit: false,
-    worktreeSyncPaths: '', customProjectStructure: '', projectStructureRefineMode: 'local',
+    worktreeSyncPaths: '', projectStructureRefineMode: 'local',
     customButtons, autoPollEnabled: false, autoPollIntervalSec: 30, autoPollScript: 'poll.ps1',
     autoPoll,
 };

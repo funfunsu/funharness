@@ -436,7 +436,7 @@ ${isWorktreeSubview && config.autoPollEnabled && config.autoPoll ? buildAutoPoll
 
 ${`<div class="todo-card" id="workspace-todo-panel">
 <div class="todo-head">
-<div class="todo-title">${isWorktreeSubview ? '📝 共享待办（工作区）' : '📝 工作区待办'}</div>
+<div class="todo-title">${isWorktreeSubview ? '📝 待办（工作区）' : '📝 待办'}</div>
 <button class="btn-blue" style="padding:6px 10px;font-size:11px;min-width:auto;flex:none" onclick="openTodoCreateEditor()">＋ 添加待办</button>
 </div>
 <div id="todo-loading" class="todo-loading" style="display:none">正在加载待办列表...</div>
@@ -1187,6 +1187,7 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <option value="local" ${config.projectStructureRefineMode === 'local' ? 'selected' : ''}>仅本地规则提炼（快速）</option>
 <option value="local+ai" ${config.projectStructureRefineMode !== 'local' ? 'selected' : ''}>本地提炼 + AI 二次审阅（更完整）</option>
 </select>
+<<<<<<< HEAD
 <h5>Spec 产物根目录（默认 specs，人类文档仍在 docs）</h5>
 <input id="srd" value="${config.specRootDir || 'specs'}" placeholder="specs" ${disabled}>
 <h5>机器门禁力度（gateLevel）</h5>
@@ -1200,6 +1201,11 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <div class="inline-actions">
 <button onclick="initProjectStructure()" style="background:#8e8e93" ${disabled}>🧭 自动检测并初始化项目结构</button>
 <button onclick="applyProjectStructurePreview()" style="background:#5ac8fa" ${disabled}>✅ 应用预览结构</button>
+=======
+<div class="inline-actions" style="flex-wrap:nowrap">
+<button onclick="initProjectStructure()" style="background:#8e8e93;min-width:0" ${disabled}>🧭 自动检测结构</button>
+<button onclick="applyProjectStructurePreview()" style="background:#5ac8fa;min-width:0" ${disabled}>✅ 应用预览结构</button>
+>>>>>>> origin/main
 </div>
 <h5>CLI 命令模板（CLI 类执行器可选，AI 执行器在各任务卡片上独立设置）</h5>
 <input id="cct" value="${config.cliCommandTemplate || config.claudeCliCommandTemplate || ''}" placeholder="例如：cat \"{promptFile}\" | claude" ${disabled}>
@@ -1305,7 +1311,11 @@ function switchGitMode(m){
     if(tx)tx.classList.toggle('active',m==='multi');
 }
 switchGitMode(gitMode);
+<<<<<<< HEAD
 function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
+=======
+function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,prm:document.getElementById('prm').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
+>>>>>>> origin/main
 function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
 function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
 function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}

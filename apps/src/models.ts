@@ -319,7 +319,6 @@ export interface Config {
     /** Auto-submit (press Return) after a 'panel' executor pre-fills its prompt via deep link (macOS only). */
     aiPanelAutoSubmit: boolean;
     worktreeSyncPaths: string;
-    customProjectStructure: string;
     projectStructureRefineMode: 'local' | 'local+ai';
     /**
      * Root folder name (under the iteration root) holding per-iteration spec artifacts
@@ -520,8 +519,12 @@ export const DEFAULT_CONFIG: Config = {
     cliCommandTemplate: '',
     aiFallbackToManual: true,
     aiPanelAutoSubmit: true,
+<<<<<<< HEAD
     worktreeSyncPaths: 'worktree/.github/instructions\nworktree/.spec',
     customProjectStructure: '',
+=======
+    worktreeSyncPaths: 'worktree/.github/instructions',
+>>>>>>> origin/main
     projectStructureRefineMode: 'local+ai',
     specRootDir: 'specs',
     gateLevel: 'standard',
