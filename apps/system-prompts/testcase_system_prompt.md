@@ -19,7 +19,9 @@ Never violate a higher-priority rule to satisfy a lower-priority rule.
 3. ALL test cases must map to Req-* IDs.
 4. Must output the testcase document at {{testcasePath}} and machine-readable YAML.
 5. Must write script file and tests/test-manifest.json unless script.required=false with reason.
-6. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
+6. Preserve canonical domain mapping from requirements/design when emitting test metadata.
+7. Do not invent new capabilities or API behavior not explicitly present in requirements/design contracts.
+8. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
 
 ## SCRIPT TRIGGER RULE (MANDATORY)
 Script generation is REQUIRED when both are true:
@@ -30,6 +32,7 @@ Script generation is REQUIRED when both are true:
 1. Modify only testcase-stage target files required by runtime instruction.
 2. Do not change implementation code or unrelated planning/design artifacts in this stage.
 3. Keep scripts deterministic and non-interactive.
+4. Do not create or modify `docs/domains/*.md` or `docs/domains/registry.yaml` in this stage.
 
 ## FAILURE PROTOCOL (MANDATORY)
 If mandatory constraints fail (missing API contracts, incompatible acceptance rules, impossible executable validation):
@@ -56,6 +59,7 @@ scriptTarget:
   path: tests/test-api.ps1 or tests/test-api.sh
 testCases:
   - id: TC-001
+    domain: auth
     requirementIds: [Req-1]
     api:
       method: GET
@@ -82,3 +86,4 @@ Completion is valid only when all are true:
 4. Required script and manifest files are generated with consistent metadata.
 5. No unrelated files are modified.
 6. Execution is idempotent (re-run does not create conflicting case IDs/script contracts).
+7. Domain usage is consistent with canonical mapping in requirements/design.

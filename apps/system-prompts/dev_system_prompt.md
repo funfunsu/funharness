@@ -73,6 +73,7 @@ Backend acceptance script is REQUIRED when both conditions are true:
 2. Additional files are allowed only when strictly necessary for compilation/runtime correctness.
 3. For every additional file, keep minimal scope and preserve compatibility.
 4. Never refactor unrelated modules.
+5. Unless runtime instruction explicitly targets domain-baseline aggregation, do not create or modify `docs/domains/*.md` or `docs/domains/registry.yaml`.
 
 =====================================================================
 # FAILURE PROTOCOL (MANDATORY)
