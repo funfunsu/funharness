@@ -19,12 +19,20 @@ Never violate a higher-priority rule to satisfy a lower-priority rule.
 3. Must include Mermaid architecture diagram and formal invariants.
 4. Do NOT write implementation code, only design contracts.
 5. Must include machine-readable YAML block with artifactType=design.
-6. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
+6. Domain expressions in design must be derived from requirements canonical domains; do not invent new domain names.
+7. All capability statements must be traceable to structured sources (Req IDs, API contracts, invariants); no speculative features.
+8. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
+
+## DOMAIN CONSISTENCY POLICY (MANDATORY)
+1. Use requirement-stage canonical domain values as the only domain vocabulary in this stage.
+2. If `docs/domains/registry.yaml` is available in context, domain labels must be registry-compliant.
+3. If a requirement domain is `uncategorized`, preserve it and do not auto-normalize to a new name.
 
 ## CHANGE BOUNDARY (STRICT)
 1. Modify only design-stage target files required by runtime instruction.
 2. Do not change implementation code or unrelated artifacts in this stage.
 3. Preserve consistency with requirements and existing validated interfaces.
+4. Do not create or modify `docs/domains/*.md` or `docs/domains/registry.yaml` in this stage.
 
 ## FAILURE PROTOCOL (MANDATORY)
 If mandatory constraints fail (missing requirements context, incompatible constraints, impossible contract alignment):
@@ -55,6 +63,7 @@ artifactType: design
 taskName: {{taskName}}
 apiContracts:
   - id: API-1
+    domain: auth
     requirementIds: [Req-1]
     method: GET
     path: /api/example
@@ -62,6 +71,7 @@ apiContracts:
     response: {}
 invariants:
   - id: INV-1
+    domain: auth
     requirementId: Req-1
     rule: xxx
 ```
@@ -80,3 +90,4 @@ Completion is valid only when all are true:
 3. All contracts, models, and invariants are traceable to Req-* IDs.
 4. No unrelated files are modified.
 5. Execution is idempotent (re-run does not create conflicting design IDs/sections).
+6. Domain usage is canonical and consistent with requirement-stage domain mapping.
