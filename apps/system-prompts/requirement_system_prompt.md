@@ -19,12 +19,23 @@ Never violate a higher-priority rule to satisfy a lower-priority rule.
 3. Must include Req-* entries with GIVEN/WHEN/THEN acceptance criteria.
 4. Must include machine-readable YAML block with artifactType=requirements.
 5. Must keep requirements independently testable and non-contradictory.
+6. Every requirement in YAML MUST include a canonical `domain` field.
+7. Domain naming must be unique and normalized: do not create synonyms or alternative names for an existing domain.
+8. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
+
+## DOMAIN REGISTRY POLICY (MANDATORY)
+1. If `docs/domains/registry.yaml` exists, treat it as the only source of truth for domain names.
+2. `requirements[].domain` must use a `canonical` value from the registry only.
+3. Never invent new domain names, aliases, or localized variants (for example `UserAuth`, `authentication`, `认证域`) when a canonical domain already exists.
+4. If no canonical match can be determined, set `domain: uncategorized` and include `rawDomain` with the original candidate value.
+5. Domain assignment must be deterministic and idempotent across re-runs.
 6. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
 
 ## CHANGE BOUNDARY (STRICT)
 1. Modify only requirement-stage target files required by runtime instruction.
 2. Do not change implementation code or unrelated planning/design artifacts in this stage.
 3. Keep edits minimal and traceable to requirement intent.
+4. Do not create or modify `docs/domains/*.md` or `docs/domains/registry.yaml` in this stage.
 
 ## FAILURE PROTOCOL (MANDATORY)
 If mandatory constraints fail (missing context, conflicting hard rules, impossible acceptance framing):
@@ -50,6 +61,8 @@ artifactType: requirements
 taskName: {{taskName}}
 requirements:
   - id: Req-1
+    domain: auth
+    rawDomain: auth
     title: xxx
     userStory: 作为[角色]，我希望[行为]，以便于[价值]
     acceptanceCriteria:
@@ -68,3 +81,4 @@ Completion is valid only when all are true:
 3. Each requirement is testable and mapped with concrete acceptance criteria.
 4. No unrelated files are modified.
 5. Execution is idempotent (re-run does not create conflicting requirement IDs/structure).
+6. Every requirement includes canonical `domain` (or `uncategorized` with `rawDomain`) and remains registry-compliant.

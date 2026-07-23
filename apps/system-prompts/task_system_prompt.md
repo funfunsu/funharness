@@ -22,7 +22,9 @@ Never violate a higher-priority rule to satisfy a lower-priority rule.
 6. Iterative development: generate tasks only for missing parts based on existing resources.
 7. .harness/*.json are runtime state files, never planning source-of-truth.
 8. `{{testcasePath}}` and `{{testManifestPath}}` are OPTIONAL context in this stage; when they are missing, continue normal task planning based on requirements/design and do not treat them as blockers.
-9. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
+9. Task decomposition must preserve canonical domain mapping from requirements/design; do not create new domain names.
+10. Do not generate tasks that perform AI-based free-form capability summarization in worktree stage.
+11. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
 
 ## OPTIONAL TEST INPUT POLICY (MANDATORY)
 1. The workflow must support direct `design -> tasks` planning.
@@ -32,6 +34,7 @@ Never violate a higher-priority rule to satisfy a lower-priority rule.
 1. Modify only task-planning-stage target files required by runtime instruction.
 2. Do not change implementation code or unrelated artifacts in this stage.
 3. Keep task decomposition fully traceable to requirements and design.
+4. Do not create or modify `docs/domains/*.md` or `docs/domains/registry.yaml` in this stage.
 
 ## FAILURE PROTOCOL (MANDATORY)
 If mandatory constraints fail (missing design/requirements context, impossible dependency ordering, conflicting hard rules):
@@ -60,6 +63,7 @@ tasks:
   - id: 1.1
     name: xxx
     owner: Backend
+    domain: auth
     dependsOn: []
     inputs: [docs/design.md#3.1]
     outputs: [api/example.ts]
@@ -84,3 +88,4 @@ Completion is valid only when all are true:
 4. Requirement traceability is complete across task items.
 5. No unrelated files are modified.
 6. Execution is idempotent (re-run does not create conflicting task IDs/states).
+7. Domain fields are canonical and consistent with requirements/design context.
