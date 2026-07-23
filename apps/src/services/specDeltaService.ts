@@ -64,6 +64,20 @@ interface DriftEvaluation {
     digestPath: string;
 }
 
+export interface StructureGateViolation {
+    ruleId: string;
+    location: string;
+    message: string;
+    suggestion: string;
+}
+
+export interface StructureGateDecision {
+    passed: boolean;
+    gateStatus: 'passed' | 'failed';
+    gateId: string;
+    violations: StructureGateViolation[];
+}
+
 const DEFAULT_RULES: DomainRules = {
     unknownDomain: 'uncategorized',
     maxCandidateDomains: 3,
@@ -289,6 +303,84 @@ export class SpecDeltaService {
         return this.evaluateDriftGate(task, iterDir);
     }
 
+    /**
+     * Validate structure artifact with requiredSections/requiredFields and derive gate status.
+     * This implements API-2 style gate decision semantics for Req-4/INV-4.
+     */
+    validateStructureGate(
+        structureDraft: Record<string, unknown>,
+        requiredSections: string[],
+        requiredFields: string[],
+    ): StructureGateDecision {
+        const violations: StructureGateViolation[] = [];
+        const gateId = `gate-${Date.now()}`;
+
+        const sections = Array.isArray(structureDraft.sections) ? structureDraft.sections : [];
+
+        for (const sectionName of requiredSections) {
+            if (!this.containsSection(sections, sectionName)) {
+                violations.push({
+                    ruleId: 'SG-REQ-SECTION',
+                    location: 'sections',
+                    message: `缺失必填段落：${sectionName}`,
+                    suggestion: `在 structureDraft.sections 中补充 ${sectionName} 对应结构`,
+                });
+            }
+        }
+
+        for (const fieldName of requiredFields) {
+            if (!this.hasRequiredFieldValue(structureDraft, fieldName)) {
+                violations.push({
+                    ruleId: 'SG-REQ-FIELD',
+                    location: fieldName,
+                    message: `缺失必填结构字段：${fieldName}`,
+                    suggestion: `为 structureDraft.${fieldName} 提供非空值`,
+                });
+            }
+        }
+
+        return {
+            passed: violations.length === 0,
+            gateStatus: violations.length === 0 ? 'passed' : 'failed',
+            gateId,
+            violations,
+        };
+    }
+
+    /** Match required section names from section arrays with tolerant name extraction. */
+    private containsSection(sections: unknown[], expectedName: string): boolean {
+        const expected = (expectedName || '').trim();
+        if (!expected) {
+            return true;
+        }
+        return sections.some(item => {
+            if (!item || typeof item !== 'object') {
+                return false;
+            }
+            const obj = item as Record<string, unknown>;
+            const name = String(obj.name || obj.title || obj.id || '').trim();
+            return name === expected;
+        });
+    }
+
+    /** Validate required field presence/non-empty in a normalized structure draft object. */
+    private hasRequiredFieldValue(structureDraft: Record<string, unknown>, fieldName: string): boolean {
+        const value = structureDraft[fieldName];
+        if (value === undefined || value === null) {
+            return false;
+        }
+        if (typeof value === 'string') {
+            return value.trim().length > 0;
+        }
+        if (Array.isArray(value)) {
+            return value.length > 0;
+        }
+        if (typeof value === 'object') {
+            return Object.keys(value as Record<string, unknown>).length > 0;
+        }
+        return true;
+    }
+
     private buildSnapshot(stage: StageKey, sourcePath: string, content: string, cfg: Config): StageSnapshot {
         const reqIds = stage === 'req' ? collectDefinedReqIds(content) : [];
         const referencedReqIds = stage === 'req' ? [] : collectReferencedReqIds(content);
@@ -455,10 +547,64 @@ export class SpecDeltaService {
                     continue;
                 }
                 const target = raw.includes(' -> ') ? raw.split(' -> ')[1].trim() : raw;
-                files.add((repo.prefix + target).replace(/\\/g, '/'));
+                const normalizedTarget = (repo.prefix + target).replace(/\\/g, '/');
+                const absoluteTarget = path.join(repo.dir, target.replace(/\//g, path.sep));
+                if (this.isDirectoryPath(normalizedTarget, absoluteTarget)) {
+                    const expanded = this.expandChangedDirectory(repo.dir, repo.prefix, target);
+                    if (expanded.length > 0) {
+                        for (const file of expanded) {
+                            files.add(file);
+                        }
+                        continue;
+                    }
+                }
+                files.add(normalizedTarget);
             }
         }
         return Array.from(files.values());
+    }
+
+    /** Detect whether a git status target refers to a directory placeholder rather than a file. */
+    private isDirectoryPath(relativePath: string, absolutePath: string): boolean {
+        if (relativePath.endsWith('/')) {
+            return true;
+        }
+        try {
+            return fs.existsSync(absolutePath) && fs.statSync(absolutePath).isDirectory();
+        } catch {
+            return false;
+        }
+    }
+
+    /** Expand an untracked/changed directory into concrete file paths for drift analysis. */
+    private expandChangedDirectory(repoDir: string, prefix: string, target: string): string[] {
+        const absoluteDir = path.join(repoDir, target.replace(/\//g, path.sep));
+        const result: string[] = [];
+        const stack = [absoluteDir];
+
+        while (stack.length > 0) {
+            const current = stack.pop();
+            if (!current || !fs.existsSync(current)) {
+                continue;
+            }
+            let entries: fs.Dirent[];
+            try {
+                entries = fs.readdirSync(current, { withFileTypes: true });
+            } catch {
+                continue;
+            }
+            for (const entry of entries) {
+                const nextPath = path.join(current, entry.name);
+                if (entry.isDirectory()) {
+                    stack.push(nextPath);
+                    continue;
+                }
+                const relative = path.relative(repoDir, nextPath).replace(/\\/g, '/');
+                result.push((prefix + relative).replace(/\\/g, '/'));
+            }
+        }
+
+        return result;
     }
 
     private runGit(cwd: string, args: string[]): string {

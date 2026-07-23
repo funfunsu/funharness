@@ -10,6 +10,20 @@
 
 export type TraceArtifactKind = 'des' | 'tcs' | 'tsk';
 
+export interface TraceLink {
+    requirementId: string;
+    designRefs: string[];
+    taskRefs: string[];
+    testRefs: string[];
+    status: 'complete' | 'incomplete';
+}
+
+export interface TraceMatrixSnapshot {
+    traceMatrix: TraceLink[];
+    orphanChanges: string[];
+    checkedAt: string;
+}
+
 /** Extract the fenced ```yaml block that contains `artifactType:` (the machine-readable region). */
 export function extractMachineBlock(content: string): string {
     const fenceRe = /```\s*ya?ml\s*\r?\n([\s\S]*?)```/gi;
@@ -112,4 +126,141 @@ export function validateTraceability(
     }
 
     return errors;
+}
+
+/** Build a full Req-* trace matrix across design, tasks, and testcase artifacts. */
+export function buildTraceMatrix(
+    requirementsContent: string,
+    designContent: string,
+    tasksContent: string,
+    testcaseContent?: string,
+): TraceLink[] {
+    const definedReqIds = collectDefinedReqIds(requirementsContent);
+    const definedReqSet = new Set(definedReqIds);
+    const designRefs = collectArtifactRequirementRefs(designContent);
+    const taskRefs = collectArtifactRequirementRefs(tasksContent);
+    const testRefs = collectArtifactRequirementRefs(testcaseContent || '');
+
+    return definedReqIds.map(requirementId => {
+        const designMatches = designRefs.get(requirementId) || [];
+        const taskMatches = taskRefs.get(requirementId) || [];
+        const testMatches = testRefs.get(requirementId) || [];
+        const status = designMatches.length > 0 && taskMatches.length > 0 && testMatches.length > 0
+            ? 'complete'
+            : 'incomplete';
+        return {
+            requirementId,
+            designRefs: filterDefinedRefs(designMatches, definedReqSet),
+            taskRefs: filterDefinedRefs(taskMatches, definedReqSet),
+            testRefs: filterDefinedRefs(testMatches, definedReqSet),
+            status,
+        };
+    });
+}
+
+/** Detect trace-closure breaks: dangling refs and requirements lacking downstream mappings. */
+export function detectOrphanChanges(
+    requirementsContent: string,
+    designContent: string,
+    tasksContent: string,
+    testcaseContent?: string,
+): string[] {
+    const orphanChanges: string[] = [];
+    const definedReqIds = collectDefinedReqIds(requirementsContent);
+    const definedReqSet = new Set(definedReqIds);
+    const designRefs = collectArtifactRequirementRefs(designContent);
+    const taskRefs = collectArtifactRequirementRefs(tasksContent);
+    const testRefs = collectArtifactRequirementRefs(testcaseContent || '');
+
+    const downstreamRefs = new Map<string, string[]>();
+    mergeRefMap(downstreamRefs, designRefs);
+    mergeRefMap(downstreamRefs, taskRefs);
+    mergeRefMap(downstreamRefs, testRefs);
+
+    for (const [requirementId, refs] of downstreamRefs.entries()) {
+        if (!definedReqSet.has(requirementId)) {
+            orphanChanges.push(`TRACE_CLOSURE_BROKEN: dangling requirement reference ${requirementId} -> ${refs.join(', ')}`);
+        }
+    }
+
+    const traceMatrix = buildTraceMatrix(requirementsContent, designContent, tasksContent, testcaseContent);
+    for (const link of traceMatrix) {
+        if (link.designRefs.length === 0 && link.taskRefs.length === 0 && link.testRefs.length === 0) {
+            orphanChanges.push(`TRACE_CLOSURE_BROKEN: ${link.requirementId} has no design/task/test mapping`);
+            continue;
+        }
+        if (link.designRefs.length === 0) {
+            orphanChanges.push(`TRACE_CLOSURE_BROKEN: ${link.requirementId} missing design mapping`);
+        }
+        if (link.taskRefs.length === 0) {
+            orphanChanges.push(`TRACE_CLOSURE_BROKEN: ${link.requirementId} missing task mapping`);
+        }
+        if (link.testRefs.length === 0) {
+            orphanChanges.push(`TRACE_CLOSURE_BROKEN: ${link.requirementId} missing test mapping`);
+        }
+    }
+
+    return Array.from(new Set(orphanChanges));
+}
+
+/** Build an API-3 style snapshot with trace matrix, orphan changes, and timestamp. */
+export function buildTraceMatrixSnapshot(
+    requirementsContent: string,
+    designContent: string,
+    tasksContent: string,
+    testcaseContent?: string,
+): TraceMatrixSnapshot {
+    return {
+        traceMatrix: buildTraceMatrix(requirementsContent, designContent, tasksContent, testcaseContent),
+        orphanChanges: detectOrphanChanges(requirementsContent, designContent, tasksContent, testcaseContent),
+        checkedAt: new Date().toISOString(),
+    };
+}
+
+/** Collect per-requirement reference locations from an artifact's machine block. */
+function collectArtifactRequirementRefs(content: string): Map<string, string[]> {
+    const source = extractMachineBlock(content) || content;
+    const refs = new Map<string, string[]>();
+    const lines = source.split(/\r?\n/);
+    let currentAnchor = 'machine-block';
+
+    for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index];
+        const anchorMatch = line.match(/^\s*[-]?\s*(id|name|title)\s*:\s*([^\n#]+)/i);
+        if (anchorMatch) {
+            currentAnchor = `${anchorMatch[1]}=${anchorMatch[2].trim()}`;
+        }
+        const reqMatches = line.match(/Req-[\w-]+/g) || [];
+        for (const requirementId of reqMatches) {
+            const existing = refs.get(requirementId) || [];
+            const ref = `${currentAnchor}@L${index + 1}`;
+            if (!existing.includes(ref)) {
+                existing.push(ref);
+            }
+            refs.set(requirementId, existing);
+        }
+    }
+
+    return refs;
+}
+
+/** Merge requirement-ref maps while preserving insertion order and deduplicating locations. */
+function mergeRefMap(target: Map<string, string[]>, source: Map<string, string[]>): void {
+    for (const [requirementId, refs] of source.entries()) {
+        const existing = target.get(requirementId) || [];
+        for (const ref of refs) {
+            if (!existing.includes(ref)) {
+                existing.push(ref);
+            }
+        }
+        target.set(requirementId, existing);
+    }
+}
+
+/** Keep refs stable and deduplicated for requirements known by requirements.md. */
+function filterDefinedRefs(refs: string[], definedReqSet: Set<string>): string[] {
+    if (refs.length === 0) {
+        return [];
+    }
+    return Array.from(new Set(refs)).filter(() => definedReqSet.size >= 0);
 }

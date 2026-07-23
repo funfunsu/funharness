@@ -41,3 +41,33 @@ export function appendTodoLog(baseDir: string, code: string, message: string, de
     const suffix = detail ? ` | ${detail}` : '';
     appendHarnessLog(baseDir, 'todo', `${code} | ${message}${suffix}`);
 }
+
+export interface StructureGateLogViolation {
+    ruleId: string;
+    location: string;
+    suggestion: string;
+    message?: string;
+}
+
+/**
+ * Append a normalized structure-gate failure log entry.
+ * Required fields: gateId, violations, location, suggestion.
+ */
+export function appendStructureGateFailureLog(
+    baseDir: string,
+    payload: {
+        gateId: string;
+        violations: StructureGateLogViolation[];
+        sourcePath?: string;
+    },
+): void {
+    const violationSummary = payload.violations.map(item => (
+        `ruleId=${item.ruleId}; location=${item.location}; suggestion=${item.suggestion}; message=${item.message || ''}`
+    ));
+    const source = payload.sourcePath ? `sourcePath=${payload.sourcePath}` : 'sourcePath=(unknown)';
+    appendHarnessLog(
+        baseDir,
+        'structure-gate',
+        `STRUCTURE_GATE_FAILED | gateId=${payload.gateId} | violations=${violationSummary.join(' || ')} | ${source}`,
+    );
+}

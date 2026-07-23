@@ -9,6 +9,51 @@ export interface RenderedPrompt {
     path: string;
 }
 
+/** Contract for a sample profile consumed by prompt assembly in sample-driven mode. */
+export interface PromptSampleProfileContract {
+    id: string;
+    name: string;
+    schemaVersion: string;
+    exemplarMarkdown: string;
+    includePatterns: string[];
+    excludePatterns: string[];
+}
+
+/** Input contract aligned with design API-1 request fields. */
+export interface ProjectStructurePromptInput {
+    workspaceRoot: string;
+    sampleProfileId: string;
+    granularityProfileId: string;
+    extractionMode: 'sampleDriven' | 'legacy';
+    sampleProfile: PromptSampleProfileContract;
+    granularityRuleSet?: {
+        id: string;
+        maxDepth: number;
+        mustExpandDomains: string[];
+        collapsePatterns: string[];
+        dedupeStrategy: 'byPath' | 'bySemantic';
+    };
+    outputContract?: {
+        requiredSections: string[];
+        requiredFields: string[];
+        formatHint?: string;
+    };
+}
+
+/** Error raised when prompt contract blocks are missing in sample-driven mode. */
+export class PromptContractIncompleteError extends Error {
+    readonly code = 'PROMPT_CONTRACT_INCOMPLETE';
+
+    constructor(
+        public readonly missingBlocks: string[],
+        public readonly details: string[],
+    ) {
+        super(
+            `PROMPT_CONTRACT_INCOMPLETE: missingBlocks=${missingBlocks.join(',') || '(none)'}; details=${details.join(',') || '(none)'}`,
+        );
+    }
+}
+
 export class PromptService {
     private readonly systemPromptDir = 'system-prompts';
     private readonly systemPromptFiles: Record<string, string> = {
@@ -60,6 +105,97 @@ export class PromptService {
             source: resolved.source,
             path: resolved.path,
         };
+    }
+
+    /**
+     * Build a deterministic prompt section for project-structure extraction.
+     * The section binds sample standards to an explicit request contract.
+     */
+    buildProjectStructureExtractionSection(input: ProjectStructurePromptInput): string {
+        this.assertProjectStructurePromptContract(input);
+        const profile = input.sampleProfile;
+        const includePatterns = profile.includePatterns.length > 0 ? profile.includePatterns : ['**/*'];
+        const excludePatterns = profile.excludePatterns;
+        const granularityRuleSet = input.granularityRuleSet;
+        const mappedGranularityLines = granularityRuleSet
+            ? [
+                '### Granularity Rule Set',
+                `- id: ${granularityRuleSet.id}`,
+                `- maxDepth: ${granularityRuleSet.maxDepth}`,
+                `- mustExpandDomains: ${granularityRuleSet.mustExpandDomains.join(', ') || '(none)'}`,
+                `- collapsePatterns: ${granularityRuleSet.collapsePatterns.join(', ') || '(none)'}`,
+                `- dedupeStrategy: ${granularityRuleSet.dedupeStrategy}`,
+                '',
+            ]
+            : [];
+        const outputContract = input.outputContract!;
+        return [
+            '## Project Structure Extraction Input',
+            `- workspaceRoot: ${input.workspaceRoot}`,
+            `- sampleProfileId: ${input.sampleProfileId}`,
+            `- granularityProfileId: ${input.granularityProfileId}`,
+            `- extractionMode: ${input.extractionMode}`,
+            '',
+            '### Sample Standard',
+            `- id: ${profile.id}`,
+            `- name: ${profile.name}`,
+            `- schemaVersion: ${profile.schemaVersion}`,
+            `- includePatterns: ${includePatterns.join(', ')}`,
+            `- excludePatterns: ${excludePatterns.join(', ') || '(none)'}`,
+            '',
+            '### Rule Constraints',
+            ...mappedGranularityLines,
+            '### Output Contract',
+            `- requiredSections: ${outputContract.requiredSections.join(', ') || '(none)'}`,
+            `- requiredFields: ${outputContract.requiredFields.join(', ') || '(none)'}`,
+            `- formatHint: ${outputContract.formatHint || '(none)'}`,
+            '',
+            '### Sample Exemplar',
+            profile.exemplarMarkdown.trim(),
+        ].join('\n');
+    }
+
+    /**
+     * Guard INV-3/E-3: sample-driven mode must include sample/rules/output-contract blocks.
+     * If any block is missing, fail fast and block AI dispatch.
+     */
+    private assertProjectStructurePromptContract(input: ProjectStructurePromptInput): void {
+        if (input.extractionMode !== 'sampleDriven') {
+            return;
+        }
+        const missingBlocks: string[] = [];
+        const details: string[] = [];
+
+        if (!input.sampleProfile || !input.sampleProfile.id || !input.sampleProfile.exemplarMarkdown.trim()) {
+            missingBlocks.push('sample');
+            details.push('sampleProfile.id/exemplarMarkdown');
+        }
+
+        if (!input.granularityRuleSet) {
+            missingBlocks.push('rules');
+            details.push('granularityRuleSet');
+        }
+
+        if (!input.outputContract) {
+            missingBlocks.push('outputContract');
+            details.push('outputContract');
+        } else {
+            if (input.outputContract.requiredSections.length === 0) {
+                details.push('outputContract.requiredSections');
+            }
+            if (input.outputContract.requiredFields.length === 0) {
+                details.push('outputContract.requiredFields');
+            }
+            if (input.outputContract.requiredSections.length === 0 || input.outputContract.requiredFields.length === 0) {
+                if (!missingBlocks.includes('outputContract')) {
+                    missingBlocks.push('outputContract');
+                }
+            }
+        }
+
+        if (missingBlocks.length > 0) {
+            throw new PromptContractIncompleteError(missingBlocks, details);
+        }
     }
 
     /** 项目级可选覆盖目录：<workspaceRoot>/.harness/prompts（默认不存在，存在时优先生效）。 */
