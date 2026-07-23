@@ -1267,10 +1267,36 @@ export class HarnessActionsService {
         await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(review.digestPath));
 
         if (!review.passed) {
-            vscode.window.showWarningMessage(
-                `Spec 评审发现高风险问题：${review.errors.slice(0, 3).join('；')}（详情已打开）`,
-                { modal: true },
-            );
+            const cfg = this.deps.getConfig();
+            const autoRepair = this.isTaskAutoRepairEnabled(task, cfg);
+            const repairPrompt = this.buildDriftRepairPrompt(task, iterDir, review.errors);
+
+            if (autoRepair) {
+                vscode.window.showInformationMessage(
+                    `Spec 评审发现漂移，正在自动派发文档修复 Agent（${review.errors.length} 个问题）\u2026`,
+                );
+                try {
+                    await this.deps.dispatchAi(repairPrompt, iterDir, 'stage-agent', task.aiProvider);
+                } catch (error) {
+                    const msg = error instanceof Error ? error.message : String(error);
+                    vscode.window.showWarningMessage(`自动修复派发失败：${msg}，请手动修复后重试`);
+                }
+            } else {
+                const choice = await vscode.window.showWarningMessage(
+                    `Spec 评审发现漂移问题（${review.errors.length} 个），详情已打开`,
+                    { modal: true, detail: review.errors.slice(0, 5).join('\\n') },
+                    '派发修复 Agent',
+                );
+                if (choice === '派发修复 Agent') {
+                    try {
+                        await this.deps.dispatchAi(repairPrompt, iterDir, 'stage-agent', task.aiProvider);
+                        vscode.window.showInformationMessage('已派发 Spec 文档修复 Agent，请在 AI 完成后重新评审');
+                    } catch (error) {
+                        const msg = error instanceof Error ? error.message : String(error);
+                        vscode.window.showWarningMessage(`修复派发失败：${msg}`);
+                    }
+                }
+            }
             return;
         }
 
