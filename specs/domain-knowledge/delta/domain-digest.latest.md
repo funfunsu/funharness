@@ -1,6 +1,6 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-07-23T03:57:08.157Z
+- generatedAt: 2026-07-23T03:57:22.814Z
 - taskId: task_1784774141609
 - taskName: domain-knowledge
 - gateLevel: standard
