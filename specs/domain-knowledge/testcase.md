@@ -10,8 +10,15 @@
 
 - requirementIds: Req-dk-6, Req-dk-7, Req-dk-10
 - 前置条件：主面板与 worktree 子视图都可打开。
-- GIVEN 主面板加载完成，WHEN 渲染治理区，THEN 页面应包含 `Aggregate domain baselines`、`Review suspected domains`、`Preview domain index` 三个入口。
+- GIVEN 主面板加载完成，WHEN 渲染治理区，THEN 页面应包含 `领域基线聚合`、`疑似领域裁决`、`领域总览预览` 三个入口。
 - GIVEN worktree 子视图加载完成，WHEN 渲染页面，THEN 不应出现上述三个治理入口。
+
+### TC-DK-006 领域基线聚合结果提示语义
+
+- requirementIds: Req-dk-6, Req-dk-8
+- 前置条件：主面板可执行聚合，且存在/不存在可处理迭代两种场景。
+- GIVEN 执行领域基线聚合后无待裁决领域且本次存在处理项，WHEN 聚合结束，THEN 提示应明确返回已处理迭代数量。
+- GIVEN 执行领域基线聚合后无待裁决领域且本次无处理项，WHEN 聚合结束，THEN 提示应为聚合预检查完成，不应误导为处理失败。
 
 ### TC-DK-002 路由契约覆盖与 allowlist 约束
 
@@ -80,4 +87,10 @@ testCases:
     type: integration
     automated: true
     script: apps/test/domainKnowledgeFlow.test.js
+  - id: TC-DK-006
+    requirementIds: [Req-dk-6, Req-dk-8]
+    title: 领域基线聚合结果提示语义
+    type: contract
+    automated: false
+    script: manual
 ```

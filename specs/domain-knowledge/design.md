@@ -348,9 +348,9 @@ interface SuspectedDomainRecord {
 | 组件 ID | 组件 | Props | Events | 绑定需求 |
 | --- | --- | --- | --- | --- |
 | UI-DK-1 | Worktree「Generate capability delta」按钮 | `variant='secondary'`, `disabled`, `loading`, `readOnly` | `generateCapabilityDelta` | Req-dk-5 |
-| UI-DK-2 | Main Panel「Aggregate domain baselines」按钮 | `variant='primary'`, `disabled`, `loading`, `hasPendingDeltas` | `runDomainBaselineAggregation` | Req-dk-6, Req-dk-8 |
-| UI-DK-3 | Main Panel「Review suspected domains」按钮 | `variant='danger'`, `disabled`, `pendingCount` | `reviewSuspectedDomains` | Req-dk-7 |
-| UI-DK-4 | Main Panel「Preview domain index」按钮 | `variant='ghost'`, `disabled` | `previewDomainBaselineSummary` | Req-dk-10 |
+| UI-DK-2 | 主面板「领域基线聚合」按钮 | `variant='primary'`, `disabled`, `loading`, `hasPendingDeltas` | `runDomainBaselineAggregation` | Req-dk-6, Req-dk-8 |
+| UI-DK-3 | 主面板「疑似领域裁决」按钮 | `variant='danger'`, `disabled`, `pendingCount` | `reviewSuspectedDomains` | Req-dk-7 |
+| UI-DK-4 | 主面板「领域总览预览」按钮 | `variant='ghost'`, `disabled` | `previewDomainBaselineSummary` | Req-dk-10 |
 
 按钮样式基线：
 
@@ -363,6 +363,7 @@ interface SuspectedDomainRecord {
 
 - `generateCapabilityDelta` 在 readOnly 或非当前迭代上下文中必须禁用。绑定 Req-dk-5。
 - `runDomainBaselineAggregation` 在存在未裁决疑似领域时可运行，但只能写已归一化领域，疑似领域进入待确认清单。绑定 Req-dk-7、Req-dk-8。
+- `runDomainBaselineAggregation` 完成后，若 `suspectedDomains` 为空且 `processed.length>0`，前端提示必须返回已处理迭代数量；若 `processed.length===0`，返回聚合预检查完成提示。绑定 Req-dk-6、Req-dk-8。
 
 ### 3.4 Store 设计
 
@@ -614,17 +615,17 @@ components:
     events: [generateCapabilityDelta]
   - id: UI-DK-2
     requirementIds: [Req-dk-6, Req-dk-8]
-    name: Aggregate domain baselines button
+    name: 领域基线聚合按钮
     variant: primary
     events: [runDomainBaselineAggregation]
   - id: UI-DK-3
     requirementIds: [Req-dk-7]
-    name: Review suspected domains button
+    name: 疑似领域裁决按钮
     variant: danger
     events: [reviewSuspectedDomains, applyDomainAdjudication]
   - id: UI-DK-4
     requirementIds: [Req-dk-10]
-    name: Preview domain index button
+    name: 领域总览预览按钮
     variant: ghost
     events: [previewDomainBaselineSummary]
 invariants:

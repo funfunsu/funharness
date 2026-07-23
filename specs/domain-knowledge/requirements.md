@@ -99,6 +99,8 @@
 3. GIVEN 聚合动作的入口，WHEN 在 worktree 子视图查询，THEN 该动作必须仅在主面板出现，worktree 子视图不可触发。
 4. GIVEN 聚合涉及领域文档写入，WHEN 处于 multiRepo 拓扑，THEN 写入路径必须按当前仓库根目录解析，且各 repo 的写入互不越界。
 5. GIVEN 当前迭代未产出 `testcase.md`，WHEN 主面板评估任务健康状态，THEN 系统不得仅因 testcase 缺失而给出阻塞或告警。
+6. GIVEN 主面板已渲染领域治理区，WHEN 展示治理按钮，THEN 必须显示中文入口文案「领域基线聚合」「疑似领域裁决」「领域总览预览」，且仅主面板可见。
+7. GIVEN 执行领域基线聚合且无待裁决领域，WHEN 本次存在已处理迭代，THEN 提示文案必须明确返回处理数量（例如「已完成领域基线聚合：处理 X 个迭代，未发现待裁决领域」）；当无处理项时可返回聚合预检查完成提示。
 
 ### 需求-7：新领域发散防护与人工裁决门
 
@@ -243,6 +245,8 @@ requirements:
       - GIVEN 聚合动作入口 WHEN 在 worktree 子视图查询 THEN 仅主面板出现 worktree 不可触发
       - GIVEN 聚合涉及领域文档写入 WHEN 处于 multiRepo THEN 写入路径按当前仓库根目录解析各 repo 互不越界
       - GIVEN 当前迭代未产出 testcase.md WHEN 主面板评估任务健康状态 THEN 不得仅因 testcase 缺失给出阻塞或告警
+      - GIVEN 主面板已渲染领域治理区 WHEN 展示治理按钮 THEN 显示中文入口文案领域基线聚合/疑似领域裁决/领域总览预览且仅主面板可见
+      - GIVEN 执行领域基线聚合且无待裁决领域 WHEN 本次存在已处理迭代 THEN 提示文案明确返回处理数量无处理项时返回聚合预检查完成提示
   - id: Req-dk-7
     domain: domain-knowledge
     title: 新领域发散防护与人工裁决门

@@ -121,9 +121,9 @@ describe('DomainKnowledge flow constraints', () => {
             autoPollEnabled: false,
         });
 
-        assert.equal(mainHtml.includes('Aggregate domain baselines'), true);
-        assert.equal(mainHtml.includes('Review suspected domains'), true);
-        assert.equal(mainHtml.includes('Preview domain index'), true);
+        assert.equal(mainHtml.includes('领域基线聚合'), true);
+        assert.equal(mainHtml.includes('疑似领域裁决'), true);
+        assert.equal(mainHtml.includes('领域总览预览'), true);
 
         const worktreeHtml = buildMainPageHtml([view], {}, {
             compactTaskDecomposition: false,
@@ -140,9 +140,9 @@ describe('DomainKnowledge flow constraints', () => {
             },
         });
 
-        assert.equal(worktreeHtml.includes('Aggregate domain baselines'), false);
-        assert.equal(worktreeHtml.includes('Review suspected domains'), false);
-        assert.equal(worktreeHtml.includes('Preview domain index'), false);
+        assert.equal(worktreeHtml.includes('领域基线聚合'), false);
+        assert.equal(worktreeHtml.includes('疑似领域裁决'), false);
+        assert.equal(worktreeHtml.includes('领域总览预览'), false);
     });
 
     test('message/command route contract keeps aggregation routes out of worktree-allowlist', () => {

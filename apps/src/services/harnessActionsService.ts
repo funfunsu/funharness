@@ -1345,7 +1345,11 @@ export class HarnessActionsService {
         this.writeSuspectedDomainStore(result.suspectedDomains);
 
         if (result.suspectedDomains.length === 0) {
-            vscode.window.showInformationMessage('未发现待裁决领域，已完成聚合预检查');
+            if (result.processed.length > 0) {
+                vscode.window.showInformationMessage(`已完成领域基线聚合：处理 ${result.processed.length} 个迭代，未发现待裁决领域`);
+            } else {
+                vscode.window.showInformationMessage('未发现待裁决领域，已完成聚合预检查');
+            }
             return;
         }
 

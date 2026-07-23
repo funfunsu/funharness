@@ -340,7 +340,7 @@ export class SpecDeltaService {
     private extractRequirementDomainMap(content: string): Record<string, string> {
         const map: Record<string, string> = {};
         const block = extractMachineBlock(content) || content;
-        const reqRe = /-\s*id\s*:\s*(Req-[\w-]+)([\s\S]*?)(?=\n\s*-\s*id\s*:|\n\s*[A-Za-z][\w]*\s*:|$)/g;
+        const reqRe = /-\s*id\s*:\s*(Req-[\w-]+)([\s\S]*?)(?=\n\s*-\s*id\s*:|$)/g;
         let match: RegExpExecArray | null;
         while ((match = reqRe.exec(block)) !== null) {
             const reqId = match[1];

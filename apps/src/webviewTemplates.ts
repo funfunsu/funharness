@@ -509,11 +509,11 @@ ${!isWorktreeSubview ? `<div class="nav">
 ${isWorktreeSubview ? '<div class="mode-banner">子面板仅保留当前迭代任务操作，不提供高级设置与创建迭代功能。<button class="toolbar-btn" style="margin-left:8px" onclick="openMasterWorkspace()">↩ 回到主工作区</button></div>' : ''}
 
 ${!isWorktreeSubview ? `<div class="dk-gov-card">
-<div class="dk-gov-title">Domain baseline governance</div>
+<div class="dk-gov-title">领域基线治理</div>
 <div class="dk-gov-actions">
-<button class="dk-btn dk-btn-primary dk-btn-main" data-domain-action="runDomainBaselineAggregation" onclick="runDomainBaselineAggregation()" ${governanceTaskId ? '' : 'disabled'}>Aggregate domain baselines</button>
-<button class="dk-btn dk-btn-danger" data-domain-action="reviewSuspectedDomains" onclick="reviewSuspectedDomains()" ${governanceTaskId ? '' : 'disabled'}>Review suspected domains</button>
-<button class="dk-btn dk-btn-ghost" data-domain-action="previewDomainBaselineSummary" onclick="previewDomainBaselineSummary()" ${governanceTaskId ? '' : 'disabled'}>Preview domain index</button>
+<button class="dk-btn dk-btn-primary dk-btn-main" data-domain-action="runDomainBaselineAggregation" onclick="runDomainBaselineAggregation()" ${governanceTaskId ? '' : 'disabled'}>领域基线聚合</button>
+<button class="dk-btn dk-btn-danger" data-domain-action="reviewSuspectedDomains" onclick="reviewSuspectedDomains()" ${governanceTaskId ? '' : 'disabled'}>疑似领域裁决</button>
+<button class="dk-btn dk-btn-ghost" data-domain-action="previewDomainBaselineSummary" onclick="previewDomainBaselineSummary()" ${governanceTaskId ? '' : 'disabled'}>领域总览预览</button>
 </div>
 </div>` : ''}
 
