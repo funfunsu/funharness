@@ -42,6 +42,7 @@ import { SchedulerRegistry } from './schedulerRegistry';
 import { HarnessActionsService } from './services/harnessActionsService';
 import { ProjectStructureService } from './services/projectStructureService';
 import { AutoPollService } from './services/autoPollService';
+import { CapabilityDeltaService } from './services/capabilityDeltaService';
 
 let harness: Harness | undefined;
 let workspaceRoot: string;
@@ -68,6 +69,30 @@ export function activate(context: vscode.ExtensionContext): void {
             } catch {
                 harness!.panel ? harness!.panel.reveal() : harness!.createPanel();
             }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('fun-harness.reviewSuspectedDomains', async () => {
+            await harness?.handleReviewSuspectedDomainsCommand();
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('fun-harness.runDomainBaselineAggregation', async () => {
+            await harness?.handleRunDomainBaselineAggregationCommand();
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('fun-harness.previewDomainBaselineSummary', async () => {
+            await harness?.handlePreviewDomainBaselineSummaryCommand();
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('fun-harness.applyDomainAdjudication', async () => {
+            await harness?.handleApplyDomainAdjudicationCommand();
         })
     );
 }
@@ -107,6 +132,7 @@ class Harness {
     private aiDispatchService!: AiDispatchService;
     private projectStructureService!: ProjectStructureService;
     private autoPollService!: AutoPollService;
+    private capabilityDeltaService!: CapabilityDeltaService;
     private autoAdvanceRunning: boolean = false;
     private openedWorkspacePath: string = '';
     private initializationError?: string;
@@ -138,6 +164,7 @@ class Harness {
                 onStatusChange: () => this.render(),
                 dispatchTodo: async (todoContent, worktreePath, prompt) => this.dispatchTodoToAi(todoContent, worktreePath, prompt),
             });
+            this.capabilityDeltaService = new CapabilityDeltaService();
             this.schedulerRegistry = new SchedulerRegistry(
                 (task) => this.getIterationDir(task),
                 workspaceRoot,
@@ -174,6 +201,10 @@ class Harness {
                 setPage: (page) => { this.currentPage = page; },
                 reloadTasks: () => { if (this.isWorktreeSubview()) { this.loadConfig(); } this.loadTasks(); },
                 render: () => this.render(),
+                generateCapabilityDelta: async (taskId) => this.handleGenerateCapabilityDelta(taskId),
+                runDomainBaselineAggregation: async (taskId) => this.handleRunDomainBaselineAggregationByTaskId(taskId),
+                reviewSuspectedDomains: async (taskId) => this.handleReviewSuspectedDomainsByTaskId(taskId),
+                previewDomainBaselineSummary: async (taskId) => this.handlePreviewDomainBaselineSummaryByTaskId(taskId),
                 openCustomPrompt: (step) => this.handleOpenCustomPrompt(step),
                 saveGit: (frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode) => this.handleSaveGit(frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode),
                 saveAdvancedConfig: (msg) => this.handleSaveAdvancedConfig(msg),
@@ -512,10 +543,6 @@ class Harness {
             }
             if (severity !== 'bad' && !rawHealth.mergeRouteReady) {
                 healthReasons.push('目标合并分支未配置');
-                severity = 'warn';
-            }
-            if (severity === 'good' && !artifacts.testcase && task.stage !== STAGE.WRITING_REQUIREMENT && task.stage !== STAGE.WRITING_DESIGN) {
-                healthReasons.push('缺少 testcase 产物');
                 severity = 'warn';
             }
             if (severity === 'good' && !artifacts.tasks && task.stage === STAGE.DEVELOPING) {
@@ -1065,6 +1092,148 @@ class Harness {
         const openedPath = this.openedWorkspacePath || workspaceRoot;
         const inWorktreeDir = openedPath.includes(path.sep + 'worktrees' + path.sep) || openedPath.endsWith('-worktree');
         return this.configMeta.origin === 'worktreeSnapshot' || inWorktreeDir;
+    }
+
+    /**
+     * Run suspected-domain review action from command palette in main panel context.
+     */
+    async handleReviewSuspectedDomainsCommand(): Promise<void> {
+        const task = await this.pickTaskForDomainGovernance();
+        if (!task) {
+            return;
+        }
+        await this.handleReviewSuspectedDomainsByTaskId(task.id);
+        this.render();
+    }
+
+    /**
+     * Run domain-baseline aggregation from command palette in main panel context.
+     */
+    async handleRunDomainBaselineAggregationCommand(): Promise<void> {
+        const task = await this.pickTaskForDomainGovernance();
+        if (!task) {
+            return;
+        }
+        await this.handleRunDomainBaselineAggregationByTaskId(task.id);
+        this.render();
+    }
+
+    /**
+     * Open domain baseline index preview from command palette in main panel context.
+     */
+    async handlePreviewDomainBaselineSummaryCommand(): Promise<void> {
+        const task = await this.pickTaskForDomainGovernance();
+        if (!task) {
+            return;
+        }
+        await this.handlePreviewDomainBaselineSummaryByTaskId(task.id);
+        this.render();
+    }
+
+    /**
+     * Trigger main-panel aggregation route for one task context.
+     */
+    private async handleRunDomainBaselineAggregationByTaskId(taskId: string): Promise<void> {
+        if (this.isWorktreeSubview()) {
+            vscode.window.showWarningMessage('领域基线聚合仅支持主面板执行');
+            return;
+        }
+        await this.actionsService.reviewSuspectedDomainsByTaskId(taskId);
+    }
+
+    /**
+     * Trigger suspected-domain review route for one task context.
+     */
+    private async handleReviewSuspectedDomainsByTaskId(taskId: string): Promise<void> {
+        if (this.isWorktreeSubview()) {
+            vscode.window.showWarningMessage('疑似新领域裁决仅支持主面板执行');
+            return;
+        }
+        await this.actionsService.reviewSuspectedDomainsByTaskId(taskId);
+    }
+
+    /**
+     * Open docs/domains/_index.md as domain baseline summary preview.
+     */
+    private async handlePreviewDomainBaselineSummaryByTaskId(taskId: string): Promise<void> {
+        if (this.isWorktreeSubview()) {
+            vscode.window.showWarningMessage('领域总览预览仅支持主面板执行');
+            return;
+        }
+        if (!this.tasks.some(item => item.id === taskId)) {
+            vscode.window.showWarningMessage(`未找到任务：${taskId}`);
+            return;
+        }
+
+        const indexPath = path.join(this.getMasterRoot(), 'docs', 'domains', '_index.md');
+        if (!fs.existsSync(indexPath)) {
+            vscode.window.showWarningMessage('尚未生成 docs/domains/_index.md，请先执行 Aggregate domain baselines');
+            return;
+        }
+
+        const doc = await vscode.workspace.openTextDocument(indexPath);
+        await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+    }
+
+    /**
+     * Run manual domain adjudication action from command palette in main panel context.
+     */
+    async handleApplyDomainAdjudicationCommand(): Promise<void> {
+        const task = await this.pickTaskForDomainGovernance();
+        if (!task) {
+            return;
+        }
+        await this.actionsService.applyDomainAdjudicationByTaskId(task.id);
+        this.render();
+    }
+
+    /**
+     * Pick one active task as governance action context.
+     */
+    private async pickTaskForDomainGovernance(): Promise<Task | null> {
+        const activeTasks = this.tasks.filter(task => task.stage !== STAGE.DONE);
+        if (activeTasks.length === 0) {
+            vscode.window.showWarningMessage('没有可用的迭代任务用于领域治理操作');
+            return null;
+        }
+
+        const selected = await vscode.window.showQuickPick(
+            activeTasks.map(task => ({
+                label: task.name,
+                description: task.id,
+                detail: task.stage,
+                task,
+            })),
+            { title: '选择任务', ignoreFocusOut: true },
+        );
+
+        return selected ? selected.task : null;
+    }
+
+    /**
+     * Generate capability-delta.json for one iteration from worktree-only route.
+     */
+    private async handleGenerateCapabilityDelta(taskId: string): Promise<void> {
+        if (!this.isWorktreeSubview()) {
+            vscode.window.showWarningMessage('仅 worktree 子视图支持生成 capability delta');
+            return;
+        }
+
+        const task = this.tasks.find(item => item.id === taskId);
+        if (!task) {
+            vscode.window.showWarningMessage(`未找到任务：${taskId}`);
+            return;
+        }
+
+        const iterationPath = this.getIterationDir(task);
+        try {
+            const result = this.capabilityDeltaService.generateForIteration(workspaceRoot, iterationPath);
+            const relPath = path.relative(workspaceRoot, result.deltaPath).replace(/\\/g, '/');
+            vscode.window.showInformationMessage(`✅ capability delta 已生成：${relPath}`);
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error || 'unknown');
+            vscode.window.showErrorMessage(`生成 capability delta 失败：${detail}`);
+        }
     }
 
     stopAllSchedulers(): void {

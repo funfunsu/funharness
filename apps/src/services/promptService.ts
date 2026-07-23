@@ -9,6 +9,19 @@ export interface RenderedPrompt {
     path: string;
 }
 
+export interface DomainSummaryPromptCapability {
+    reqId: string;
+    title: string;
+    status: string;
+}
+
+export interface DomainSummaryPromptInput {
+    canonical: string;
+    displayName: string;
+    capabilities: DomainSummaryPromptCapability[];
+    registryCanonicals: string[];
+}
+
 export class PromptService {
     private readonly systemPromptDir = 'system-prompts';
     private readonly systemPromptFiles: Record<string, string> = {
@@ -60,6 +73,54 @@ export class PromptService {
             source: resolved.source,
             path: resolved.path,
         };
+    }
+
+    /**
+     * Build optional AI refinement prompt for domain capability summaries.
+     */
+    buildDomainSummaryPrompt(input: DomainSummaryPromptInput): string {
+        return PromptService.buildDomainSummaryPrompt(input);
+    }
+
+    /**
+     * Build optional AI refinement prompt for domain capability summaries.
+     */
+    static buildDomainSummaryPrompt(input: DomainSummaryPromptInput): string {
+        const canonical = (input.canonical || '').trim();
+        const displayName = (input.displayName || canonical).trim();
+        const capabilities = (input.capabilities || [])
+            .map(item => ({
+                reqId: (item.reqId || '').trim(),
+                title: (item.title || '').trim(),
+                status: (item.status || '').trim() || 'active',
+            }))
+            .filter(item => item.reqId.length > 0);
+        const registryCanonicals = Array.from(new Set((input.registryCanonicals || [])
+            .map(item => (item || '').trim())
+            .filter(Boolean))).sort((left, right) => left.localeCompare(right));
+
+        const payload = {
+            domain: {
+                canonical,
+                displayName,
+            },
+            canonical,
+            displayName,
+            capabilities,
+            registryCanonicals,
+        };
+
+        return [
+            '你是领域能力摘要润色助手。',
+            `领域：${displayName}${canonical ? `（${canonical}）` : ''}`,
+            '你只能润色已存在 capabilities 的 title 文案，不得新增/删除 capability，不得改 reqId，不得改 status。',
+            '你不得创建新领域名，canonical 必须保留在 registryCanonicals 中。',
+            '若输入存在不清晰描述，可保持原文，不得臆造事实。',
+            '仅返回 JSON，不要返回 Markdown，不要解释。',
+            '返回格式：{"capabilities":[{"reqId":"Req-...","title":"..."}]}',
+            '',
+            JSON.stringify(payload, null, 2),
+        ].join('\n');
     }
 
     /** 项目级可选覆盖目录：<workspaceRoot>/.harness/prompts（默认不存在，存在时优先生效）。 */

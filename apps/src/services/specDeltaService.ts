@@ -444,7 +444,8 @@ export class SpecDeltaService {
 
         const files = new Set<string>();
         for (const repo of repos) {
-            const output = this.runGit(repo.dir, ['status', '--porcelain']);
+            // Use untracked=all so untracked directories are expanded into concrete files.
+            const output = this.runGit(repo.dir, ['status', '--porcelain=v1', '--untracked-files=all']);
             if (!output.trim()) {
                 continue;
             }
@@ -455,10 +456,51 @@ export class SpecDeltaService {
                     continue;
                 }
                 const target = raw.includes(' -> ') ? raw.split(' -> ')[1].trim() : raw;
-                files.add((repo.prefix + target).replace(/\\/g, '/'));
+                const normalizedTarget = (repo.prefix + target).replace(/\\/g, '/');
+                files.add(normalizedTarget);
+
+                // Defensive fallback: if a status line still points to a directory,
+                // expand to nested files so downstream drift rules can match filenames.
+                if (normalizedTarget.endsWith('/')) {
+                    const absDir = path.join(repo.dir, target);
+                    if (fs.existsSync(absDir)) {
+                        const dirPrefix = normalizedTarget;
+                        for (const nested of this.collectFilesRecursively(absDir)) {
+                            files.add((dirPrefix + nested).replace(/\\/g, '/'));
+                        }
+                    }
+                }
             }
         }
         return Array.from(files.values());
+    }
+
+    private collectFilesRecursively(rootDir: string): string[] {
+        const results: string[] = [];
+        const stack = [rootDir];
+        while (stack.length > 0) {
+            const current = stack.pop();
+            if (!current) {
+                continue;
+            }
+            let entries: fs.Dirent[] = [];
+            try {
+                entries = fs.readdirSync(current, { withFileTypes: true });
+            } catch {
+                continue;
+            }
+            for (const entry of entries) {
+                const absPath = path.join(current, entry.name);
+                if (entry.isDirectory()) {
+                    stack.push(absPath);
+                    continue;
+                }
+                if (entry.isFile()) {
+                    results.push(path.relative(rootDir, absPath).replace(/\\/g, '/'));
+                }
+            }
+        }
+        return results;
     }
 
     private runGit(cwd: string, args: string[]): string {

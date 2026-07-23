@@ -51,7 +51,7 @@ export class TaskScheduler {
             return [];
         }
         return text
-            .split(/[\n,，;；]+/)
+            .split(/[\n,，、;；]+/)
             .map(item => item.trim())
             .filter(Boolean);
     }

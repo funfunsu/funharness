@@ -1,0 +1,335 @@
+{
+  "iteration": "domain-knowledge",
+  "generatedAt": "2020-09-14T07:15:31.000Z",
+  "contentHash": "18c95654b2871f618c4419ab7ba65f6ae06814f2",
+  "domains": [
+    {
+      "canonical": null,
+      "rawDomain": "domain-knowledge",
+      "isSuspectedNew": true,
+      "capabilities": [
+        {
+          "reqId": "Req-dk-1",
+          "title": "领域注册表作为规范名唯一来源",
+          "userStory": "作为流水线治理者，我希望所有领域名都来自一份受控的领域注册表，以便于杜绝同类领域多名发散，保证沉淀的是可信资产而非垃圾文档",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-dk-10",
+          "title": "领域总览 _index.md 与人机维护边界说明",
+          "userStory": "作为文档读者，我希望有一份领域总览并清楚哪些由机器维护哪些可人工编辑，以便于不误改机器托管区也知道该改哪里",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-dk-11",
+          "title": "AI 使用边界",
+          "userStory": "作为成本与真实性负责人，我希望明确 AI 使用边界，以便于控制成本并杜绝 AI 编造不存在的能力",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-dk-12",
+          "title": "机器账本与人类文档双轨并存",
+          "userStory": "作为架构治理者，我希望机器账本与人类领域文档双轨并存互不污染，以便于各司其职账本供门禁追溯文档供人阅读",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-dk-2",
+          "title": "requirements 机器块显式声明受约束的 domain 字段",
+          "userStory": "作为需求作者/Requirement Agent，我希望每条需求显式声明所属领域且取值只能来自注册表规范名，以便于领域归类准确不依赖关键词猜测",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-dk-3",
+          "title": "领域能力基线文档模板与人机分区",
+          "userStory": "作为文档维护者，我希望领域文档采用固定模板并物理隔离机器区与人工区，以便于机器更新时永不覆盖人工补充让文档长期可维护",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-dk-4",
+          "title": "领域文档 Upsert 就地更新语义",
+          "userStory": "作为文档维护者，我希望重复评审与多次迭代以稳定 ID 主键就地更新而非追加，以便于文档始终反映当前基线而非历史堆积",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-dk-5",
+          "title": "worktree 侧确定性抽取产出 capability-delta.json",
+          "userStory": "作为迭代执行者，我希望 worktree 内只做确定性抽取并输出稳定中间产物，以便于主面板聚合无需回读迭代代码避免复杂度回潮",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-dk-6",
+          "title": "主面板单写者领域基线聚合",
+          "userStory": "作为主干维护者，我希望 docs/domains 永远只有一个写入者主面板，以便于并行迭代合并回主干不产生并发写冲突",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-dk-7",
+          "title": "新领域发散防护与人工裁决门",
+          "userStory": "作为治理者，我希望只有在领域归属存在歧义时才拦截人工确认，以便于既防止领域集合膨胀又不在无歧义时打扰人",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-dk-8",
+          "title": "聚合幂等与已入库迭代跟踪",
+          "userStory": "作为主面板操作者，我希望重复点击聚合或积压多迭代时不会重复写入，以便于变更历史不重复基线保持一致",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-dk-9",
+          "title": "能力废弃/删除的状态语义",
+          "userStory": "作为文档读者，我希望被删除或废弃的能力如实反映而非残留幽灵能力，以便于基线始终真实可追溯",
+          "status": "removed"
+        }
+      ],
+      "contracts": [
+        {
+          "id": "API-DK-12",
+          "reqId": "Req-dk-6",
+          "method": "COMMAND",
+          "path": "Extension.runDomainBaselineAggregation",
+          "requestShape": {
+            "enableAiRefinement": "boolean"
+          },
+          "responseShape": {
+            "processedCount": "number",
+            "skippedCount": "number",
+            "suspectedCount": "number"
+          }
+        },
+        {
+          "id": "API-DK-11",
+          "reqId": "Req-dk-5",
+          "method": "MESSAGE",
+          "path": "HarnessMessageController.generateCapabilityDelta",
+          "requestShape": {
+            "type": "generateCapabilityDelta",
+            "iterationPath": "string"
+          },
+          "responseShape": {
+            "deltaPath": "string",
+            "contentHash": "string"
+          }
+        },
+        {
+          "id": "API-DK-4",
+          "reqId": "Req-dk-5",
+          "method": "SERVICE",
+          "path": "CapabilityDeltaService.generateForIteration",
+          "requestShape": {
+            "repoRoot": "string",
+            "iterationPath": "string"
+          },
+          "responseShape": {
+            "delta": "CapabilityDelta"
+          }
+        },
+        {
+          "id": "API-DK-5",
+          "reqId": "Req-dk-5",
+          "method": "SERVICE",
+          "path": "CapabilityDeltaService.validateDelta",
+          "requestShape": {
+            "delta": "CapabilityDelta"
+          },
+          "responseShape": {
+            "valid": "boolean",
+            "errors": "string[]",
+            "contentHash": "string"
+          }
+        },
+        {
+          "id": "API-DK-6",
+          "reqId": "Req-dk-4",
+          "method": "SERVICE",
+          "path": "DomainKnowledgeAggregateService.aggregatePendingDeltas",
+          "requestShape": {
+            "repoRoot": "string",
+            "enableAiRefinement": "boolean"
+          },
+          "responseShape": {
+            "processed": "AggregationRecord[]",
+            "skipped": "AggregationRecord[]",
+            "suspectedDomains": "SuspectedDomainRecord[]"
+          }
+        },
+        {
+          "id": "API-DK-9",
+          "reqId": "Req-dk-7",
+          "method": "SERVICE",
+          "path": "DomainKnowledgeAggregateService.collectSuspectedDomains",
+          "requestShape": {
+            "deltas": "CapabilityDelta[]"
+          },
+          "responseShape": {
+            "suspectedDomains": "SuspectedDomainRecord[]"
+          }
+        },
+        {
+          "id": "API-DK-7",
+          "reqId": "Req-dk-3",
+          "method": "SERVICE",
+          "path": "DomainKnowledgeAggregateService.upsertDomainDocument",
+          "requestShape": {
+            "canonical": "string",
+            "domainDelta": "AggregatedDomainDelta",
+            "registryEntry": "DomainRegistryEntry"
+          },
+          "responseShape": {
+            "filePath": "string",
+            "changeSummary": "DomainDocumentChangeSummary"
+          }
+        },
+        {
+          "id": "API-DK-8",
+          "reqId": "Req-dk-10",
+          "method": "SERVICE",
+          "path": "DomainKnowledgeAggregateService.upsertDomainIndex",
+          "requestShape": {
+            "repoRoot": "string",
+            "domains": "DomainIndexRow[]"
+          },
+          "responseShape": {
+            "filePath": "string"
+          }
+        },
+        {
+          "id": "API-DK-3",
+          "reqId": "Req-dk-7",
+          "method": "SERVICE",
+          "path": "DomainRegistryService.applyAdjudication",
+          "requestShape": {
+            "repoRoot": "string",
+            "decision": "mergeExisting|createCanonical|appendAlias",
+            "rawDomain": "string",
+            "targetCanonical": "string|null",
+            "displayName": "string|null"
+          },
+          "responseShape": {
+            "updatedRegistry": "DomainRegistry"
+          }
+        },
+        {
+          "id": "API-DK-1",
+          "reqId": "Req-dk-1",
+          "method": "SERVICE",
+          "path": "DomainRegistryService.loadRegistry",
+          "requestShape": {
+            "repoRoot": "string"
+          },
+          "responseShape": {
+            "registry": "DomainRegistry",
+            "validationErrors": "RegistryConflict[]"
+          }
+        },
+        {
+          "id": "API-DK-2",
+          "reqId": "Req-dk-1",
+          "method": "SERVICE",
+          "path": "DomainRegistryService.normalizeDomain",
+          "requestShape": {
+            "rawDomain": "string|null",
+            "requirementId": "string",
+            "fallbackSignals": "DomainFallbackSignals"
+          },
+          "responseShape": {
+            "canonical": "string|null",
+            "matchedBy": "explicit|canonical|alias|reqIdPrefix|artifactPathPattern|contractPattern|keywordMap|none",
+            "isSuspectedNew": "boolean"
+          }
+        },
+        {
+          "id": "API-DK-10",
+          "reqId": "Req-dk-2",
+          "method": "SERVICE",
+          "path": "PromptService.buildDomainSummaryPrompt",
+          "requestShape": {
+            "canonical": "string",
+            "displayName": "string",
+            "capabilities": "CapabilityRow[]",
+            "registryCanonicals": "string[]"
+          },
+          "responseShape": {
+            "prompt": "string"
+          }
+        }
+      ],
+      "invariants": [
+        {
+          "id": "INV-DK-1",
+          "reqId": "Req-dk-1",
+          "text": "registry.yaml 中 canonical 唯一且 alias 只能映射到一个 canonical，冲突即阻断"
+        },
+        {
+          "id": "INV-DK-10",
+          "reqId": "Req-dk-8",
+          "text": "同一 iteration+contentHash 重复聚合不得新增 changelog 或重复能力行"
+        },
+        {
+          "id": "INV-DK-11",
+          "reqId": "Req-dk-9",
+          "text": "deprecated 或 removed 能力保留行记录不物理删除"
+        },
+        {
+          "id": "INV-DK-12",
+          "reqId": "Req-dk-10",
+          "text": "_index.md 以 canonical 为主键每个领域最多一行摘要"
+        },
+        {
+          "id": "INV-DK-13",
+          "reqId": "Req-dk-11",
+          "text": "worktree 抽取与结构化 upsert 全程零 AI，AI 仅用于主面板可选润色"
+        },
+        {
+          "id": "INV-DK-14",
+          "reqId": "Req-dk-12",
+          "text": "机器账本、单迭代摘要与领域基线三类产物互不回写"
+        },
+        {
+          "id": "INV-DK-15",
+          "reqId": "Req-dk-6",
+          "text": "所有读写路径必须按当前仓库根目录解析且 multiRepo 下不得跨 repo 越界"
+        },
+        {
+          "id": "INV-DK-2",
+          "reqId": "Req-dk-2",
+          "text": "显式 domain 字段优先于所有兜底归类策略"
+        },
+        {
+          "id": "INV-DK-3",
+          "reqId": "Req-dk-3",
+          "text": "正式领域文档中任一能力、契约、不变量必须绑定可追溯 Req-ID"
+        },
+        {
+          "id": "INV-DK-4",
+          "reqId": "Req-dk-3",
+          "text": "机器只能修改 AUTO:* 标记块，HUMAN:* 内容逐字节保留"
+        },
+        {
+          "id": "INV-DK-5",
+          "reqId": "Req-dk-4",
+          "text": "同一领域文档中相同 Req-ID 的能力行最多一条"
+        },
+        {
+          "id": "INV-DK-6",
+          "reqId": "Req-dk-4",
+          "text": "同一领域文档中相同 method+path 的契约最多一条且不变量按文本指纹去重"
+        },
+        {
+          "id": "INV-DK-7",
+          "reqId": "Req-dk-5",
+          "text": "worktree 侧只能写 capability-delta.json 不得直接写 docs/domains"
+        },
+        {
+          "id": "INV-DK-8",
+          "reqId": "Req-dk-6",
+          "text": "主面板聚合只能消费 capability-delta.json 不得回读迭代源代码"
+        },
+        {
+          "id": "INV-DK-9",
+          "reqId": "Req-dk-7",
+          "text": "未裁决的疑似新领域不得写入正式 docs/domains/<domain>.md"
+        }
+      ]
+    }
+  ]
+}
