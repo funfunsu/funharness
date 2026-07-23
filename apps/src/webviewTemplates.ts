@@ -361,6 +361,7 @@ export function buildMainPageHtml(
     const visibleTaskViews = isWorktreeSubview
         ? taskViews.slice(0, 1)
         : taskViews;
+    const governanceTaskId = visibleTaskViews[0]?.task.id || '';
 
     return `<!DOCTYPE html>
 <html>
@@ -474,6 +475,21 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .overview-table td{color:#ddd;padding:2px 6px}
 .overview-table tr.blocked td{color:#ff9a9a}
 .overview-table tr.warn td{color:#ffd37a}
+.dk-gov-card{margin:0 0 12px;padding:10px 12px;background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-editorWidget-border);border-radius:8px}
+.dk-gov-title{font-weight:600;font-size:13px;margin-bottom:8px;color:var(--vscode-foreground)}
+.dk-gov-actions{display:flex;gap:8px;flex-wrap:wrap}
+.dk-btn{height:28px;line-height:28px;padding:0 12px;border-radius:2px;border:1px solid transparent;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;user-select:none}
+.dk-btn:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
+.dk-btn[disabled]{opacity:.4;pointer-events:none}
+.dk-btn-primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
+.dk-btn-primary:hover{background:var(--vscode-button-hoverBackground)}
+.dk-btn-secondary{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}
+.dk-btn-secondary:hover{background:var(--vscode-button-secondaryHoverBackground)}
+.dk-btn-ghost{background:transparent;color:var(--vscode-foreground);border-color:var(--vscode-panel-border)}
+.dk-btn-danger{background:transparent;color:var(--vscode-errorForeground);border-color:var(--vscode-errorForeground)}
+.dk-btn-main{font-weight:600}
+.dk-spin{animation:dk-spin 1s linear infinite}
+@keyframes dk-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -491,6 +507,15 @@ ${!isWorktreeSubview ? `<div class="nav">
 </div>
 
 ${isWorktreeSubview ? '<div class="mode-banner">子面板仅保留当前迭代任务操作，不提供高级设置与创建迭代功能。<button class="toolbar-btn" style="margin-left:8px" onclick="openMasterWorkspace()">↩ 回到主工作区</button></div>' : ''}
+
+${!isWorktreeSubview ? `<div class="dk-gov-card">
+<div class="dk-gov-title">Domain baseline governance</div>
+<div class="dk-gov-actions">
+<button class="dk-btn dk-btn-primary dk-btn-main" data-domain-action="runDomainBaselineAggregation" onclick="runDomainBaselineAggregation()" ${governanceTaskId ? '' : 'disabled'}>Aggregate domain baselines</button>
+<button class="dk-btn dk-btn-danger" data-domain-action="reviewSuspectedDomains" onclick="reviewSuspectedDomains()" ${governanceTaskId ? '' : 'disabled'}>Review suspected domains</button>
+<button class="dk-btn dk-btn-ghost" data-domain-action="previewDomainBaselineSummary" onclick="previewDomainBaselineSummary()" ${governanceTaskId ? '' : 'disabled'}>Preview domain index</button>
+</div>
+</div>` : ''}
 
 ${!isWorktreeSubview && mainButtons.length > 0 ? `<div class="main-actions-card">
 <div class="main-actions-title">🛠 自定义操作（主面板）</div>
@@ -689,10 +714,46 @@ ${!isWorktreeSubview ? `<div class="fixed-bottom">
 
 <script>
 const v=acquireVsCodeApi();
+const isWorktreeSubview=${isWorktreeSubview ? 'true' : 'false'};
+const DOMAIN_GOVERNANCE_TASK_ID='${escapeHtml(governanceTaskId)}';
 const TODO_STATE_KEY='workspaceTodoState.v1';
 const TODO_SOURCE_PANEL=${isWorktreeSubview ? "'worktree'" : "'master'"};
 const TODO_INITIAL_TODOS=[];
 let todoState=loadTodoState();
+let domainActionLoading='';
+
+/** Render loading/disabled status for top-level domain-governance actions. */
+function setDomainActionLoading(action){
+    domainActionLoading=action||'';
+    const buttons=document.querySelectorAll('[data-domain-action]');
+    buttons.forEach((button)=>{
+        const key=button.getAttribute('data-domain-action')||'';
+        const shouldLock=!DOMAIN_GOVERNANCE_TASK_ID||!!domainActionLoading;
+        button.disabled=shouldLock;
+        if(domainActionLoading&&key===domainActionLoading){
+            button.innerHTML='<span class="codicon codicon-loading dk-spin" aria-hidden="true"></span><span>'+(button.dataset.label||button.innerText)+'</span>';
+        }else if(button.dataset&&button.dataset.label){
+            button.innerText=button.dataset.label;
+        }
+    });
+}
+
+/** Post a domain-governance action message to extension host with task context. */
+function postDomainGovernanceAction(type){
+    if(!DOMAIN_GOVERNANCE_TASK_ID||domainActionLoading){return;}
+    setDomainActionLoading(type);
+    v.postMessage({type,id:DOMAIN_GOVERNANCE_TASK_ID});
+    setTimeout(()=>setDomainActionLoading(''),1500);
+}
+
+/** Trigger main-panel domain baseline aggregation route. */
+function runDomainBaselineAggregation(){postDomainGovernanceAction('runDomainBaselineAggregation')}
+
+/** Trigger main-panel suspected-domain review route. */
+function reviewSuspectedDomains(){postDomainGovernanceAction('reviewSuspectedDomains')}
+
+/** Trigger main-panel domain index preview route. */
+function previewDomainBaselineSummary(){postDomainGovernanceAction('previewDomainBaselineSummary')}
 
 /** Escape raw text before writing into todo item HTML slots. */
 function escapeTodoHtml(value){
@@ -1114,6 +1175,9 @@ function pushDev(id){v.postMessage({type:'pushAndNextStage',id})}
 function specReview(id){v.postMessage({type:'specDeltaReview',id})}
 
 document.addEventListener('DOMContentLoaded',()=>{
+    const governanceButtons=document.querySelectorAll('[data-domain-action]');
+    governanceButtons.forEach((button)=>{button.dataset.label=button.innerText;});
+    setDomainActionLoading('');
     if(document.getElementById('workspace-todo-panel')){
         todoState.error=null;
         renderTodoPanel();

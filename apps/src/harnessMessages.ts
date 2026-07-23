@@ -17,6 +17,10 @@ export interface TodoMessageItem {
 export type HarnessMessage =
     | { type: 'page'; page: string }
     | { type: 'refresh' }
+    | { type: 'generateCapabilityDelta'; id: string }
+    | { type: 'runDomainBaselineAggregation'; id: string }
+    | { type: 'reviewSuspectedDomains'; id: string }
+    | { type: 'previewDomainBaselineSummary'; id: string }
     | { type: 'openCustomPrompt'; step: HarnessStep }
     | { type: 'saveGit'; fg: string; bg: string; bb: string; dr: boolean; mg?: string; md?: { frontend?: string; backend?: string; docs?: string; scripts?: string }; mode?: 'mono' | 'multi' }
     | { type: 'saveAdvancedConfig'; pc: string; mc: number; am: boolean; cm: boolean; ad: boolean; sk: string; ck: string; wsd: string; cps: string; prm: 'local' | 'local+ai'; srd: string; gl: 'relaxed' | 'standard' | 'strict'; cct: string; afm: boolean; pas: boolean }

@@ -4,7 +4,7 @@
  * Covers Req-2, Req-3, Req-4, Req-5, Req-6, Req-7 via TaskStoreService integration tests.
  *
  * Test runner: Node.js built-in test runner (`node --test`).
- * Prerequisite: `npm run compile` must have been run so that `../out/src/` contains compiled JS.
+ * Prerequisite: `npm run compile` must have been run so that `../out/` contains compiled JS.
  *
  * Each test creates an isolated tmp directory and cleans it up on completion so runs are
  * independent and idempotent.
@@ -16,13 +16,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { TaskStoreService } = require('../out/src/services/taskStoreService');
+const { TaskStoreService } = require('../out/services/taskStoreService');
 const {
     STAGE,
     BASE,
     HARNESS_STATE_FILE,
     HARNESS_STATE_ARCHIVE_FILE,
-} = require('../out/src/models');
+} = require('../out/models');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
