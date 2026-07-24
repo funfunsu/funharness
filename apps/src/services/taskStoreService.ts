@@ -1,8 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_ARCHIVE_FILE, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, ITERATION_ARCHIVE_SCHEMA_VERSION, IterationArchiveDocument, IterationArchiveItem, STAGE, Stage, Task, normalizeCustomButton } from '../models';
+import { BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_ARCHIVE_FILE, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, ITERATION_ARCHIVE_SCHEMA_VERSION, IterationArchiveDocument, IterationArchiveItem, STAGE, Stage, Task, normalizeCustomButton, resolveSpecFile, resolveTaskPlanFileForIteration } from '../models';
 import { appendHarnessLog } from './harnessLog';
 import { safeRemovePath } from './fileOps';
+import { buildTraceMatrixSnapshot, TraceMatrixSnapshot } from '../specTrace';
 
 const STAGE_ORDER: Stage[] = [
     STAGE.INITIALIZING,
@@ -23,6 +24,31 @@ export interface HarnessConfigMeta {
 
 export class TaskStoreService {
     constructor(private readonly workspaceRoot: string) {}
+
+    /**
+     * Build the latest Req-* trace snapshot for a task iteration using current spec artifacts.
+     * Returns empty-content derived results when optional artifacts are missing.
+     */
+    getRequirementTraceSnapshot(task: Task): TraceMatrixSnapshot {
+        const iterDir = this.getIterationDir(task);
+        const config = this.loadConfig();
+        const requirementsPath = resolveSpecFile(iterDir, config, 'requirements.md');
+        const designPath = resolveSpecFile(iterDir, config, 'design.md');
+        const testcasePath = resolveSpecFile(iterDir, config, 'testcase.md');
+        const tasksPath = resolveTaskPlanFileForIteration(iterDir, config);
+
+        const requirementsContent = this.readOptionalTextFile(requirementsPath);
+        const designContent = this.readOptionalTextFile(designPath);
+        const testcaseContent = this.readOptionalTextFile(testcasePath);
+        const tasksContent = this.readOptionalTextFile(tasksPath);
+
+        return buildTraceMatrixSnapshot(
+            requirementsContent,
+            designContent,
+            tasksContent,
+            testcaseContent,
+        );
+    }
 
     getIterationDir(task: Task): string {
         const meta = this.getConfigMeta();
@@ -515,5 +541,17 @@ export class TaskStoreService {
 
     private getConfigFile(): string {
         return path.join(this.workspaceRoot, BASE, 'config.json');
+    }
+
+    /** Read UTF-8 file content when present; returns empty string for missing/unreadable files. */
+    private readOptionalTextFile(filePath: string): string {
+        if (!filePath || !fs.existsSync(filePath)) {
+            return '';
+        }
+        try {
+            return fs.readFileSync(filePath, 'utf8');
+        } catch {
+            return '';
+        }
     }
 }

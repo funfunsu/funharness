@@ -68,6 +68,99 @@ interface DetectedApp {
     kind: DetectedAppKind;
 }
 
+export interface StructureGateViolation {
+    ruleId: string;
+    location: string;
+    message: string;
+    suggestion: string;
+}
+
+export interface StructureGateResult {
+    passed: boolean;
+    gateStatus: 'passed' | 'failed';
+    gateId: string;
+    checkedAt: string;
+    violations: StructureGateViolation[];
+    requiredSections: string[];
+    requiredFields: string[];
+}
+
+/** Error raised when structure quality gate fails before artifact write. */
+export class StructureGateFailedError extends Error {
+    readonly code = 'STRUCTURE_GATE_FAILED';
+
+    constructor(public readonly gate: StructureGateResult) {
+        super(`STRUCTURE_GATE_FAILED: gateId=${gate.gateId}; violations=${gate.violations.length}`);
+        this.name = 'StructureGateFailedError';
+    }
+}
+
+/** Contract for a sample profile used by sample-driven project-structure extraction. */
+export interface ProjectStructureSampleProfile {
+    id: string;
+    name: string;
+    schemaVersion: string;
+    exemplarMarkdown: string;
+    includePatterns: string[];
+    excludePatterns: string[];
+}
+
+/** Resolved sample profile with provenance details for audit and diagnostics. */
+export interface ProjectStructureSampleProfileLoadResult {
+    profile: ProjectStructureSampleProfile;
+    source: 'sample-file' | 'root-structure' | 'bundled-default';
+    resolvedPath?: string;
+}
+
+/** Error raised when a required sample profile file is missing or unreadable. */
+export class SampleProfileUnavailableError extends Error {
+    readonly code = 'SAMPLE_PROFILE_UNAVAILABLE';
+    readonly sampleProfileId: string;
+    readonly attemptedPaths: string[];
+
+    constructor(sampleProfileId: string, attemptedPaths: string[], reason: string) {
+        super(`SAMPLE_PROFILE_UNAVAILABLE: ${reason}`);
+        this.name = 'SampleProfileUnavailableError';
+        this.sampleProfileId = sampleProfileId;
+        this.attemptedPaths = attemptedPaths;
+    }
+}
+
+/** Error raised when granularity rule set is contradictory or invalid. */
+export class GranularityRuleConflictError extends Error {
+    readonly code = 'GRANULARITY_RULE_CONFLICT';
+    readonly profileId: string;
+
+    constructor(profileId: string, reason: string) {
+        super(`GRANULARITY_RULE_CONFLICT: ${reason}`);
+        this.name = 'GranularityRuleConflictError';
+        this.profileId = profileId;
+    }
+}
+
+/** Input payload aligned with design API-1 contract for extraction requests. */
+export interface ProjectStructureExtractionInput {
+    workspaceRoot: string;
+    sampleProfileId: string;
+    granularityProfileId: string;
+    extractionMode: 'sampleDriven' | 'legacy';
+    sampleProfile: ProjectStructureSampleProfile;
+    granularityRuleSet: ProjectStructureGranularityRuleSet;
+}
+
+/** Rule set aligned with design Model-2 for extraction granularity control. */
+export interface ProjectStructureGranularityRuleSet {
+    id: string;
+    maxDepth: number;
+    mustExpandDomains: string[];
+    collapsePatterns: string[];
+    dedupeStrategy: 'byPath' | 'bySemantic';
+}
+
+export interface ProjectStructureExtractionBuildOptions {
+    requireSampleFile?: boolean;
+}
+
 /** Source-code file extensions worth surfacing in a concise structure tree. */
 const SOURCE_FILE_PATTERN = /\.(ts|tsx|js|jsx|mjs|cjs|vue|java|kt|py|go|rs)$/i;
 /** Max notable files listed per directory before collapsing into a summary line. */
@@ -78,6 +171,8 @@ export class ProjectStructureService {
     private monorepoFrontendDir: string | undefined;
     private monorepoBackendDir: string | undefined;
     private monorepoMode = false;
+    private activeGranularityRuleSet: ProjectStructureGranularityRuleSet | undefined;
+    private lastStructureGateResult: StructureGateResult | undefined;
 
     constructor(
         private readonly workspaceRoot: string,
@@ -227,10 +322,183 @@ export class ProjectStructureService {
             if (!content) {
                 return false;
             }
+            const gate = this.validateStructureQuality(content, {
+                requiredSections: ['项目结构树', '关键模块说明'],
+                requiredFields: ['title', 'sections', 'domainNodes'],
+            });
+            this.lastStructureGateResult = gate;
+            this.appendStructureGateLog(gate, previewPath);
+            if (!gate.passed) {
+                return false;
+            }
             this.writeRootStructure(content);
             return true;
         } catch {
             return false;
+        }
+    }
+
+    /** Return the latest structure-quality gate decision for UI/log consumers. */
+    getLastStructureGateResult(): StructureGateResult | undefined {
+        return this.lastStructureGateResult;
+    }
+
+    /**
+     * Validate structure artifact against requiredSections/requiredFields and derive gateStatus.
+     * Missing requirements produce failed gate with structured violations.
+     */
+    validateStructureQuality(
+        structureContent: string,
+        contract: { requiredSections: string[]; requiredFields: string[] },
+    ): StructureGateResult {
+        const checkedAt = new Date().toISOString();
+        const gateId = `structure-gate-${Date.now()}`;
+        const violations: StructureGateViolation[] = [];
+        const normalizedContent = structureContent || '';
+        const lines = normalizedContent.split(/\r?\n/);
+
+        const inferredTitle = this.extractStructureTitle(lines);
+        const inferredSections = this.extractStructureSections(lines);
+        const inferredDomainNodes = this.extractStructureDomainNodes(lines);
+
+        for (const sectionName of contract.requiredSections) {
+            if (!this.hasRequiredSection(sectionName, lines)) {
+                violations.push({
+                    ruleId: 'SG-REQ-SECTION',
+                    location: 'structureContent',
+                    message: `缺失必填段落：${sectionName}`,
+                    suggestion: `补充段落或等价信息以满足 requiredSections(${sectionName})`,
+                });
+            }
+        }
+
+        for (const fieldName of contract.requiredFields) {
+            if (!this.hasRequiredField(fieldName, {
+                title: inferredTitle,
+                sections: inferredSections,
+                domainNodes: inferredDomainNodes,
+            })) {
+                violations.push({
+                    ruleId: 'SG-REQ-FIELD',
+                    location: fieldName,
+                    message: `缺失必填结构字段：${fieldName}`,
+                    suggestion: `补全字段 ${fieldName} 对应的可解析信息`,
+                });
+            }
+        }
+
+        return {
+            passed: violations.length === 0,
+            gateStatus: violations.length === 0 ? 'passed' : 'failed',
+            gateId,
+            checkedAt,
+            violations,
+            requiredSections: [...contract.requiredSections],
+            requiredFields: [...contract.requiredFields],
+        };
+    }
+
+    /** Persist gate decision for traceability and later troubleshooting. */
+    private appendStructureGateLog(gate: StructureGateResult, sourcePath: string): void {
+        try {
+            const logPath = path.join(this.getStructureRoot(), BASE, 'project-structure-gate.log');
+            fs.mkdirSync(path.dirname(logPath), { recursive: true });
+            const payload = {
+                at: gate.checkedAt,
+                gateId: gate.gateId,
+                gateStatus: gate.gateStatus,
+                passed: gate.passed,
+                sourcePath,
+                violations: gate.violations,
+                requiredSections: gate.requiredSections,
+                requiredFields: gate.requiredFields,
+            };
+            fs.appendFileSync(logPath, `${JSON.stringify(payload)}\n`, 'utf8');
+        } catch {
+            // Best-effort logging only; gate decision itself remains authoritative.
+        }
+    }
+
+    /** Extract title from first markdown heading or first non-empty line. */
+    private extractStructureTitle(lines: string[]): string {
+        for (const line of lines) {
+            const heading = line.match(/^\s*#\s+(.+)\s*$/);
+            if (heading) {
+                return heading[1].trim();
+            }
+        }
+        const firstText = lines.find(line => line.trim().length > 0);
+        return firstText ? firstText.trim() : '';
+    }
+
+    /** Extract second-level sections, with fallback to major tree root entries. */
+    private extractStructureSections(lines: string[]): string[] {
+        const sections = lines
+            .map(line => line.match(/^\s*##\s+(.+)\s*$/))
+            .filter((v): v is RegExpMatchArray => Boolean(v))
+            .map(match => match[1].trim())
+            .filter(Boolean);
+        if (sections.length > 0) {
+            return sections;
+        }
+        const fallback = lines
+            .map(line => line.match(/^\s*([\w\-.\[\]\/]+)\/?\s*(#.*)?$/))
+            .filter((v): v is RegExpMatchArray => Boolean(v))
+            .map(match => match[1].trim())
+            .filter(v => v.length > 0 && !v.startsWith('#'));
+        return Array.from(new Set(fallback)).slice(0, 8);
+    }
+
+    /** Extract domain node signals from tree lines and annotated node lines. */
+    private extractStructureDomainNodes(lines: string[]): string[] {
+        const nodes = lines
+            .map(line => line.match(/(?:├──|└──)\s*([^#\n]+)/))
+            .filter((v): v is RegExpMatchArray => Boolean(v))
+            .map(match => match[1].trim())
+            .filter(Boolean);
+        if (nodes.length > 0) {
+            return nodes;
+        }
+        const annotated = lines
+            .filter(line => /#\s*说明/.test(line) || /#\s*/.test(line))
+            .map(line => line.replace(/#.*$/, '').trim())
+            .filter(Boolean);
+        return Array.from(new Set(annotated)).slice(0, 32);
+    }
+
+    /** Section-level matching with semantic fallbacks for current structure markdown style. */
+    private hasRequiredSection(sectionName: string, lines: string[]): boolean {
+        const normalized = sectionName.trim();
+        if (!normalized) {
+            return true;
+        }
+        const fullText = lines.join('\n');
+        if (fullText.includes(normalized)) {
+            return true;
+        }
+        if (normalized === '项目结构树') {
+            return lines.some(line => /(?:├──|└──)/.test(line) || /\bsrc\/?\s*$/.test(line));
+        }
+        if (normalized === '关键模块说明') {
+            return lines.some(line => /#\s*说明/.test(line) || /#\s+.+/.test(line));
+        }
+        return false;
+    }
+
+    /** Required-field matching for inferred structure artifact fields. */
+    private hasRequiredField(
+        fieldName: string,
+        inferred: { title: string; sections: string[]; domainNodes: string[] },
+    ): boolean {
+        switch (fieldName) {
+            case 'title':
+                return inferred.title.trim().length > 0;
+            case 'sections':
+                return inferred.sections.length > 0;
+            case 'domainNodes':
+                return inferred.domainNodes.length > 0;
+            default:
+                return true;
         }
     }
 
@@ -242,6 +510,160 @@ export class ProjectStructureService {
         const targetPath = this.getIterationStructureFilePath(iterDir);
         fs.mkdirSync(path.dirname(targetPath), { recursive: true });
         fs.writeFileSync(targetPath, `${rootContent}\n`, 'utf8');
+    }
+
+    /**
+     * Build extraction input payload with a loaded sample profile.
+     * This is the canonical loading entry for sample-driven extraction.
+     */
+    buildExtractionInput(
+        sampleProfileId: string,
+        granularityProfileId: string,
+        extractionMode: 'sampleDriven' | 'legacy' = 'sampleDriven',
+        options?: ProjectStructureExtractionBuildOptions,
+    ): ProjectStructureExtractionInput {
+        const requireSampleFile = options?.requireSampleFile === true || extractionMode === 'sampleDriven';
+        const loaded = requireSampleFile
+            ? this.loadSampleProfileRequired(sampleProfileId)
+            : this.loadSampleProfile(sampleProfileId);
+        const granularityRuleSet = this.loadGranularityRuleSet(granularityProfileId);
+        return {
+            workspaceRoot: this.workspaceRoot,
+            sampleProfileId: loaded.profile.id,
+            granularityProfileId: granularityRuleSet.id,
+            extractionMode,
+            sampleProfile: loaded.profile,
+            granularityRuleSet,
+        };
+    }
+
+    /**
+     * Resolve granularity rules from an optional profile file, with deterministic
+     * built-in fallbacks for extraction flow stability.
+     */
+    loadGranularityRuleSet(granularityProfileId: string): ProjectStructureGranularityRuleSet {
+        const normalizedId = this.normalizeGranularityProfileId(granularityProfileId);
+        const profilePath = this.resolveGranularityProfileFilePath(normalizedId);
+        let resolved: ProjectStructureGranularityRuleSet;
+        if (profilePath) {
+            const parsed = this.readGranularityRuleSetFile(profilePath, normalizedId);
+            if (parsed) {
+                resolved = parsed;
+                this.validateGranularityRuleSet(resolved);
+                this.activeGranularityRuleSet = resolved;
+                return resolved;
+            }
+        }
+        resolved = this.getBuiltInGranularityRuleSet(normalizedId);
+        this.validateGranularityRuleSet(resolved);
+        this.activeGranularityRuleSet = resolved;
+        return resolved;
+    }
+
+    /** Resolve the in-use rule set for directory rendering with default fallback. */
+    private getActiveGranularityRuleSet(): ProjectStructureGranularityRuleSet {
+        if (this.activeGranularityRuleSet) {
+            return this.activeGranularityRuleSet;
+        }
+        const fallback = this.getBuiltInGranularityRuleSet('default');
+        this.activeGranularityRuleSet = fallback;
+        return fallback;
+    }
+
+    /**
+     * Strict sample loader: requires profile markdown file existence and readability.
+     * Throws SampleProfileUnavailableError when file is absent/invalid.
+     */
+    loadSampleProfileRequired(sampleProfileId: string): ProjectStructureSampleProfileLoadResult {
+        const normalizedId = this.normalizeSampleProfileId(sampleProfileId);
+        const fileCandidates = this.getSampleProfileDirectoryCandidates()
+            .map(dir => path.join(dir, `${normalizedId}.md`));
+        const sampleFile = fileCandidates.find(candidate => fs.existsSync(candidate));
+        if (!sampleFile) {
+            throw new SampleProfileUnavailableError(
+                normalizedId,
+                fileCandidates,
+                `样例文件不存在，期望文件名 ${normalizedId}.md`,
+            );
+        }
+
+        const exemplarMarkdown = this.readTrimmedFile(sampleFile);
+        if (!exemplarMarkdown) {
+            throw new SampleProfileUnavailableError(
+                normalizedId,
+                [sampleFile],
+                '样例文件不可读或内容为空',
+            );
+        }
+
+        const meta = this.readSampleProfileMeta(sampleFile, normalizedId);
+        return {
+            source: 'sample-file',
+            resolvedPath: sampleFile,
+            profile: {
+                id: normalizedId,
+                name: meta.name,
+                schemaVersion: meta.schemaVersion,
+                exemplarMarkdown,
+                includePatterns: meta.includePatterns,
+                excludePatterns: meta.excludePatterns,
+            },
+        };
+    }
+
+    /**
+     * Load a sample profile by id from workspace files with deterministic fallbacks.
+     * Priority: sample file -> root project-structure -> bundled default template.
+     */
+    loadSampleProfile(sampleProfileId: string): ProjectStructureSampleProfileLoadResult {
+        const normalizedId = this.normalizeSampleProfileId(sampleProfileId);
+        const sampleFile = this.resolveSampleProfileFilePath(normalizedId);
+        if (sampleFile) {
+            const exemplarMarkdown = this.readTrimmedFile(sampleFile);
+            if (exemplarMarkdown) {
+                const meta = this.readSampleProfileMeta(sampleFile, normalizedId);
+                return {
+                    source: 'sample-file',
+                    resolvedPath: sampleFile,
+                    profile: {
+                        id: normalizedId,
+                        name: meta.name,
+                        schemaVersion: meta.schemaVersion,
+                        exemplarMarkdown,
+                        includePatterns: meta.includePatterns,
+                        excludePatterns: meta.excludePatterns,
+                    },
+                };
+            }
+        }
+
+        const rootContent = this.readRootStructure();
+        if (rootContent) {
+            return {
+                source: 'root-structure',
+                resolvedPath: this.getRootStructureFilePath(),
+                profile: {
+                    id: normalizedId,
+                    name: 'Root Project Structure Baseline',
+                    schemaVersion: '1.0',
+                    exemplarMarkdown: rootContent,
+                    includePatterns: ['**/*'],
+                    excludePatterns: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**', '**/out/**'],
+                },
+            };
+        }
+
+        return {
+            source: 'bundled-default',
+            profile: {
+                id: normalizedId,
+                name: 'Bundled Default Project Structure',
+                schemaVersion: '1.0',
+                exemplarMarkdown: this.getDefaultStructure(),
+                includePatterns: ['**/*'],
+                excludePatterns: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**', '**/out/**'],
+            },
+        };
     }
 
     detectStructureFromWorkspace(): { content: string; detected: boolean; summary: string } {
@@ -291,6 +713,171 @@ export class ProjectStructureService {
             detected: true,
             summary: summaryParts.join(' | '),
         };
+    }
+
+    /** Normalize user-provided sample profile ids to a safe file-compatible token. */
+    private normalizeSampleProfileId(sampleProfileId: string): string {
+        const raw = (sampleProfileId || '').trim();
+        if (!raw) {
+            return 'default';
+        }
+        return raw.replace(/[^a-zA-Z0-9._-]/g, '-').toLowerCase();
+    }
+
+    /** Normalize granularity profile ids to a safe token used by mapping lookup. */
+    private normalizeGranularityProfileId(granularityProfileId: string): string {
+        const raw = (granularityProfileId || '').trim();
+        if (!raw) {
+            return 'default';
+        }
+        return raw.replace(/[^a-zA-Z0-9._-]/g, '-').toLowerCase();
+    }
+
+    /** Resolve sample profile markdown path from supported sample directories. */
+    private resolveSampleProfileFilePath(sampleProfileId: string): string | undefined {
+        const candidates = this.getSampleProfileDirectoryCandidates()
+            .map(dir => path.join(dir, `${sampleProfileId}.md`));
+        return candidates.find(candidate => fs.existsSync(candidate));
+    }
+
+    /**
+     * Supported sample-profile folders under current repo/worktree.
+     * Keep repo-root-relative to satisfy monorepo and multi-repo topologies.
+     */
+    private getSampleProfileDirectoryCandidates(): string[] {
+        const roots = [this.workspaceRoot];
+        if (this.monorepoMainDir) {
+            roots.unshift(this.monorepoMainDir);
+        }
+        const dirs = roots.flatMap(root => [
+            path.join(root, 'docs', 'project-structure', 'samples'),
+            path.join(root, BASE, 'project-structure', 'samples'),
+        ]);
+        return Array.from(new Set(dirs));
+    }
+
+    /** Candidate granularity profile files under workspace-level docs and .harness dirs. */
+    private getGranularityProfileDirectoryCandidates(): string[] {
+        const roots = [this.workspaceRoot];
+        if (this.monorepoMainDir) {
+            roots.unshift(this.monorepoMainDir);
+        }
+        const dirs = roots.flatMap(root => [
+            path.join(root, 'docs', 'project-structure', 'granularity-profiles'),
+            path.join(root, BASE, 'project-structure', 'granularity-profiles'),
+        ]);
+        return Array.from(new Set(dirs));
+    }
+
+    /** Resolve granularity profile JSON path from supported profile directories. */
+    private resolveGranularityProfileFilePath(granularityProfileId: string): string | undefined {
+        const candidates = this.getGranularityProfileDirectoryCandidates()
+            .map(dir => path.join(dir, `${granularityProfileId}.json`));
+        return candidates.find(candidate => fs.existsSync(candidate));
+    }
+
+    /** Read granularity profile JSON and normalize to a strict Model-2 ruleset. */
+    private readGranularityRuleSetFile(filePath: string, granularityProfileId: string): ProjectStructureGranularityRuleSet | undefined {
+        try {
+            const raw = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Partial<ProjectStructureGranularityRuleSet>;
+            const maxDepth = Number(raw.maxDepth);
+            const mustExpandDomains = Array.isArray(raw.mustExpandDomains)
+                ? raw.mustExpandDomains.map(v => String(v).trim()).filter(Boolean)
+                : [];
+            const collapsePatterns = Array.isArray(raw.collapsePatterns)
+                ? raw.collapsePatterns.map(v => String(v).trim()).filter(Boolean)
+                : [];
+            const dedupeStrategy = raw.dedupeStrategy === 'bySemantic' ? 'bySemantic' : 'byPath';
+            return {
+                id: String(raw.id || granularityProfileId).trim() || granularityProfileId,
+                maxDepth: Number.isFinite(maxDepth) && maxDepth > 0 ? Math.floor(maxDepth) : 4,
+                mustExpandDomains,
+                collapsePatterns,
+                dedupeStrategy,
+            };
+        } catch {
+            return undefined;
+        }
+    }
+
+    /** Built-in granularity presets used when no external profile file is present. */
+    private getBuiltInGranularityRuleSet(granularityProfileId: string): ProjectStructureGranularityRuleSet {
+        const presets: Record<string, ProjectStructureGranularityRuleSet> = {
+            default: {
+                id: 'default',
+                maxDepth: 4,
+                mustExpandDomains: ['src', 'domain', 'application', 'infrastructure'],
+                collapsePatterns: ['node_modules', 'dist', 'build', 'out', 'coverage', '.git', '.vscode'],
+                dedupeStrategy: 'byPath',
+            },
+            concise: {
+                id: 'concise',
+                maxDepth: 3,
+                mustExpandDomains: ['src', 'domain'],
+                collapsePatterns: ['node_modules', 'dist', 'build', 'out', 'coverage', '.git', '.vscode', '__tests__'],
+                dedupeStrategy: 'byPath',
+            },
+            detailed: {
+                id: 'detailed',
+                maxDepth: 6,
+                mustExpandDomains: ['src', 'domain', 'application', 'infrastructure', 'services'],
+                collapsePatterns: ['node_modules', '.git'],
+                dedupeStrategy: 'bySemantic',
+            },
+        };
+        return presets[granularityProfileId] || {
+            ...presets.default,
+            id: granularityProfileId,
+        };
+    }
+
+    /** Read an optional JSON sidecar metadata file next to a sample markdown file. */
+    private readSampleProfileMeta(sampleFilePath: string, sampleProfileId: string): {
+        name: string;
+        schemaVersion: string;
+        includePatterns: string[];
+        excludePatterns: string[];
+    } {
+        const metaPath = sampleFilePath.replace(/\.md$/i, '.json');
+        if (!fs.existsSync(metaPath)) {
+            return {
+                name: `Sample Profile ${sampleProfileId}`,
+                schemaVersion: '1.0',
+                includePatterns: ['**/*'],
+                excludePatterns: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**', '**/out/**'],
+            };
+        }
+        try {
+            const raw = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as Partial<ProjectStructureSampleProfile>;
+            const includePatterns = Array.isArray(raw.includePatterns)
+                ? raw.includePatterns.map(v => String(v).trim()).filter(Boolean)
+                : ['**/*'];
+            const excludePatterns = Array.isArray(raw.excludePatterns)
+                ? raw.excludePatterns.map(v => String(v).trim()).filter(Boolean)
+                : ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**', '**/out/**'];
+            return {
+                name: String(raw.name || `Sample Profile ${sampleProfileId}`).trim(),
+                schemaVersion: String(raw.schemaVersion || '1.0').trim(),
+                includePatterns,
+                excludePatterns,
+            };
+        } catch {
+            return {
+                name: `Sample Profile ${sampleProfileId}`,
+                schemaVersion: '1.0',
+                includePatterns: ['**/*'],
+                excludePatterns: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**', '**/out/**'],
+            };
+        }
+    }
+
+    /** Read a file and return trimmed content; returns empty string on any error. */
+    private readTrimmedFile(filePath: string): string {
+        try {
+            return fs.readFileSync(filePath, 'utf8').trim();
+        } catch {
+            return '';
+        }
     }
 
     // ── Monorepo apps-container detection ──────────────────────────────
@@ -424,12 +1011,12 @@ export class ProjectStructureService {
             return [];
         }
         try {
-            return fs.readdirSync(dir, { withFileTypes: true })
+            const raw = fs.readdirSync(dir, { withFileTypes: true })
                 .filter((entry: fs.Dirent) => entry.isDirectory())
                 .map((entry: fs.Dirent) => entry.name)
-                .filter(name => !name.startsWith('.') && !['node_modules', 'out', 'dist', 'build', 'target', 'coverage'].includes(name))
-                .sort()
-                .slice(0, max);
+                .filter(name => !name.startsWith('.'))
+                .sort();
+            return this.applyGranularityDirectoryMapping(raw, max, true);
         } catch {
             return [];
         }
@@ -812,7 +1399,90 @@ export class ProjectStructureService {
             .filter((entry: fs.Dirent) => entry.isDirectory())
             .map((entry: fs.Dirent) => entry.name)
             .sort();
-        return dirs.length > 0 ? dirs.slice(0, max) : ['api', 'stores', 'views', 'components', 'router', 'utils'];
+        const mapped = this.applyGranularityDirectoryMapping(dirs, max, false);
+        return mapped.length > 0 ? mapped : ['api', 'stores', 'views', 'components', 'router', 'utils'];
+    }
+
+    /**
+     * Apply granularity mapping on directory names:
+     * - collapsePatterns: remove noisy directories unless in mustExpandDomains
+     * - dedupeStrategy=bySemantic: merge repeated semantic directories
+     * - dedupeStrategy=byPath: keep only first duplicate path token
+     */
+    private applyGranularityDirectoryMapping(names: string[], max: number, keepFilesystemNames: boolean): string[] {
+        const rules = this.getActiveGranularityRuleSet();
+        const mustExpand = new Set(rules.mustExpandDomains.map(v => v.toLowerCase()));
+        const collapsePatterns = rules.collapsePatterns.map(v => v.toLowerCase()).filter(Boolean);
+
+        const visible = names.filter(name => {
+            const lower = name.toLowerCase();
+            if (mustExpand.has(lower)) {
+                return true;
+            }
+            return !collapsePatterns.some(pattern => this.matchesCollapsePattern(lower, pattern));
+        });
+
+        if (rules.dedupeStrategy === 'byPath' || keepFilesystemNames) {
+            return Array.from(new Set(visible)).slice(0, max);
+        }
+
+        const buckets = new Map<string, string[]>();
+        visible.forEach(name => {
+            const key = this.semanticDirectoryKey(name);
+            const group = buckets.get(key) || [];
+            group.push(name);
+            buckets.set(key, group);
+        });
+
+        const merged: string[] = [];
+        for (const group of buckets.values()) {
+            if (group.length >= 3) {
+                const first = group[0];
+                const normalized = this.semanticDirectoryKey(first).replace(/\*+$/g, '') || first.toLowerCase();
+                const summary = `${normalized}-* (${group.length})`;
+                merged.push(summary);
+            } else {
+                merged.push(...group);
+            }
+        }
+        return merged.slice(0, max);
+    }
+
+    /** Match collapse pattern against a directory name token. */
+    private matchesCollapsePattern(name: string, pattern: string): boolean {
+        if (!pattern) {
+            return false;
+        }
+        if (pattern.includes('*')) {
+            const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+            return new RegExp(`^${escaped}$`, 'i').test(name);
+        }
+        return name === pattern || name.includes(pattern);
+    }
+
+    /** Normalize directory names to semantic buckets for dedupe-by-semantic merging. */
+    private semanticDirectoryKey(name: string): string {
+        return name
+            .toLowerCase()
+            .replace(/[-_]?\d+$/g, '')
+            .replace(/[-_](impl|module|service|services|feature|features)$/g, '')
+            .trim() || name.toLowerCase();
+    }
+
+    /** Validate granularity rules and throw explicit conflict errors when contradictory. */
+    private validateGranularityRuleSet(ruleSet: ProjectStructureGranularityRuleSet): void {
+        if (!Number.isFinite(ruleSet.maxDepth) || ruleSet.maxDepth < 1) {
+            throw new GranularityRuleConflictError(ruleSet.id, 'maxDepth 必须大于等于 1');
+        }
+
+        const collapse = new Set(ruleSet.collapsePatterns.map(v => v.toLowerCase()));
+        const conflictingDomain = ruleSet.mustExpandDomains.find(domain => collapse.has(domain.toLowerCase()));
+        if (conflictingDomain) {
+            throw new GranularityRuleConflictError(
+                ruleSet.id,
+                `mustExpandDomains 与 collapsePatterns 冲突：${conflictingDomain}`,
+            );
+        }
     }
 
     private pickJavaBasePackage(javaDir: string): string {

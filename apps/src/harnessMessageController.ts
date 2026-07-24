@@ -1,7 +1,9 @@
 import { HarnessMessage } from './harnessMessages';
 import * as vscode from 'vscode';
 import { WorkspaceTodoStoreService, WorkspaceTodoItem } from './services/workspaceTodoStoreService';
-import { appendTodoLog } from './services/harnessLog';
+import { appendStructureGateFailureLog, appendTodoLog } from './services/harnessLog';
+import { GranularityRuleConflictError, SampleProfileUnavailableError, StructureGateFailedError } from './services/projectStructureService';
+import { PromptContractIncompleteError } from './services/promptService';
 
 interface HarnessMessageControllerDeps {
     isWorktreeSubview: () => boolean;
@@ -250,6 +252,52 @@ export class HarnessMessageController {
         return false;
     }
 
+    /** Map project-structure extraction errors into a user-friendly warning string. */
+    private mapProjectStructureError(error: unknown): string {
+        if (error instanceof StructureGateFailedError) {
+            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            if (workspaceRoot) {
+                appendStructureGateFailureLog(workspaceRoot, {
+                    gateId: error.gate.gateId,
+                    violations: error.gate.violations.map(item => ({
+                        ruleId: item.ruleId,
+                        location: item.location,
+                        suggestion: item.suggestion,
+                        message: item.message,
+                    })),
+                });
+            }
+            const first = error.gate.violations[0];
+            if (first) {
+                return `${error.code}: gateId=${error.gate.gateId}; ruleId=${first.ruleId}; location=${first.location}; suggestion=${first.suggestion}`;
+            }
+            return `${error.code}: gateId=${error.gate.gateId}; violations=0`;
+        }
+        if (error instanceof PromptContractIncompleteError) {
+            const missing = error.missingBlocks.join(', ') || '(none)';
+            const details = error.details.join(', ') || '(none)';
+            return `${error.code}: 提示词契约片段缺失（missingBlocks=${missing}; details=${details}）。已阻断 AI 请求。`;
+        }
+        if (error instanceof GranularityRuleConflictError) {
+            return `${error.code}: 颗粒度规则冲突（profile=${error.profileId}）。请修正 maxDepth/mustExpandDomains/collapsePatterns 配置。`;
+        }
+        if (error instanceof SampleProfileUnavailableError) {
+            const attempted = error.attemptedPaths.map(p => p.replace(/\\/g, '/')).join(' ; ');
+            return `${error.code}: 样例配置不可用（id=${error.sampleProfileId}）。请检查样例文件路径：${attempted}`;
+        }
+        const message = error instanceof Error ? error.message : String(error || 'unknown');
+        if (message.includes('GRANULARITY_RULE_CONFLICT')) {
+            return `GRANULARITY_RULE_CONFLICT: ${message}`;
+        }
+        if (message.includes('SAMPLE_PROFILE_UNAVAILABLE')) {
+            return `SAMPLE_PROFILE_UNAVAILABLE: ${message}`;
+        }
+        if (message.includes('PROMPT_CONTRACT_INCOMPLETE')) {
+            return `PROMPT_CONTRACT_INCOMPLETE: ${message}`;
+        }
+        return `PROJECT_STRUCTURE_EXTRACTION_ERROR: ${message}`;
+    }
+
     async handle(msg: HarnessMessage): Promise<void> {
         if (!this.ensureWorktreeAllowed(msg)) {
             return;
@@ -286,7 +334,12 @@ export class HarnessMessageController {
                 this.deps.saveAdvancedConfig(msg);
                 return;
             case 'initProjectStructure':
-                await this.deps.initProjectStructure();
+                try {
+                    await this.deps.initProjectStructure();
+                } catch (error) {
+                    const mapped = this.mapProjectStructureError(error);
+                    vscode.window.showWarningMessage(mapped);
+                }
                 return;
             case 'applyProjectStructurePreview':
                 await this.deps.applyProjectStructurePreview();

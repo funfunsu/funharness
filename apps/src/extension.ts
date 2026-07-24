@@ -42,6 +42,7 @@ import { SchedulerRegistry } from './schedulerRegistry';
 import { HarnessActionsService } from './services/harnessActionsService';
 import { ProjectStructureService } from './services/projectStructureService';
 import { AutoPollService } from './services/autoPollService';
+import { appendStructureGateFailureLog } from './services/harnessLog';
 import { CapabilityDeltaService } from './services/capabilityDeltaService';
 
 let harness: Harness | undefined;
@@ -1005,6 +1006,22 @@ class Harness {
 
     private buildProjectStructureAiReviewPrompt(detectedContent: string, summary: string, previewPath: string): string {
         const previewRel = path.relative(workspaceRoot, previewPath).replace(/\\/g, '/') || previewPath;
+        const extractionInput = this.projectStructureService.buildExtractionInput('default', 'default', 'sampleDriven', {
+            requireSampleFile: false,
+        });
+        const extractionSection = this.promptService.buildProjectStructureExtractionSection({
+            workspaceRoot: extractionInput.workspaceRoot,
+            sampleProfileId: extractionInput.sampleProfileId,
+            granularityProfileId: extractionInput.granularityProfileId,
+            extractionMode: extractionInput.extractionMode,
+            sampleProfile: extractionInput.sampleProfile,
+            granularityRuleSet: extractionInput.granularityRuleSet,
+            outputContract: {
+                requiredSections: ['项目结构树', '关键模块说明'],
+                requiredFields: ['title', 'sections', 'domainNodes'],
+                formatHint: 'markdown-tree-with-brief-comments',
+            },
+        });
 
         return [
             '# 任务：为项目结构目录树补充简要说明（轻量标注，勿扩写）',
@@ -1017,6 +1034,8 @@ class Harness {
             '3. 仅在每个目录/关键节点行尾用 “# 说明” 补充一句话职责描述（已有说明则保持或微调）。',
             '4. 每条说明不超过 20 个字，只描述该目录的职责，不写改动指引、不写落包规则、不写示例代码。',
             '5. 不要新增章节、表格、前言或总结，输出仍是一棵带注释的目录树。',
+            '',
+            extractionSection,
             '',
             `检测摘要：${summary}`,
             '',
@@ -1036,6 +1055,25 @@ class Harness {
 
         const applied = this.projectStructureService.applyPreviewToRoot();
         if (!applied) {
+            const gate = this.projectStructureService.getLastStructureGateResult();
+            if (gate && gate.gateStatus === 'failed') {
+                appendStructureGateFailureLog(workspaceRoot, {
+                    gateId: gate.gateId,
+                    violations: gate.violations.map(item => ({
+                        ruleId: item.ruleId,
+                        location: item.location,
+                        suggestion: item.suggestion,
+                        message: item.message,
+                    })),
+                    sourcePath: this.projectStructureService.getPreviewStructureFilePath(),
+                });
+                const firstViolation = gate.violations[0];
+                const detail = firstViolation
+                    ? `规则=${firstViolation.ruleId}，位置=${firstViolation.location}，建议=${firstViolation.suggestion}`
+                    : '请查看日志定位问题';
+                vscode.window.showWarningMessage(`结构门禁失败（gateId=${gate.gateId}）：${detail}`);
+                return;
+            }
             vscode.window.showWarningMessage('未找到可应用的预览结构，或预览内容为空。');
             return;
         }
