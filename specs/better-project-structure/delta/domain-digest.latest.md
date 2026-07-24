@@ -1,6 +1,6 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-07-24T03:09:49.665Z
+- generatedAt: 2026-07-24T03:12:59.704Z
 - taskId: task_1784714102943
 - taskName: better-project-structure
 - gateLevel: standard
