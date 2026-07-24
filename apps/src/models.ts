@@ -387,6 +387,90 @@ export interface TaskStats {
     failed: number;
 }
 
+export interface DomainRegistryEntry {
+    canonical: string;
+    displayName: string;
+    aliases: string[];
+    status: 'active' | 'deprecated';
+}
+
+export interface DomainRegistryAggregationRecord {
+    iteration: string;
+    contentHash: string;
+    aggregatedAt: string;
+}
+
+export interface DomainRegistry {
+    domains: DomainRegistryEntry[];
+    lastAggregated?: DomainRegistryAggregationRecord[];
+}
+
+export interface DomainRegistryConflict {
+    code: 'duplicate-canonical' | 'duplicate-alias';
+    message: string;
+    canonical?: string;
+    alias?: string;
+    entryIndexes: number[];
+}
+
+export interface DomainRegistryLoadResult {
+    registry: DomainRegistry;
+    validationErrors: DomainRegistryConflict[];
+    created: boolean;
+    filePath: string;
+}
+
+export type CapabilityStatus = 'active' | 'deprecated' | 'removed';
+
+export interface CapabilityDeltaItem {
+    reqId: string;
+    title: string;
+    userStory: string;
+    status: CapabilityStatus;
+}
+
+export interface ContractDeltaItem {
+    id: string;
+    reqId: string;
+    method: string;
+    path: string;
+    requestShape: Record<string, unknown>;
+    responseShape: Record<string, unknown>;
+}
+
+export interface InvariantDeltaItem {
+    id: string;
+    reqId: string;
+    text: string;
+}
+
+export interface DomainDelta {
+    canonical: string | null;
+    rawDomain: string | null;
+    isSuspectedNew: boolean;
+    capabilities: CapabilityDeltaItem[];
+    contracts: ContractDeltaItem[];
+    invariants: InvariantDeltaItem[];
+}
+
+export interface CapabilityDelta {
+    iteration: string;
+    generatedAt: string;
+    contentHash: string;
+    domains: DomainDelta[];
+}
+
+export interface CapabilityDeltaValidationError {
+    field: string;
+    message: string;
+}
+
+export interface CapabilityDeltaValidationResult {
+    valid: boolean;
+    errors: CapabilityDeltaValidationError[];
+    contentHash: string;
+}
+
 export interface SubTask {
     id: string;
     name: string;

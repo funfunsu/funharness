@@ -10,6 +10,10 @@ interface HarnessMessageControllerDeps {
     setPage: (page: string) => void;
     reloadTasks: () => void;
     render: () => void;
+    generateCapabilityDelta: (taskId: string) => Promise<void>;
+    runDomainBaselineAggregation: (taskId: string) => Promise<void>;
+    reviewSuspectedDomains: (taskId: string) => Promise<void>;
+    previewDomainBaselineSummary: (taskId: string) => Promise<void>;
     openCustomPrompt: (step: 'req' | 'des' | 'tcs' | 'tsk' | 'dev') => Promise<void>;
     saveGit:(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi') => Promise<void>;
     saveAdvancedConfig: (msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>) => void;
@@ -204,6 +208,7 @@ export class HarnessMessageController {
 
         switch (msg.type) {
             case 'refresh':
+            case 'generateCapabilityDelta':
             case 'logWebviewEvent':
             case 'requestEditTaskDesc':
             case 'updateTaskDesc':
@@ -306,6 +311,18 @@ export class HarnessMessageController {
             case 'refresh':
                 this.deps.reloadTasks();
                 this.deps.render();
+                return;
+            case 'generateCapabilityDelta':
+                await this.deps.generateCapabilityDelta(msg.id);
+                return;
+            case 'runDomainBaselineAggregation':
+                await this.deps.runDomainBaselineAggregation(msg.id);
+                return;
+            case 'reviewSuspectedDomains':
+                await this.deps.reviewSuspectedDomains(msg.id);
+                return;
+            case 'previewDomainBaselineSummary':
+                await this.deps.previewDomainBaselineSummary(msg.id);
                 return;
             case 'openCustomPrompt':
                 await this.deps.openCustomPrompt(msg.step);

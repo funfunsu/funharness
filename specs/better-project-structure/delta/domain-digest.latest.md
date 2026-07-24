@@ -1,23 +1,23 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-07-23T02:03:25.048Z
+- generatedAt: 2026-07-24T03:09:49.665Z
 - taskId: task_1784714102943
 - taskName: better-project-structure
 - gateLevel: standard
-- totalChanges: 12
+- totalChanges: 13
 - blockedByGate: 4
 
 ## Executive Summary
 
 - highRiskChanges: 4
 - mediumRiskChanges: 6
-- lowRiskChanges: 2
+- lowRiskChanges: 3
 
 ## Domain Index
 
 | domain | total | high | medium | low | blocked |
 | --- | --- | --- | --- | --- | --- |
-| uncategorized | 12 | 4 | 6 | 2 | 4 |
+| uncategorized | 13 | 4 | 6 | 3 | 4 |
 
 ## Domain Sections
 
@@ -51,4 +51,6 @@
   - changedFiles=11
 - [2026-07-23T01:57:32.336Z] [dev] [low] Development drift gate passed
   - changedFiles=20
+- [2026-07-24T03:09:49.663Z] [dev] [low] Development drift gate passed
+  - changedFiles=33
 

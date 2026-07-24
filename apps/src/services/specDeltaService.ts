@@ -536,7 +536,8 @@ export class SpecDeltaService {
 
         const files = new Set<string>();
         for (const repo of repos) {
-            const output = this.runGit(repo.dir, ['status', '--porcelain']);
+            // Use untracked=all so untracked directories are expanded into concrete files.
+            const output = this.runGit(repo.dir, ['status', '--porcelain=v1', '--untracked-files=all']);
             if (!output.trim()) {
                 continue;
             }

@@ -32,8 +32,10 @@ import { TaskScheduler } from '../taskScheduler';
 import { GitService } from './gitService';
 import { appendHarnessLog } from './harnessLog';
 import { validateTraceability } from '../specTrace';
-import { safeRemovePath } from './fileOps';
+import { readTextIfExists, safeRemovePath, writeTextAtomic } from './fileOps';
 import { SpecDeltaService } from './specDeltaService';
+import { DomainKnowledgeAggregateService, SuspectedDomainRecord } from './domainKnowledgeAggregateService';
+import { DomainAdjudicationDecision, DomainRegistryService } from './domainRegistryService';
 
 interface ArtifactIndexItem {
     taskId: string;
@@ -72,6 +74,8 @@ interface HarnessActionsDeps {
 export class HarnessActionsService {
     constructor(private readonly deps: HarnessActionsDeps) {}
     private specDeltaService?: SpecDeltaService;
+    private domainKnowledgeAggregateService?: DomainKnowledgeAggregateService;
+    private domainRegistryService?: DomainRegistryService;
     /** Prevent duplicate prompt dispatch for the same (task, step) while one is in-flight. */
     private readonly inFlightStageDispatchKeys: Set<string> = new Set();
     private readonly lastAutoRepairAt: Map<string, number> = new Map();
@@ -99,6 +103,20 @@ export class HarnessActionsService {
             );
         }
         return this.specDeltaService;
+    }
+
+    private getDomainKnowledgeAggregateService(): DomainKnowledgeAggregateService {
+        if (!this.domainKnowledgeAggregateService) {
+            this.domainKnowledgeAggregateService = new DomainKnowledgeAggregateService();
+        }
+        return this.domainKnowledgeAggregateService;
+    }
+
+    private getDomainRegistryService(): DomainRegistryService {
+        if (!this.domainRegistryService) {
+            this.domainRegistryService = new DomainRegistryService();
+        }
+        return this.domainRegistryService;
     }
 
     /**
@@ -1267,10 +1285,36 @@ export class HarnessActionsService {
         await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(review.digestPath));
 
         if (!review.passed) {
-            vscode.window.showWarningMessage(
-                `Spec 评审发现高风险问题：${review.errors.slice(0, 3).join('；')}（详情已打开）`,
-                { modal: true },
-            );
+            const cfg = this.deps.getConfig();
+            const autoRepair = this.isTaskAutoRepairEnabled(task, cfg);
+            const repairPrompt = this.buildDriftRepairPrompt(task, iterDir, review.errors);
+
+            if (autoRepair) {
+                vscode.window.showInformationMessage(
+                    `Spec 评审发现漂移，正在自动派发文档修复 Agent（${review.errors.length} 个问题）\u2026`,
+                );
+                try {
+                    await this.deps.dispatchAi(repairPrompt, iterDir, 'stage-agent', task.aiProvider);
+                } catch (error) {
+                    const msg = error instanceof Error ? error.message : String(error);
+                    vscode.window.showWarningMessage(`自动修复派发失败：${msg}，请手动修复后重试`);
+                }
+            } else {
+                const choice = await vscode.window.showWarningMessage(
+                    `Spec 评审发现漂移问题（${review.errors.length} 个），详情已打开`,
+                    { modal: true, detail: review.errors.slice(0, 5).join('\\n') },
+                    '派发修复 Agent',
+                );
+                if (choice === '派发修复 Agent') {
+                    try {
+                        await this.deps.dispatchAi(repairPrompt, iterDir, 'stage-agent', task.aiProvider);
+                        vscode.window.showInformationMessage('已派发 Spec 文档修复 Agent，请在 AI 完成后重新评审');
+                    } catch (error) {
+                        const msg = error instanceof Error ? error.message : String(error);
+                        vscode.window.showWarningMessage(`修复派发失败：${msg}`);
+                    }
+                }
+            }
             return;
         }
 
@@ -1280,6 +1324,155 @@ export class HarnessActionsService {
         }
 
         vscode.window.showInformationMessage('Spec 评审完成：未发现阻断项（详情已打开）');
+    }
+
+    /**
+     * Run main-panel domain aggregation preview and store suspected domains for manual adjudication.
+     */
+    async reviewSuspectedDomainsByTaskId(taskId: string): Promise<void> {
+        if (this.deps.isWorktreeSubview()) {
+            vscode.window.showWarningMessage('疑似新领域裁决仅支持主面板执行');
+            return;
+        }
+
+        const task = this.getTaskById(taskId);
+        if (!task) {
+            return;
+        }
+
+        const repoRoot = this.deps.getMasterRoot();
+        const result = this.getDomainKnowledgeAggregateService().aggregatePendingDeltas(repoRoot, false);
+        this.writeSuspectedDomainStore(result.suspectedDomains);
+
+        if (result.suspectedDomains.length === 0) {
+            vscode.window.showInformationMessage('未发现待裁决领域，已完成聚合预检查');
+            return;
+        }
+
+        const summary = result.suspectedDomains
+            .slice(0, 5)
+            .map(item => `${item.rawDomain} (${item.iteration})`)
+            .join('；');
+        vscode.window.showWarningMessage(`发现 ${result.suspectedDomains.length} 个待裁决领域：${summary}`);
+    }
+
+    /**
+     * Apply one manual adjudication decision and write back to registry.
+     */
+    async applyDomainAdjudicationByTaskId(taskId: string): Promise<void> {
+        if (this.deps.isWorktreeSubview()) {
+            vscode.window.showWarningMessage('疑似新领域裁决仅支持主面板执行');
+            return;
+        }
+
+        const task = this.getTaskById(taskId);
+        if (!task) {
+            return;
+        }
+
+        const pending = this.readSuspectedDomainStore();
+        if (pending.length === 0) {
+            vscode.window.showInformationMessage('当前没有待裁决的新领域');
+            return;
+        }
+
+        const picked = await vscode.window.showQuickPick(
+            pending.map(item => ({
+                label: item.rawDomain,
+                description: `${item.iteration} | ${item.relatedReqIds.join(', ')}`,
+                detail: item.suggestedCanonical ? `suggested=${item.suggestedCanonical}` : 'suggested=(none)',
+                item,
+            })),
+            { title: '选择待裁决领域', ignoreFocusOut: true },
+        );
+        if (!picked) {
+            return;
+        }
+
+        const decisionPick = await vscode.window.showQuickPick([
+            { label: '合并到已有领域', value: 'mergeExisting' as DomainAdjudicationDecision },
+            { label: '创建新 canonical', value: 'createCanonical' as DomainAdjudicationDecision },
+            { label: '作为别名追加', value: 'appendAlias' as DomainAdjudicationDecision },
+        ], { title: '选择裁决动作', ignoreFocusOut: true });
+        if (!decisionPick) {
+            return;
+        }
+
+        const repoRoot = this.deps.getMasterRoot();
+        const registryService = this.getDomainRegistryService();
+        const load = registryService.loadRegistry(repoRoot);
+        if (load.validationErrors.length > 0) {
+            throw new Error(`Invalid registry: ${load.validationErrors.map(item => item.message).join('; ')}`);
+        }
+
+        const canonicalChoices = load.registry.domains.map(item => item.canonical);
+        let targetCanonical = picked.item.suggestedCanonical || '';
+        if (decisionPick.value === 'mergeExisting' || decisionPick.value === 'appendAlias') {
+            const target = await vscode.window.showQuickPick(
+                canonicalChoices.map(item => ({ label: item, value: item })),
+                { title: '选择目标 canonical', ignoreFocusOut: true },
+            );
+            if (!target) {
+                return;
+            }
+            targetCanonical = target.value;
+        }
+
+        if (decisionPick.value === 'createCanonical') {
+            const created = await vscode.window.showInputBox({
+                title: '输入新 canonical',
+                value: (picked.item.rawDomain || '').toLowerCase().replace(/\s+/g, '-'),
+                ignoreFocusOut: true,
+                validateInput: value => value.trim() ? undefined : 'canonical 不能为空',
+            });
+            if (!created) {
+                return;
+            }
+            targetCanonical = created.trim();
+        }
+
+        registryService.applyAdjudication(repoRoot, {
+            decision: decisionPick.value,
+            rawDomain: picked.item.rawDomain,
+            targetCanonical,
+            displayName: targetCanonical,
+        });
+
+        const remaining = pending.filter(item => !(item.iteration === picked.item.iteration && item.rawDomain === picked.item.rawDomain));
+        this.writeSuspectedDomainStore(remaining);
+        vscode.window.showInformationMessage(`领域裁决已写回：${picked.item.rawDomain} -> ${targetCanonical || '(no change)'}`);
+    }
+
+    /**
+     * Load pending suspected domains from workspace store file.
+     */
+    private readSuspectedDomainStore(): SuspectedDomainRecord[] {
+        const filePath = this.resolveSuspectedDomainStorePath();
+        const content = readTextIfExists(filePath);
+        if (!content) {
+            return [];
+        }
+        try {
+            const parsed = JSON.parse(content) as { suspectedDomains?: SuspectedDomainRecord[] };
+            return Array.isArray(parsed.suspectedDomains) ? parsed.suspectedDomains : [];
+        } catch {
+            return [];
+        }
+    }
+
+    /**
+     * Persist pending suspected domains into workspace store file.
+     */
+    private writeSuspectedDomainStore(records: SuspectedDomainRecord[]): void {
+        const filePath = this.resolveSuspectedDomainStorePath();
+        writeTextAtomic(filePath, `${JSON.stringify({ suspectedDomains: records }, null, 2)}\n`);
+    }
+
+    /**
+     * Resolve workspace-level suspected domain store path.
+     */
+    private resolveSuspectedDomainStorePath(): string {
+        return path.join(this.deps.getMasterRoot(), BASE, 'domain-suspected.json');
     }
 
     private async initializeTaskGit(task: Task): Promise<void> {
