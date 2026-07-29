@@ -192,4 +192,28 @@ describe('CapabilityDeltaService', () => {
             cleanup(root);
         }
     });
+
+    test('generateForIteration falls back to specs/<iteration> when iterationPath points to worktree root', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            writeIterationArtifacts(root, 'asset-label');
+
+            const worktreeRoot = path.join(root, 'asset-label');
+            fs.mkdirSync(worktreeRoot, { recursive: true });
+
+            const service = new CapabilityDeltaService();
+            const result = service.generateForIteration(root, worktreeRoot);
+
+            assert.equal(result.validation.valid, true);
+            assert.equal(result.delta.iteration, 'asset-label');
+            assert.equal(fs.existsSync(result.deltaPath), true);
+            assert.equal(
+                result.deltaPath.endsWith(path.join('specs', 'asset-label', 'delta', 'capability-delta.json')),
+                true,
+            );
+        } finally {
+            cleanup(root);
+        }
+    });
 });

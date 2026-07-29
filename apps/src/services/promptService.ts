@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { BASE, Config, PROMPT_CONFIGS, PROMPTS_DIR, getDocsRootDirName, getSpecDocsDir } from '../models';
+import { BASE, Config, PROMPT_CONFIGS, PROMPTS_DIR, deriveMasterRoot, getDocsRootDirName, getPrimaryTrackedSpecsDir, getSpecDocsDir, getTrackedSpecsDirCandidates } from '../models';
 import { resolveConstitution, summarizeConstitution } from '../constitution';
 
 export interface RenderedPrompt {
@@ -123,36 +123,34 @@ export class PromptService {
         ].join('\n');
     }
 
-    /** 项目级可选覆盖目录：<workspaceRoot>/.harness/prompts（默认不存在，存在时优先生效）。 */
+    /** 项目级可选覆盖目录：优先写入可被 git 跟踪的 specs 目录。 */
     getProjectPromptsDir(): string {
-        return path.join(this.workspaceRoot, BASE, PROMPTS_DIR);
+        return getPrimaryTrackedSpecsDir(this.workspaceRoot);
     }
 
     /**
-     * In a worktree window, user-customized prompts are typically maintained in the
-     * master workspace's .harness/prompts. We keep local override priority, then
-     * fall back to the master prompts dir derived from ".../worktrees/<name>".
+     * In a worktree window, user-customized prompts are maintained in git-tracked
+     * specs directories (prefer repos/mono-main/specs), with legacy directories as fallback.
      */
     private getCandidatePromptDirs(): string[] {
-        const dirs = [this.getProjectPromptsDir()];
-        // Backward compatibility: legacy root-level prompts/ directory.
+        const dirs = [...getTrackedSpecsDirCandidates(this.workspaceRoot)];
+        // Backward compatibility: old prompt directories.
+        const legacyProjectHarnessDir = path.join(this.workspaceRoot, BASE, PROMPTS_DIR);
+        if (!dirs.includes(legacyProjectHarnessDir)) {
+            dirs.push(legacyProjectHarnessDir);
+        }
         const legacyProjectDir = path.join(this.workspaceRoot, PROMPTS_DIR);
         if (!dirs.includes(legacyProjectDir)) {
             dirs.push(legacyProjectDir);
         }
-        const normalized = this.workspaceRoot.replace(/\\/g, '/');
-        const marker = '/worktrees/';
-        const idx = normalized.indexOf(marker);
-        if (idx > 0) {
-            const masterRoot = this.workspaceRoot.slice(0, idx);
-            const masterDir = path.join(masterRoot, BASE, PROMPTS_DIR);
-            if (!dirs.includes(masterDir)) {
-                dirs.push(masterDir);
-            }
-            const legacyMasterDir = path.join(masterRoot, PROMPTS_DIR);
-            if (!dirs.includes(legacyMasterDir)) {
-                dirs.push(legacyMasterDir);
-            }
+        const masterRoot = deriveMasterRoot(this.workspaceRoot);
+        const legacyMasterHarnessDir = path.join(masterRoot, BASE, PROMPTS_DIR);
+        if (!dirs.includes(legacyMasterHarnessDir)) {
+            dirs.push(legacyMasterHarnessDir);
+        }
+        const legacyMasterDir = path.join(masterRoot, PROMPTS_DIR);
+        if (!dirs.includes(legacyMasterDir)) {
+            dirs.push(legacyMasterDir);
         }
         return dirs;
     }

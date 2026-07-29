@@ -67,6 +67,7 @@ interface HarnessActionsDeps {
     onPass: (task: Task) => void;
     isWorktreeSubview: () => boolean;
     dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string) => Promise<void>;
+    runDomainSummaryAiRefiner?: (prompt: string) => string | null;
     copyProjectStructureToIteration: (iterDir: string) => void;
     renderAgentPrompt: (step: HarnessStep, taskName: string, taskDesc: string, iterDir: string) => { content: string; source: string; path: string };
 }
@@ -107,7 +108,11 @@ export class HarnessActionsService {
 
     private getDomainKnowledgeAggregateService(): DomainKnowledgeAggregateService {
         if (!this.domainKnowledgeAggregateService) {
-            this.domainKnowledgeAggregateService = new DomainKnowledgeAggregateService();
+            this.domainKnowledgeAggregateService = new DomainKnowledgeAggregateService(
+                undefined,
+                undefined,
+                (prompt) => this.deps.runDomainSummaryAiRefiner?.(prompt) || '',
+            );
         }
         return this.domainKnowledgeAggregateService;
     }
@@ -1340,11 +1345,16 @@ export class HarnessActionsService {
             return;
         }
 
-        const repoRoot = this.deps.getMasterRoot();
-        const result = this.getDomainKnowledgeAggregateService().aggregatePendingDeltas(repoRoot, false);
-        this.writeSuspectedDomainStore(result.suspectedDomains);
+        const workspaceRoot = this.deps.getMasterRoot();
+        const repoRoot = this.resolveDomainBaselineRepoRoot(workspaceRoot);
+        this.ensureDomainRegistrySeed(workspaceRoot, repoRoot);
+        const existingPending = this.readSuspectedDomainStore();
+        const result = this.getDomainKnowledgeAggregateService().aggregatePendingDeltas(workspaceRoot, true, repoRoot);
+        const mergedPending = this.mergeSuspectedDomainRecords(existingPending, result.suspectedDomains);
+        this.writeSuspectedDomainStore(mergedPending);
+        this.writeRegistryCoverageReport(workspaceRoot, repoRoot);
 
-        if (result.suspectedDomains.length === 0) {
+        if (mergedPending.length === 0) {
             if (result.processed.length > 0) {
                 vscode.window.showInformationMessage(`已完成领域基线聚合：处理 ${result.processed.length} 个迭代，未发现待裁决领域`);
             } else {
@@ -1353,11 +1363,34 @@ export class HarnessActionsService {
             return;
         }
 
-        const summary = result.suspectedDomains
+        const summary = mergedPending
             .slice(0, 5)
             .map(item => `${item.rawDomain} (${item.iteration})`)
             .join('；');
-        vscode.window.showWarningMessage(`发现 ${result.suspectedDomains.length} 个待裁决领域：${summary}`);
+        vscode.window.showWarningMessage(`发现 ${mergedPending.length} 个待裁决领域：${summary}`);
+    }
+
+    /**
+     * Commit docs/domains baseline changes on the current main-branch working tree.
+     */
+    async commitDomainBaselineByTaskId(taskId: string): Promise<void> {
+        if (this.deps.isWorktreeSubview()) {
+            vscode.window.showWarningMessage('领域基线提交仅支持主面板执行');
+            return;
+        }
+
+        const task = this.getTaskById(taskId);
+        if (!task) {
+            return;
+        }
+
+        const repoRoot = this.resolveDomainBaselineRepoRoot(this.deps.getMasterRoot());
+        const result = await this.deps.gitService.commitDomainBaseline(repoRoot);
+        if (!result.success) {
+            vscode.window.showErrorMessage(result.message, { modal: true });
+            return;
+        }
+        vscode.window.showInformationMessage(result.message);
     }
 
     /**
@@ -1402,7 +1435,8 @@ export class HarnessActionsService {
             return;
         }
 
-        const repoRoot = this.deps.getMasterRoot();
+        const repoRoot = this.resolveDomainBaselineRepoRoot(this.deps.getMasterRoot());
+        this.ensureDomainRegistrySeed(this.deps.getMasterRoot(), repoRoot);
         const registryService = this.getDomainRegistryService();
         const load = registryService.loadRegistry(repoRoot);
         if (load.validationErrors.length > 0) {
@@ -1473,10 +1507,114 @@ export class HarnessActionsService {
     }
 
     /**
+     * Merge suspected-domain records using iteration+rawDomain as stable dedupe key.
+     */
+    private mergeSuspectedDomainRecords(
+        existing: SuspectedDomainRecord[],
+        incoming: SuspectedDomainRecord[],
+    ): SuspectedDomainRecord[] {
+        const merged = new Map<string, SuspectedDomainRecord>();
+
+        for (const item of [...existing, ...incoming]) {
+            const rawDomain = (item.rawDomain || '').trim();
+            const iteration = (item.iteration || '').trim();
+            if (!rawDomain || !iteration) {
+                continue;
+            }
+
+            const key = `${iteration}|${rawDomain.toLowerCase()}`;
+            const prev = merged.get(key);
+            if (!prev) {
+                merged.set(key, {
+                    iteration,
+                    rawDomain,
+                    relatedReqIds: Array.from(new Set(item.relatedReqIds || [])).sort((a, b) => a.localeCompare(b)),
+                    suggestedCanonical: item.suggestedCanonical || null,
+                });
+                continue;
+            }
+
+            merged.set(key, {
+                iteration,
+                rawDomain,
+                relatedReqIds: Array.from(new Set([...(prev.relatedReqIds || []), ...(item.relatedReqIds || [])])).sort((a, b) => a.localeCompare(b)),
+                suggestedCanonical: prev.suggestedCanonical || item.suggestedCanonical || null,
+            });
+        }
+
+        return Array.from(merged.values()).sort((a, b) => {
+            if (a.iteration !== b.iteration) {
+                return a.iteration.localeCompare(b.iteration);
+            }
+            return a.rawDomain.localeCompare(b.rawDomain);
+        });
+    }
+
+    /**
      * Resolve workspace-level suspected domain store path.
      */
     private resolveSuspectedDomainStorePath(): string {
         return path.join(this.deps.getMasterRoot(), BASE, 'domain-suspected.json');
+    }
+
+    /**
+     * Resolve the tracked repository root that should own docs/domains in monorepo mode.
+     */
+    private resolveDomainBaselineRepoRoot(workspaceRoot: string): string {
+        if (!isMonoMode(this.deps.getConfig())) {
+            return workspaceRoot;
+        }
+
+        const monoMainRoot = path.join(workspaceRoot, 'repos', 'mono-main');
+        if (fs.existsSync(monoMainRoot)) {
+            return monoMainRoot;
+        }
+
+        return workspaceRoot;
+    }
+
+    /**
+     * Seed mono-main registry from workspace registry when mono-main is empty.
+     */
+    private ensureDomainRegistrySeed(workspaceRoot: string, docsRepoRoot: string): void {
+        if (workspaceRoot === docsRepoRoot) {
+            return;
+        }
+
+        const registryService = this.getDomainRegistryService();
+        const sourcePath = registryService.resolveRegistryPath(workspaceRoot);
+        if (!fs.existsSync(sourcePath)) {
+            return;
+        }
+
+        const targetLoad = registryService.loadRegistry(docsRepoRoot);
+        if (targetLoad.validationErrors.length > 0) {
+            return;
+        }
+        if ((targetLoad.registry.domains || []).length > 0) {
+            return;
+        }
+
+        const sourceLoad = registryService.loadRegistry(workspaceRoot);
+        if (sourceLoad.validationErrors.length > 0) {
+            return;
+        }
+        if ((sourceLoad.registry.domains || []).length === 0) {
+            return;
+        }
+
+        const targetPath = registryService.resolveRegistryPath(docsRepoRoot);
+        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        fs.copyFileSync(sourcePath, targetPath);
+    }
+
+    /**
+     * Persist unresolved registry coverage issues for quick diagnosis of canonical=null cases.
+     */
+    private writeRegistryCoverageReport(workspaceRoot: string, docsRepoRoot?: string): void {
+        const issues = this.getDomainKnowledgeAggregateService().getRegistryCoverageIssues(workspaceRoot, docsRepoRoot);
+        const filePath = path.join(workspaceRoot, BASE, 'domain-registry-coverage.json');
+        writeTextAtomic(filePath, `${JSON.stringify({ issues }, null, 2)}\n`);
     }
 
     private async initializeTaskGit(task: Task): Promise<void> {

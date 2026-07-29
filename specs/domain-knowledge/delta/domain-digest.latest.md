@@ -1,30 +1,38 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-07-23T04:14:28.786Z
+- generatedAt: 2026-07-29T09:14:59.984Z
 - taskId: task_1784774141609
 - taskName: domain-knowledge
 - gateLevel: standard
-- totalChanges: 23
-- blockedByGate: 6
+- totalChanges: 26
+- blockedByGate: 8
 
 ## Executive Summary
 
-- highRiskChanges: 6
+- highRiskChanges: 8
 - mediumRiskChanges: 12
-- lowRiskChanges: 5
+- lowRiskChanges: 6
 
 ## Domain Index
 
 | domain | total | high | medium | low | blocked |
 | --- | --- | --- | --- | --- | --- |
-| uncategorized | 23 | 6 | 12 | 5 | 6 |
+| domain-knowledge | 2 | 1 | 0 | 1 | 1 |
+| uncategorized | 24 | 7 | 12 | 5 | 7 |
 
 ## Domain Sections
 
+### Domain: domain-knowledge
+
+- [2026-07-29T08:24:45.782Z] [dev] [high] Development drift gate blocked
+  - DEV-DRIFT-002: 检测到契约敏感代码变更（controller/route/dto/schema/model），但 design.md 未更新
+  - DEV-DRIFT-003: 检测到测试脚本/测试代码变更，但 testcase.md 未更新
+  - changedFiles=21
+- [2026-07-29T09:14:59.982Z] [dev] [low] Development drift gate passed
+  - changedFiles=24
+
 ### Domain: uncategorized
 
-- [2026-07-23T03:38:02.123Z] [tsk] [medium] TSK snapshot updated
-  - tsk:no-semantic-diff
 - [2026-07-23T03:38:02.298Z] [dev] [high] Development drift gate blocked
   - DEV-DRIFT-002: 检测到契约敏感代码变更（controller/route/dto/schema/model），但 design.md 未更新
   - DEV-DRIFT-003: 检测到测试脚本/测试代码变更，但 testcase.md 未更新
@@ -76,4 +84,9 @@
   - gwt-count:7->9
 - [2026-07-23T04:14:28.784Z] [dev] [low] Development drift gate passed
   - changedFiles=7
+- [2026-07-24T03:14:14.843Z] [dev] [high] Development drift gate blocked
+  - DEV-DRIFT-001: 开发验收阶段检测到代码变更，但 requirements/design/testcase/tasks 未同步更新
+  - DEV-DRIFT-002: 检测到契约敏感代码变更（controller/route/dto/schema/model），但 design.md 未更新
+  - DEV-DRIFT-003: 检测到测试脚本/测试代码变更，但 testcase.md 未更新
+  - changedFiles=18
 

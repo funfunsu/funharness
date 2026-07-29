@@ -46,6 +46,15 @@
 - 前置条件：已存在合法 delta，且 AI 润色调用抛错。
 - GIVEN 启用可选 AI 润色，WHEN 润色失败，THEN 聚合过程不得失败，必须回退到纯结构化输出并完成落盘。
 
+### TC-DK-007 领域基线 Git 提交与 worktree 隔离
+
+- requirementIds: Req-dk-6
+- 前置条件：主面板可执行提交，`docs/domains` 目录存在且所在目录为 Git 工作树。
+- GIVEN 主面板执行「提交」动作，WHEN 调用 commitDomainBaseline，THEN 应对 `docs/domains` 执行 git add 并 git commit，提交信息以 `chore(domain-baseline):` 开头。
+- GIVEN `docs/domains` 下无待提交变更，WHEN 执行提交，THEN 应返回「无待提交变更」提示，不产生空 commit。
+- GIVEN worktree 子视图收到 `commitDomainBaseline` 消息，WHEN 控制器处理，THEN 应被 worktree allowlist 拦截，不得触达 Git 操作层。
+- GIVEN 扩展命令注册，WHEN 检查命令定义，THEN 必须存在 `fun-harness.commitDomainBaseline`。
+
 ## 执行记录
 
 - 参考自动化测试：`apps/test/domainKnowledgeFlow.test.js`
@@ -93,4 +102,10 @@ testCases:
     type: contract
     automated: false
     script: manual
+  - id: TC-DK-007
+    requirementIds: [Req-dk-6]
+    title: 领域基线 Git 提交与 worktree 隔离
+    type: contract
+    automated: true
+    script: apps/test/domainKnowledgeFlow.test.js
 ```

@@ -53,7 +53,7 @@ function buildAutoPollPanelHtml(status: AutoPollStatus): string {
 <div class="autopoll-title">🟢 自动轮询远程任务并执行：运行中</div>
 <div class="autopoll-hint">每 ${intervalLabel} 运行 <b>${escapeHtml(status.script)}</b>，拉取到的新内容写入当前 worktree 的 <b>todo.md</b>（内容为空或无变化时不覆盖）。</div>
 ${dispatchLine}
-<button class="btn-orange" onclick="toggleAutoPoll(false)">⏸ 关闭自动轮询</button>
+<button class="action-btn action-btn--warning" onclick="toggleAutoPoll(false)">⏸ 关闭自动轮询</button>
 </div>`;
     }
 
@@ -68,7 +68,7 @@ ${dispatchLine}
 <div class="autopoll-hint">开启后，本 worktree 每 ${intervalLabel} 运行 <b>${escapeHtml(status.script)}</b>，将拉取到的新内容写入 <b>todo.md</b>，并自动派发给当前迭代任务的 AI 执行器执行。同一时间只能有一个 worktree 开启。</div>
 ${elsewhereNote}
 ${scriptNote}
-<button class="btn-green" onclick="toggleAutoPoll(true)">▶ 开启自动轮询远程任务并执行</button>
+<button class="action-btn action-btn--success" onclick="toggleAutoPoll(true)">▶ 开启自动轮询远程任务并执行</button>
 </div>`;
 }
 
@@ -137,98 +137,98 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_REQUIREMENT],
-        render: (ctx) => `<button class="btn-gray" onclick="runAgent('req','${ctx.task.id}')">🤖 运行需求 Agent</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="runAgent('req','${ctx.task.id}')">🤖 运行需求 Agent</button>`,
     },
     {
         key: 'req-confirm',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_REQUIREMENT],
-        render: (ctx) => `<button class="btn-blue" onclick="next('req','${ctx.task.id}')">✅ 确认需求并进入设计</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="next('req','${ctx.task.id}')">✅ 确认需求并进入设计</button>`,
     },
     {
         key: 'req-view',
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_REQUIREMENT],
-        render: (ctx) => `<button class="btn-gray" onclick="openArtifact('${ctx.task.id}','requirements')">📄 查看需求产物</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','requirements')">📄 查看需求产物</button>`,
     },
     {
         key: 'des-run',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_DESIGN],
-        render: (ctx) => `<button class="btn-gray" onclick="runAgent('des','${ctx.task.id}')">🤖 运行设计 Agent</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="runAgent('des','${ctx.task.id}')">🤖 运行设计 Agent</button>`,
     },
     {
         key: 'des-confirm-tcs',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_DESIGN],
-        render: (ctx) => `<button class="btn-blue" onclick="next('des','${ctx.task.id}','tcs')">✅ 确认设计并进入 Testcase</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="next('des','${ctx.task.id}','tcs')">✅ 确认设计并进入 Testcase</button>`,
     },
     {
         key: 'des-skip-tsk',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_DESIGN],
-        render: (ctx) => `<button class="btn-blue" onclick="next('des','${ctx.task.id}','tsk')">✅ 确认设计并进入任务（跳过 Testcase）</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="next('des','${ctx.task.id}','tsk')">✅ 确认设计并进入任务（跳过 Testcase）</button>`,
     },
     {
         key: 'des-view',
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_DESIGN],
-        render: (ctx) => `<button class="btn-gray" onclick="openArtifact('${ctx.task.id}','design')">📄 查看设计产物</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','design')">📄 查看设计产物</button>`,
     },
     {
         key: 'tcs-run',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TESTCASE],
-        render: (ctx) => `<button class="btn-gray" onclick="runAgent('tcs','${ctx.task.id}')">🤖 运行测试用例 Agent</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="runAgent('tcs','${ctx.task.id}')">🤖 运行测试用例 Agent</button>`,
     },
     {
         key: 'tcs-confirm',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TESTCASE],
-        render: (ctx) => `<button class="btn-blue" onclick="next('tcs','${ctx.task.id}')">✅ 确认测试用例</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="next('tcs','${ctx.task.id}')">✅ 确认测试用例</button>`,
     },
     {
         key: 'tcs-view',
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TESTCASE, STAGE.WRITING_TASKS, STAGE.DEVELOPING],
-        render: (ctx) => `<button class="btn-gray" onclick="openArtifact('${ctx.task.id}','testcase')">📄 查看测试用例</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','testcase')">📄 查看测试用例</button>`,
     },
     {
         key: 'test-script-view',
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TESTCASE, STAGE.DEVELOPING],
-        render: (ctx) => `<button class="btn-gray" onclick="openArtifact('${ctx.task.id}','testScript')">🧪 查看测试脚本</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','testScript')">🧪 查看测试脚本</button>`,
     },
     {
         key: 'tsk-run',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TASKS],
-        render: (ctx) => `<button class="btn-gray" onclick="runAgent('tsk','${ctx.task.id}')">🤖 运行任务 Agent</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="runAgent('tsk','${ctx.task.id}')">🤖 运行任务 Agent</button>`,
     },
     {
         key: 'tsk-confirm',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TASKS],
-        render: (ctx) => `<button class="btn-blue" onclick="next('tsk','${ctx.task.id}')">✅ 确认任务拆解</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="next('tsk','${ctx.task.id}')">✅ 确认任务拆解</button>`,
     },
     {
         key: 'tasks-view',
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TASKS, STAGE.DEVELOPING, STAGE.READY_FOR_REVIEW],
-        render: (ctx) => `<button class="btn-gray" onclick="openArtifact('${ctx.task.id}','tasks')">📋 查看任务产物</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','tasks')">📋 查看任务产物</button>`,
     },
     {
         key: 'dev-auto-toggle',
@@ -239,8 +239,8 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         // wouldn't have anything to dispatch — hide them and show "运行开发 Agent" instead.
         when: (ctx) => !ctx.allSubTasksDone && !ctx.task.quickMode,
         render: (ctx) => ctx.taskView.isAuto
-            ? `<button class="btn-orange" onclick="pauseAuto('${ctx.task.id}')">⏸ 暂停</button>`
-            : `<button class="btn-green" onclick="startAuto('${ctx.task.id}')">▶ 自动执行</button>`,
+            ? `<button class="action-btn action-btn--warning" onclick="pauseAuto('${ctx.task.id}')">⏸ 暂停</button>`
+            : `<button class="action-btn action-btn--success" onclick="startAuto('${ctx.task.id}')">▶ 自动执行</button>`,
     },
     {
         key: 'dev-next',
@@ -248,7 +248,7 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
         when: (ctx) => !ctx.allSubTasksDone && !ctx.task.quickMode,
-        render: (ctx) => `<button class="btn-gray" onclick="nextTask('${ctx.task.id}')">⏭ 下一个</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="nextTask('${ctx.task.id}')">⏭ 下一个</button>`,
     },
     {
         key: 'dev-run-quick',
@@ -256,35 +256,35 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
         when: (ctx) => Boolean(ctx.task.quickMode),
-        render: (ctx) => `<button class="btn-green" onclick="runAgent('dev','${ctx.task.id}')">🤖 运行开发 Agent</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--success" onclick="runAgent('dev','${ctx.task.id}')">🤖 运行开发 Agent</button>`,
     },
     {
         key: 'dev-push-primary',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
-        render: (ctx) => `<button class="btn-blue" onclick="${ctx.isWorktreeSubview ? 'pushDev' : 'pushAll'}('${ctx.task.id}')">🚀 推送</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="${ctx.isWorktreeSubview ? 'pushDev' : 'pushAll'}('${ctx.task.id}')">🚀 推送</button>`,
     },
     {
         key: 'review-spec',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.READY_FOR_REVIEW],
-        render: (ctx) => `<button class="btn-gray" onclick="specReview('${ctx.task.id}')">🧭 Spec 评审报告</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="specReview('${ctx.task.id}')">🧭 Spec 评审报告</button>`,
     },
     {
         key: 'review-pass',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.READY_FOR_REVIEW],
-        render: (ctx) => `<button class="btn-green" onclick="pass('${ctx.task.id}')">🏁 完成任务并合并</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--success" onclick="pass('${ctx.task.id}')">🏁 完成任务并合并</button>`,
     },
     {
         key: 'spec-review',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
-        render: (ctx) => `<button class="btn-gray" onclick="specReview('${ctx.task.id}')">🧭 Spec 评审</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="specReview('${ctx.task.id}')">🧭 Spec 评审</button>`,
     },
     {
         key: 'sync-code',
@@ -292,7 +292,7 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: 'all',
         when: (ctx) => ctx.hasWorktree,
-        render: (ctx) => `<button class="btn-gray" onclick="syncMainCode('${ctx.task.id}')">🔄 拉取代码</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="syncMainCode('${ctx.task.id}')">🔄 拉取代码</button>`,
     },
     {
         key: 'commit-to-baseline',
@@ -300,7 +300,7 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: 'all',
         when: (ctx) => ctx.hasWorktree,
-        render: (ctx) => `<button class="btn-gray" onclick="commitToBaseline('${ctx.task.id}')">📤 提交代码</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="commitToBaseline('${ctx.task.id}')">📤 提交代码</button>`,
     },
     // 'open-worktree' is rendered as a fixed button in the task card header, not via the action system.
     {
@@ -315,7 +315,7 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: 'all',
-        render: (ctx) => `<button class="btn-red" onclick="resetTask('${ctx.task.id}')">♻ 重置任务</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--danger" onclick="resetTask('${ctx.task.id}')">♻ 重置任务</button>`,
     },
 ];
 
@@ -398,11 +398,21 @@ body{background:#111;color:#eee;padding:14px;font-family:-apple-system;padding-b
 .action-stack{display:flex;flex-direction:column;gap:8px;margin-top:10px}
 .action-group{display:flex;gap:6px;flex-wrap:wrap}
 .action-label{font-size:11px;color:#8f8f94;text-transform:uppercase;letter-spacing:.04em}
-.btn-blue{background:#007aff;color:white}
-.btn-green{background:#34c759;color:white}
-.btn-gray{background:#444;color:#eee}
-.btn-orange{background:#ff9500;color:white}
-.btn-red{background:#ff3b30;color:white}
+.action-btn{flex:1;min-width:80px;padding:8px 10px;border-radius:8px;border:1px solid transparent;font-size:11px;font-weight:600;line-height:1;display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;transition:background-color .16s ease,border-color .16s ease,color .16s ease,transform .12s ease}
+.action-btn:hover{transform:translateY(-1px)}
+.action-btn:active{transform:translateY(0)}
+.action-btn:focus-visible{outline:1px solid #6aa8ff;outline-offset:1px}
+.action-btn[disabled]{opacity:.45;pointer-events:none;transform:none}
+.action-btn--primary{background:#007aff;color:#fff}
+.action-btn--primary:hover{background:#2a8dff}
+.action-btn--success{background:#34c759;color:#fff}
+.action-btn--success:hover{background:#45d46a}
+.action-btn--neutral{background:#444;color:#eee}
+.action-btn--neutral:hover{background:#555}
+.action-btn--warning{background:#ff9500;color:#fff}
+.action-btn--warning:hover{background:#ffb143}
+.action-btn--danger{background:#ff3b30;color:#fff}
+.action-btn--danger:hover{background:#ff5550}
 .fixed-bottom{position:sticky;bottom:0;background:#111;padding-top:8px;padding-bottom:4px;margin-top:10px}
 .input-card{background:#1c1c1e;border-radius:12px;padding:12px}
 input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:#2c2c2e;color:#fff;margin-bottom:8px}
@@ -475,19 +485,11 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .overview-table td{color:#ddd;padding:2px 6px}
 .overview-table tr.blocked td{color:#ff9a9a}
 .overview-table tr.warn td{color:#ffd37a}
-.dk-gov-card{margin:0 0 12px;padding:10px 12px;background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-editorWidget-border);border-radius:8px}
-.dk-gov-title{font-weight:600;font-size:13px;margin-bottom:8px;color:var(--vscode-foreground)}
+.dk-gov-card{margin:0 0 12px;padding:12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
+.dk-gov-title-wrap{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.dk-gov-title{font-weight:600;font-size:13px;color:#f2f2f4}
+.dk-gov-subtitle{font-size:11px;color:#8f8f94;line-height:1.45}
 .dk-gov-actions{display:flex;gap:8px;flex-wrap:wrap}
-.dk-btn{height:28px;line-height:28px;padding:0 12px;border-radius:2px;border:1px solid transparent;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;user-select:none}
-.dk-btn:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:1px}
-.dk-btn[disabled]{opacity:.4;pointer-events:none}
-.dk-btn-primary{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
-.dk-btn-primary:hover{background:var(--vscode-button-hoverBackground)}
-.dk-btn-secondary{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}
-.dk-btn-secondary:hover{background:var(--vscode-button-secondaryHoverBackground)}
-.dk-btn-ghost{background:transparent;color:var(--vscode-foreground);border-color:var(--vscode-panel-border)}
-.dk-btn-danger{background:transparent;color:var(--vscode-errorForeground);border-color:var(--vscode-errorForeground)}
-.dk-btn-main{font-weight:600}
 .dk-spin{animation:dk-spin 1s linear infinite}
 @keyframes dk-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 </style>
@@ -509,27 +511,40 @@ ${!isWorktreeSubview ? `<div class="nav">
 ${isWorktreeSubview ? '<div class="mode-banner">子面板仅保留当前迭代任务操作，不提供高级设置与创建迭代功能。<button class="toolbar-btn" style="margin-left:8px" onclick="openMasterWorkspace()">↩ 回到主工作区</button></div>' : ''}
 
 ${!isWorktreeSubview ? `<div class="dk-gov-card">
-<div class="dk-gov-title">领域基线治理</div>
+<div class="dk-gov-title-wrap">
+<div class="dk-gov-title">🧭 领域基线治理</div>
+<div class="dk-gov-subtitle">聚合领域基线、处理疑似新领域并预览总览（仅主面板可用）</div>
+</div>
 <div class="dk-gov-actions">
-<button class="dk-btn dk-btn-primary dk-btn-main" data-domain-action="runDomainBaselineAggregation" onclick="runDomainBaselineAggregation()" ${governanceTaskId ? '' : 'disabled'}>领域基线聚合</button>
-<button class="dk-btn dk-btn-danger" data-domain-action="reviewSuspectedDomains" onclick="reviewSuspectedDomains()" ${governanceTaskId ? '' : 'disabled'}>疑似领域裁决</button>
-<button class="dk-btn dk-btn-ghost" data-domain-action="previewDomainBaselineSummary" onclick="previewDomainBaselineSummary()" ${governanceTaskId ? '' : 'disabled'}>领域总览预览</button>
+<button class="action-btn action-btn--primary" data-domain-action="runDomainBaselineAggregation" onclick="runDomainBaselineAggregation()" ${governanceTaskId ? '' : 'disabled'}>领域基线聚合</button>
+<button class="action-btn action-btn--danger" data-domain-action="applyDomainAdjudication" onclick="applyDomainAdjudication()" ${governanceTaskId ? '' : 'disabled'}>疑似领域裁决</button>
+<button class="action-btn action-btn--success" data-domain-action="commitDomainBaseline" onclick="commitDomainBaseline()" ${governanceTaskId ? '' : 'disabled'}>提交</button>
+<button class="action-btn action-btn--ghost" data-domain-action="previewDomainBaselineSummary" onclick="previewDomainBaselineSummary()" ${governanceTaskId ? '' : 'disabled'}>预览</button>
+</div>
+${config.specDeltaOverview && config.specDeltaOverview.length > 0 ? buildSpecDeltaOverviewHtml(config.specDeltaOverview) : ''}
+</div>` : ''}
+
+${isWorktreeSubview ? `<div class="dk-gov-card">
+<div class="dk-gov-title-wrap">
+<div class="dk-gov-title">🧩 领域能力抽取</div>
+<div class="dk-gov-subtitle">worktree 侧只做确定性抽取（零 AI）：生成领域能力增量文件（capability-delta.json），供主面板聚合使用</div>
+</div>
+<div class="dk-gov-actions">
+<button class="action-btn action-btn--primary" data-domain-action="generateCapabilityDelta" onclick="generateCapabilityDelta()" ${governanceTaskId ? '' : 'disabled'}>生成领域能力增量</button>
 </div>
 </div>` : ''}
 
 ${!isWorktreeSubview && mainButtons.length > 0 ? `<div class="main-actions-card">
 <div class="main-actions-title">🛠 自定义操作（主面板）</div>
-<div class="main-actions">${mainButtons.map(b => `<button class="btn-gray" onclick="runMainCustomButton('${b.id}')">${escapeHtml(b.name)}</button>`).join('')}</div>
+<div class="main-actions">${mainButtons.map(b => `<button class="action-btn action-btn--neutral" onclick="runMainCustomButton('${b.id}')">${escapeHtml(b.name)}</button>`).join('')}</div>
 </div>` : ''}
 
 ${isWorktreeSubview && config.autoPollEnabled && config.autoPoll ? buildAutoPollPanelHtml(config.autoPoll) : ''}
 
-${!isWorktreeSubview && config.specDeltaOverview && config.specDeltaOverview.length > 0 ? buildSpecDeltaOverviewHtml(config.specDeltaOverview) : ''}
-
 ${`<div class="todo-card" id="workspace-todo-panel">
 <div class="todo-head">
 <div class="todo-title">${isWorktreeSubview ? '📝 待办（工作区）' : '📝 待办'}</div>
-<button class="btn-blue" style="padding:6px 10px;font-size:11px;min-width:auto;flex:none" onclick="openTodoCreateEditor()">＋ 添加待办</button>
+<button class="action-btn action-btn--primary" style="padding:6px 10px;font-size:11px;min-width:auto;flex:none" onclick="openTodoCreateEditor()">＋ 添加待办</button>
 </div>
 <div id="todo-loading" class="todo-loading" style="display:none">正在加载待办列表...</div>
 <div id="todo-error" class="todo-error" style="display:none"></div>
@@ -543,8 +558,8 @@ ${`<div class="todo-card" id="workspace-todo-panel">
 <option value="promoted">promoted</option>
 </select>
 <div class="todo-editor-actions">
-<button class="btn-gray" onclick="closeTodoEditor()">取消</button>
-<button class="btn-blue" onclick="submitTodoEditor()">保存</button>
+<button class="action-btn action-btn--neutral" onclick="closeTodoEditor()">取消</button>
+<button class="action-btn action-btn--primary" onclick="submitTodoEditor()">保存</button>
 </div>
 </div>
 <div id="todo-empty" class="todo-empty" style="display:none">
@@ -600,7 +615,7 @@ ${visibleTaskViews.map(view => {
     // main panel only when an iteration worktree exists). Resolved server-side by id.
     if ((isWorktreeSubview || hasWorktree) && iterationButtons.length > 0) {
         for (const b of iterationButtons) {
-            sideActions.push(`<button class="btn-gray" onclick="runCustomButton('${t.id}','${b.id}')">${escapeHtml(b.name)}</button>`);
+            sideActions.push(`<button class="action-btn action-btn--neutral" onclick="runCustomButton('${t.id}','${b.id}')">${escapeHtml(b.name)}</button>`);
         }
     }
 
@@ -614,7 +629,7 @@ ${visibleTaskViews.map(view => {
 <div class="task-item" data-task-id="${t.id}" data-abnormal="${isAbnormal ? '1' : '0'}">
 <div style="display:flex;justify-content:space-between;align-items:center">
 <div class="task-name">${t.name}</div>
-${!isWorktreeSubview && t.worktreePath ? `<button class="btn-gray" style="flex:none;padding:4px 10px;font-size:11px;min-width:auto" onclick="openFolderLocation('${t.id}','worktree')">📁 Worktree</button>` : ''}
+${!isWorktreeSubview && t.worktreePath ? `<button class="action-btn action-btn--neutral" style="flex:none;padding:4px 10px;font-size:11px;min-width:auto" onclick="openFolderLocation('${t.id}','worktree')">📁 Worktree</button>` : ''}
 </div>
 <div class="task-desc-wrap" id="task-desc-wrap-${t.id}">
 <div class="task-desc-view" id="task-desc-view-${t.id}">
@@ -629,8 +644,8 @@ oninput="autoGrowTaskDescEditor('${t.id}')"
 placeholder="请输入需求描述"
 >${escapeHtml(t.desc || '')}</textarea>
 <div class="task-desc-editor-actions">
-<button type="button" class="btn-gray" onclick="cancelTaskDescEditor('${t.id}')">取消</button>
-<button type="button" class="btn-blue" onclick="commitTaskDescEditor('${t.id}')">保存</button>
+<button type="button" class="action-btn action-btn--neutral" onclick="cancelTaskDescEditor('${t.id}')">取消</button>
+<button type="button" class="action-btn action-btn--primary" onclick="commitTaskDescEditor('${t.id}')">保存</button>
 </div>
 </div>
 </div>
@@ -642,8 +657,8 @@ ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.lat
 <div class="task-progress"><div class="progress-bar" style="width:${view.pct}%"></div></div>
 <div style="font-size:12px">进度：${view.pct}%</div>` : ''}
 ${isWorktreeSubview ? `<div class="config-actions" style="margin-top:6px">
-<button class="btn-gray" onclick="setTaskAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
-<button class="btn-gray" onclick="setTaskAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
+<button class="action-btn action-btn--neutral" onclick="setTaskAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
+<button class="action-btn action-btn--neutral" onclick="setTaskAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
 </div>
 <div class="task-status">任务自动化：推进 ${taskAutoAdvance ? '开' : '关'} / 回修 ${taskAutoRepair ? '开' : '关'}</div>` : ''}
 <div class="toggle-row" style="margin:6px 0">
@@ -664,8 +679,8 @@ ${!isWorktreeSubview ? `<details class="task-config">
 <div class="task-status">文档：${artifactStatus}</div>
 <div class="task-status">任务自动化：推进 ${taskAutoAdvance ? '开' : '关'} / 回修 ${taskAutoRepair ? '开' : '关'}</div>
 <div class="config-actions">
-<button class="btn-gray" onclick="setTaskAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
-<button class="btn-gray" onclick="setTaskAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
+<button class="action-btn action-btn--neutral" onclick="setTaskAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
+<button class="action-btn action-btn--neutral" onclick="setTaskAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
 </div>
 </div>
 </details>` : ''}
@@ -678,14 +693,14 @@ ${subTasks.map(st => {
     const icon = st.status === 'done' ? '✅' : st.status === 'doing' ? '⏳' : st.status === 'failed' ? '❌' : '⬜';
     const cls = `st-${st.status}`;
     const redoAction = canOperateSubTasks && st.status === 'doing'
-        ? ` <button class="btn-gray" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="retry('${st.id}','${t.id}')">重做</button>`
+        ? ` <button class="action-btn action-btn--neutral" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="retry('${st.id}','${t.id}')">重做</button>`
         : '';
     const actions = !canOperateSubTasks
         ? ''
         : st.status === 'failed'
-        ? ` <button class="btn-gray" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="retry('${st.id}','${t.id}')">重跑</button> <button class="btn-green" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="setSubStatus('${t.id}','${st.id}','done')">标记完成</button>`
+        ? ` <button class="action-btn action-btn--neutral" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="retry('${st.id}','${t.id}')">重跑</button> <button class="action-btn action-btn--success" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="setSubStatus('${t.id}','${st.id}','done')">标记完成</button>`
         : st.status === 'doing'
-            ? `${redoAction} <button class="btn-green" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="setSubStatus('${t.id}','${st.id}','done')">标记完成</button>`
+            ? `${redoAction} <button class="action-btn action-btn--success" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="setSubStatus('${t.id}','${st.id}','done')">标记完成</button>`
             : '';
     return `<div class="sub-task"><span class="${cls}">${icon} ${st.id}</span> <span>${st.name}</span>${actions}</div>`;
 }).join('')}
@@ -708,7 +723,7 @@ ${!isWorktreeSubview ? `<div class="fixed-bottom">
 <span>快捷模式（跳过拆解，直接开发）</span>
 <input type="checkbox" id="quickMode" style="margin:0;width:16px;height:16px;flex-shrink:0">
 </label>
-<button class="btn-primary" onclick="create()">创建迭代开发版本</button>
+<button class="action-btn action-btn--primary" onclick="create()">创建迭代开发版本</button>
 </div>
 </div>` : ''}
 
@@ -749,8 +764,17 @@ function postDomainGovernanceAction(type){
 /** Trigger main-panel domain baseline aggregation route. */
 function runDomainBaselineAggregation(){postDomainGovernanceAction('runDomainBaselineAggregation')}
 
+/** Trigger worktree deterministic capability-delta generation route. */
+function generateCapabilityDelta(){postDomainGovernanceAction('generateCapabilityDelta')}
+
 /** Trigger main-panel suspected-domain review route. */
 function reviewSuspectedDomains(){postDomainGovernanceAction('reviewSuspectedDomains')}
+
+/** Trigger main-panel suspected-domain adjudication route. */
+function applyDomainAdjudication(){postDomainGovernanceAction('applyDomainAdjudication')}
+
+/** Trigger main-panel domain baseline commit route. */
+function commitDomainBaseline(){postDomainGovernanceAction('commitDomainBaseline')}
 
 /** Trigger main-panel domain index preview route. */
 function previewDomainBaselineSummary(){postDomainGovernanceAction('previewDomainBaselineSummary')}
@@ -877,10 +901,10 @@ function renderTodoPanel(){
             + descHtml
             + '<div class="todo-item-meta">ID: '+safeId+' · 更新于 '+(updatedAt||'-')+'</div>'
             + '<div class="todo-item-actions">'
-            + '<button class="btn-gray" data-todo-action="toggle" data-todo-id="'+safeId+'" data-todo-next="'+nextStatus+'">'+toggleLabel+'</button>'
-            + '<button class="btn-blue" data-todo-action="edit" data-todo-id="'+safeId+'">编辑</button>'
-            + '<button class="btn-green" data-todo-action="promote" data-todo-id="'+safeId+'">'+promoteLabel+'</button>'
-            + '<button class="btn-red" data-todo-action="delete" data-todo-id="'+safeId+'">删除</button>'
+            + '<button class="action-btn action-btn--neutral" data-todo-action="toggle" data-todo-id="'+safeId+'" data-todo-next="'+nextStatus+'">'+toggleLabel+'</button>'
+            + '<button class="action-btn action-btn--primary" data-todo-action="edit" data-todo-id="'+safeId+'">编辑</button>'
+            + '<button class="action-btn action-btn--success" data-todo-action="promote" data-todo-id="'+safeId+'">'+promoteLabel+'</button>'
+            + '<button class="action-btn action-btn--danger" data-todo-action="delete" data-todo-id="'+safeId+'">删除</button>'
             + '</div>'
             + '</div>';
     }).join('');
@@ -1465,6 +1489,7 @@ ${inv.dirs.repoBackend ? `<div class="kv">后端迭代脚本(候选)：<b>${esca
 <div class="custom-prompt-more" id="customPromptMore" style="display:none">
 <button class="custom-prompt-btn" onclick="openCustomPrompt('tcs')" style="background:#007aff" ${disabled}>测试用例</button>
 <button class="custom-prompt-btn" onclick="openCustomPrompt('tsk')" style="background:#007aff" ${disabled}>任务拆解</button>
+<button class="custom-prompt-btn" onclick="openCustomConstitution()" style="background:#0f8f4f" ${disabled}>Constitution</button>
 </div>
 </div>
 
@@ -1472,6 +1497,7 @@ ${inv.dirs.repoBackend ? `<div class="kv">后端迭代脚本(候选)：<b>${esca
 const v=acquireVsCodeApi();
 function p(x){v.postMessage({type:'page',page:x})}
 function openCustomPrompt(step){v.postMessage({type:'openCustomPrompt',step})}
+function openCustomConstitution(){v.postMessage({type:'openCustomConstitution'})}
 function toggleCustomPromptMore(){
     const more=document.getElementById('customPromptMore');
     const toggle=document.getElementById('customPromptMoreToggle');

@@ -11,7 +11,7 @@ import {
     DomainDelta,
     InvariantDeltaItem,
 } from '../models';
-import { DomainRegistryService } from './domainRegistryService';
+import { DomainRegistryService, DomainFallbackSignals } from './domainRegistryService';
 
 interface RequirementRecord {
     id: string;
@@ -32,7 +32,7 @@ interface ApiContractRecord {
 
 interface InvariantRecord {
     id: string;
-    requirementId: string;
+    requirementIds: string[];
     rule: string;
 }
 
@@ -116,16 +116,14 @@ export class CapabilityDeltaService {
         }
 
         for (const contract of apiContracts) {
-            const targetReqId = this.pickPrimaryRequirementId(contract.requirementIds);
-            const targetRequirement = targetReqId ? requirementMap.get(targetReqId) || null : null;
-            const bucket = targetRequirement
-                ? this.resolveBucketForRequirement(domainBuckets, registryResult.registry, targetRequirement)
-                : this.resolveBucketForUnboundEntry(
-                    domainBuckets,
-                    registryResult.registry,
-                    targetReqId,
-                );
+            const bucket = this.resolveBucketForContract(
+                domainBuckets,
+                registryResult.registry,
+                contract,
+                requirementMap,
+            );
 
+            const targetReqId = this.pickPrimaryRequirementId(contract.requirementIds);
             bucket.contracts.set(contract.id, {
                 id: contract.id,
                 reqId: targetReqId || '',
@@ -137,18 +135,17 @@ export class CapabilityDeltaService {
         }
 
         for (const invariant of invariants) {
-            const targetRequirement = requirementMap.get(invariant.requirementId) || null;
-            const bucket = targetRequirement
-                ? this.resolveBucketForRequirement(domainBuckets, registryResult.registry, targetRequirement)
-                : this.resolveBucketForUnboundEntry(
-                    domainBuckets,
-                    registryResult.registry,
-                    invariant.requirementId,
-                );
+            const bucket = this.resolveBucketForInvariant(
+                domainBuckets,
+                registryResult.registry,
+                invariant,
+                requirementMap,
+            );
 
+            const primaryReqId = invariant.requirementIds.length > 0 ? invariant.requirementIds[0] : '';
             bucket.invariants.set(invariant.id, {
                 id: invariant.id,
-                reqId: invariant.requirementId,
+                reqId: primaryReqId,
                 text: invariant.rule,
             });
         }
@@ -446,11 +443,33 @@ export class CapabilityDeltaService {
             throw new Error('iterationPath is required');
         }
 
-        if (path.isAbsolute(normalizedIterationPath)) {
-            return path.resolve(normalizedIterationPath);
+        const resolved = path.isAbsolute(normalizedIterationPath)
+            ? path.resolve(normalizedIterationPath)
+            : path.resolve(repoRoot, normalizedIterationPath);
+
+        const hasArtifacts = (basePath: string): boolean => {
+            return fs.existsSync(path.join(basePath, 'requirements.md'))
+                && fs.existsSync(path.join(basePath, 'design.md'));
+        };
+
+        if (hasArtifacts(resolved)) {
+            return resolved;
         }
 
-        return path.resolve(repoRoot, normalizedIterationPath);
+        // Backward-compatible fallback: when caller passes a worktree root,
+        // artifacts may live under specs/<iteration-name>/.
+        const iterationName = path.basename(resolved);
+        const nestedUnderCurrent = path.join(resolved, 'specs', iterationName);
+        if (hasArtifacts(nestedUnderCurrent)) {
+            return nestedUnderCurrent;
+        }
+
+        const nestedUnderRepoRoot = path.join(repoRoot, 'specs', iterationName);
+        if (hasArtifacts(nestedUnderRepoRoot)) {
+            return nestedUnderRepoRoot;
+        }
+
+        return resolved;
     }
 
     /**
@@ -518,6 +537,7 @@ export class CapabilityDeltaService {
 
     /**
      * Parse invariant entries from design.md machine-readable YAML block.
+     * Supports both single and comma-separated requirementId values.
      */
     private parseInvariantsFromMachineBlock(designContent: string): InvariantRecord[] {
         const block = this.extractYamlMachineBlock(designContent);
@@ -527,12 +547,13 @@ export class CapabilityDeltaService {
         return items
             .map(item => {
                 const id = (item.id || '').trim();
-                const requirementId = (item.requirementId || '').trim();
+                const requirementIdStr = (item.requirementId || '').trim();
                 const rule = (item.rule || '').trim();
-                if (!id || !requirementId || !rule) {
+                if (!id || !requirementIdStr || !rule) {
                     return null;
                 }
-                return { id, requirementId, rule } as InvariantRecord;
+                const requirementIds = requirementIdStr.split(',').map(s => s.trim()).filter(Boolean);
+                return { id, requirementIds, rule } as InvariantRecord;
             })
             .filter((item): item is InvariantRecord => Boolean(item))
             .sort((left, right) => left.id.localeCompare(right.id));
@@ -565,6 +586,7 @@ export class CapabilityDeltaService {
 
     /**
      * Resolve or create a target domain bucket for records not directly bound to requirement data.
+     * Generates fallback signals from requirement ID patterns to improve domain inference.
      */
     private resolveBucketForUnboundEntry(
         buckets: Map<string, DomainBucket>,
@@ -572,11 +594,13 @@ export class CapabilityDeltaService {
         reqId: string | null,
     ): DomainBucket {
         const requirementId = (reqId || '').trim();
+        const fallbackSignals = this.generateFallbackSignalsForRequirementId(registry, requirementId);
+
         const normalized = this.domainRegistryService.normalizeDomain(
             registry,
             null,
             requirementId,
-            {},
+            fallbackSignals,
         );
 
         return this.ensureBucket(
@@ -585,6 +609,94 @@ export class CapabilityDeltaService {
             null,
             normalized.isSuspectedNew,
         );
+    }
+
+    /**
+     * Generate fallback domain signals from a requirement ID by matching against registry patterns.
+     * Attempts to match reqIdPrefix patterns to infer the most likely domain.
+     */
+    private generateFallbackSignalsForRequirementId(
+        registry: { domains: Array<{ canonical: string; aliases: string[]; displayName: string; status: 'active' | 'deprecated' }> },
+        requirementId: string,
+    ): DomainFallbackSignals {
+        if (!requirementId || !registry.domains) {
+            return {};
+        }
+
+        const signals: DomainFallbackSignals = {};
+
+        for (const domain of registry.domains) {
+            const metadata = (domain as any).metadata || {};
+            if (metadata.reqIdPrefix && typeof metadata.reqIdPrefix === 'string') {
+                try {
+                    const prefixPattern = new RegExp(`^${metadata.reqIdPrefix}`);
+                    if (prefixPattern.test(requirementId)) {
+                        signals.reqIdPrefixDomain = domain.canonical;
+                        break;
+                    }
+                } catch (e) {
+                    continue;
+                }
+            }
+        }
+
+        return signals;
+    }
+
+    /**
+     * Resolve or create a target domain bucket for an API contract with multiple requirement IDs.
+     * Tries each requirement in order until finding one with a valid domain.
+     */
+    private resolveBucketForContract(
+        buckets: Map<string, DomainBucket>,
+        registry: { domains: Array<{ canonical: string; aliases: string[]; displayName: string; status: 'active' | 'deprecated' }> },
+        contract: ApiContractRecord,
+        requirementMap: Map<string, RequirementRecord>,
+    ): DomainBucket {
+        for (const reqId of contract.requirementIds) {
+            const requirement = requirementMap.get(reqId) || null;
+            if (requirement && requirement.domain) {
+                return this.resolveBucketForRequirement(buckets, registry, requirement);
+            }
+        }
+
+        for (const reqId of contract.requirementIds) {
+            const requirement = requirementMap.get(reqId) || null;
+            if (requirement) {
+                return this.resolveBucketForRequirement(buckets, registry, requirement);
+            }
+        }
+
+        const primaryReqId = this.pickPrimaryRequirementId(contract.requirementIds);
+        return this.resolveBucketForUnboundEntry(buckets, registry, primaryReqId);
+    }
+
+    /**
+     * Resolve or create a target domain bucket for an invariant with multiple requirement IDs.
+     * Tries each requirement in order until finding one with a valid domain.
+     */
+    private resolveBucketForInvariant(
+        buckets: Map<string, DomainBucket>,
+        registry: { domains: Array<{ canonical: string; aliases: string[]; displayName: string; status: 'active' | 'deprecated' }> },
+        invariant: InvariantRecord,
+        requirementMap: Map<string, RequirementRecord>,
+    ): DomainBucket {
+        for (const reqId of invariant.requirementIds) {
+            const requirement = requirementMap.get(reqId) || null;
+            if (requirement && requirement.domain) {
+                return this.resolveBucketForRequirement(buckets, registry, requirement);
+            }
+        }
+
+        for (const reqId of invariant.requirementIds) {
+            const requirement = requirementMap.get(reqId) || null;
+            if (requirement) {
+                return this.resolveBucketForRequirement(buckets, registry, requirement);
+            }
+        }
+
+        const primaryReqId = invariant.requirementIds.length > 0 ? invariant.requirementIds[0] : null;
+        return this.resolveBucketForUnboundEntry(buckets, registry, primaryReqId);
     }
 
     /**

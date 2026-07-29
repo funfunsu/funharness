@@ -103,6 +103,17 @@ export interface AggregatePendingDeltasResult {
     suspectedDomains: SuspectedDomainRecord[];
 }
 
+export interface DomainRegistryCoverageIssue {
+    iteration: string;
+    rawDomain: string;
+    contentHash: string;
+}
+
+interface AggregateOneDeltaResult {
+    writes: number;
+    unresolved: number;
+}
+
 type DomainSummaryAiRefiner = (prompt: string) => string;
 
 /**
@@ -129,13 +140,17 @@ export class DomainKnowledgeAggregateService {
     /**
      * Aggregate pending capability-delta files and persist idempotent state in registry lastAggregated.
      */
-    aggregatePendingDeltas(repoRoot: string, enableAiRefinement: boolean): AggregatePendingDeltasResult {
+    aggregatePendingDeltas(repoRoot: string, enableAiRefinement: boolean, docsRepoRoot?: string): AggregatePendingDeltasResult {
         const normalizedRepoRoot = path.resolve((repoRoot || '').trim());
         if (!normalizedRepoRoot) {
             throw new Error('repoRoot is required');
         }
 
-        const registryLoad = this.domainRegistryService.loadRegistry(normalizedRepoRoot);
+        const normalizedDocsRepoRoot = docsRepoRoot
+            ? path.resolve(docsRepoRoot.trim())
+            : normalizedRepoRoot;
+
+        const registryLoad = this.domainRegistryService.loadRegistry(normalizedDocsRepoRoot);
         if (registryLoad.validationErrors.length > 0) {
             throw new Error(`Invalid registry: ${registryLoad.validationErrors.map(item => item.message).join('; ')}`);
         }
@@ -174,7 +189,8 @@ export class DomainKnowledgeAggregateService {
                 continue;
             }
 
-            if (this.domainRegistryService.hasAggregatedRecord(registry, delta.iteration, delta.contentHash)) {
+            const alreadyAggregated = this.domainRegistryService.hasAggregatedRecord(registry, delta.iteration, delta.contentHash);
+            if (alreadyAggregated && !this.shouldReprocessAggregatedDelta(registry, delta)) {
                 skipped.push({
                     iteration: delta.iteration,
                     contentHash: delta.contentHash,
@@ -183,14 +199,14 @@ export class DomainKnowledgeAggregateService {
                 continue;
             }
 
-            const writeCount = this.aggregateOneDelta(
-                normalizedRepoRoot,
+            const aggregateResult = this.aggregateOneDelta(
+                normalizedDocsRepoRoot,
                 registry,
                 delta,
                 suspectedDomains,
                 enableAiRefinement,
             );
-            if (writeCount > 0 || this.hasDomainPayload(delta)) {
+            if (aggregateResult.unresolved === 0 && (aggregateResult.writes > 0 || this.hasDomainPayload(delta))) {
                 const aggregatedAt = new Date().toISOString();
                 this.domainRegistryService.upsertAggregatedRecord(registry, {
                     iteration: delta.iteration,
@@ -207,16 +223,71 @@ export class DomainKnowledgeAggregateService {
         }
 
         if (registryChanged) {
-            this.domainRegistryService.saveRegistry(normalizedRepoRoot, registry);
+            this.domainRegistryService.saveRegistry(normalizedDocsRepoRoot, registry);
         }
 
-        this.upsertDomainIndex(normalizedRepoRoot, registry.domains);
+        this.upsertDomainIndex(normalizedDocsRepoRoot, registry.domains);
 
         return {
             processed,
             skipped,
             suspectedDomains: this.collectSuspectedDomains([], suspectedDomains),
         };
+    }
+
+    /**
+     * Scan all deltas and report unresolved raw domains against current registry mappings.
+     */
+    getRegistryCoverageIssues(repoRoot: string, docsRepoRoot?: string): DomainRegistryCoverageIssue[] {
+        const normalizedRepoRoot = path.resolve((repoRoot || '').trim());
+        if (!normalizedRepoRoot) {
+            throw new Error('repoRoot is required');
+        }
+
+        const normalizedDocsRepoRoot = docsRepoRoot
+            ? path.resolve(docsRepoRoot.trim())
+            : normalizedRepoRoot;
+
+        const registryLoad = this.domainRegistryService.loadRegistry(normalizedDocsRepoRoot);
+        if (registryLoad.validationErrors.length > 0) {
+            throw new Error(`Invalid registry: ${registryLoad.validationErrors.map(item => item.message).join('; ')}`);
+        }
+
+        const issues = new Map<string, DomainRegistryCoverageIssue>();
+        const deltaPaths = this.discoverDeltaFiles(normalizedRepoRoot);
+        for (const deltaPath of deltaPaths) {
+            let delta: CapabilityDelta;
+            try {
+                delta = this.readDeltaFile(deltaPath);
+            } catch {
+                continue;
+            }
+
+            for (const domainDelta of delta.domains) {
+                if (this.resolveRegistryEntryForDomainDelta(registryLoad.registry, domainDelta)) {
+                    continue;
+                }
+                const rawDomain = (domainDelta.rawDomain || domainDelta.canonical || '').trim();
+                if (!rawDomain) {
+                    continue;
+                }
+                const key = `${delta.iteration}|${rawDomain.toLowerCase()}|${delta.contentHash}`;
+                if (!issues.has(key)) {
+                    issues.set(key, {
+                        iteration: delta.iteration,
+                        rawDomain,
+                        contentHash: delta.contentHash,
+                    });
+                }
+            }
+        }
+
+        return Array.from(issues.values()).sort((left, right) => {
+            if (left.iteration !== right.iteration) {
+                return left.iteration.localeCompare(right.iteration);
+            }
+            return left.rawDomain.localeCompare(right.rawDomain);
+        });
     }
 
     /**
@@ -362,21 +433,20 @@ export class DomainKnowledgeAggregateService {
         delta: CapabilityDelta,
         suspectedDomains: SuspectedDomainRecord[],
         enableAiRefinement: boolean,
-    ): number {
+    ): AggregateOneDeltaResult {
         let writes = 0;
+        let unresolved = 0;
         for (const domainDelta of delta.domains) {
-            const canonical = (domainDelta.canonical || '').trim();
-            const registryEntry = canonical
-                ? this.domainRegistryService.findEntryByCanonical(registry, canonical)
-                : null;
+            const registryEntry = this.resolveRegistryEntryForDomainDelta(registry, domainDelta);
 
-            if (!registryEntry || domainDelta.isSuspectedNew) {
+            if (!registryEntry) {
                 suspectedDomains.push({
                     iteration: delta.iteration,
-                    rawDomain: (domainDelta.rawDomain || canonical || 'uncategorized').trim() || 'uncategorized',
+                    rawDomain: (domainDelta.rawDomain || domainDelta.canonical || 'uncategorized').trim() || 'uncategorized',
                     relatedReqIds: this.collectReqIds(domainDelta),
-                    suggestedCanonical: registryEntry ? registryEntry.canonical : null,
+                    suggestedCanonical: null,
                 });
+                unresolved += 1;
                 continue;
             }
 
@@ -397,14 +467,108 @@ export class DomainKnowledgeAggregateService {
             });
             writes += 1;
         }
-        return writes;
+        return { writes, unresolved };
+    }
+
+    /**
+     * Decide whether a previously aggregated delta should be reprocessed after registry adjudication.
+     */
+    private shouldReprocessAggregatedDelta(registry: DomainRegistry, delta: CapabilityDelta): boolean {
+        for (const domainDelta of delta.domains) {
+            const wasWeaklyBound = Boolean(domainDelta.isSuspectedNew)
+                || !(domainDelta.canonical || '').trim();
+            if (!wasWeaklyBound) {
+                continue;
+            }
+
+            if (!this.resolveRegistryEntryForDomainDelta(registry, domainDelta)) {
+                continue;
+            }
+
+            if (
+                domainDelta.capabilities.length > 0
+                || domainDelta.contracts.length > 0
+                || domainDelta.invariants.length > 0
+            ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Resolve registry entry for one domain delta using canonical first, then rawDomain fallback.
+     */
+    private resolveRegistryEntryForDomainDelta(registry: DomainRegistry, domainDelta: DomainDelta): DomainRegistryEntry | null {
+        const canonical = (domainDelta.canonical || '').trim();
+        if (canonical) {
+            const direct = this.domainRegistryService.findEntryByCanonical(registry, canonical);
+            if (direct) {
+                return direct;
+            }
+        }
+
+        const rawDomain = (domainDelta.rawDomain || '').trim();
+        if (!rawDomain) {
+            return null;
+        }
+
+        const normalized = this.domainRegistryService.normalizeDomain(registry, rawDomain, '', { explicitDomain: rawDomain });
+        if (!normalized.canonical) {
+            return null;
+        }
+        return this.domainRegistryService.findEntryByCanonical(registry, normalized.canonical);
     }
 
     /**
      * Discover all capability-delta.json files under specs/<iteration>/delta directory.
      */
     private discoverDeltaFiles(repoRoot: string): string[] {
-        const specsDir = path.join(repoRoot, 'specs');
+        const result = new Set<string>();
+
+        // 1) canonical location under current repository root
+        for (const filePath of this.collectDeltaFilesFromSpecsDir(path.join(repoRoot, 'specs'))) {
+            result.add(path.resolve(filePath));
+        }
+
+        // 2) worktree-local locations: <repoRoot>/worktrees/*/specs/<iteration>/delta/capability-delta.json
+        const worktreesDir = path.join(repoRoot, 'worktrees');
+        if (fs.existsSync(worktreesDir)) {
+            for (const entry of fs.readdirSync(worktreesDir, { withFileTypes: true })) {
+                if (!entry.isDirectory()) {
+                    continue;
+                }
+                const worktreeRoot = path.join(worktreesDir, entry.name);
+                const specsDir = path.join(worktreesDir, entry.name, 'specs');
+                for (const filePath of this.collectDeltaFilesFromSpecsDir(specsDir)) {
+                    result.add(path.resolve(filePath));
+                }
+                for (const filePath of this.collectDeltaFilesFromWorktreeRoot(worktreeRoot)) {
+                    result.add(path.resolve(filePath));
+                }
+            }
+        }
+
+        return Array.from(result.values()).sort((left, right) => left.localeCompare(right));
+    }
+
+    /**
+     * Collect capability-delta files from compatibility locations under one worktree root.
+     */
+    private collectDeltaFilesFromWorktreeRoot(worktreeRoot: string): string[] {
+        const candidates = [
+            path.join(worktreeRoot, 'capability-delta.json'),
+            path.join(worktreeRoot, 'delta', 'capability-delta.json'),
+            path.join(worktreeRoot, 'specs', 'delta', 'capability-delta.json'),
+        ];
+
+        return candidates.filter(item => fs.existsSync(item));
+    }
+
+    /**
+     * Collect capability-delta files from one specs directory.
+     */
+    private collectDeltaFilesFromSpecsDir(specsDir: string): string[] {
         if (!fs.existsSync(specsDir)) {
             return [];
         }
@@ -419,8 +583,7 @@ export class DomainKnowledgeAggregateService {
                 result.push(deltaPath);
             }
         }
-
-        return result.sort((left, right) => left.localeCompare(right));
+        return result;
     }
 
     /**

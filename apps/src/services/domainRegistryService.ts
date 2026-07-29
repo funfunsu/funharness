@@ -169,6 +169,15 @@ export class DomainRegistryService {
             if (!target) {
                 throw new Error(`Target canonical not found: ${targetCanonical}`);
             }
+            const rawKey = this.normalizeRegistryKey(rawDomain);
+            const canonicalKey = this.normalizeRegistryKey(target.canonical);
+            const aliasExists = target.aliases.some(alias => this.normalizeRegistryKey(alias) === rawKey);
+            if (rawKey && rawKey !== canonicalKey && !aliasExists) {
+                target.aliases.push(rawDomain);
+                target.aliases = Array.from(new Set(target.aliases.map(item => item.trim()).filter(Boolean)));
+                this.assertRegistryValidOrThrow(registry);
+                this.saveRegistry(repoRoot, registry);
+            }
             return registry;
         }
 

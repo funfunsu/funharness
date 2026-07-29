@@ -136,4 +136,38 @@ describe('DomainRegistryService', () => {
         assert.equal(result.matchedBy, 'none');
         assert.equal(result.isSuspectedNew, true);
     });
+
+    test('applyAdjudication mergeExisting persists alias mapping for future aggregation', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root, [
+                'domains:',
+                '  - canonical: asset-label',
+                '    displayName: Asset Label',
+                '    aliases: [asset-label-association]',
+                '    status: active',
+                '',
+            ].join('\n'));
+
+            const service = new DomainRegistryService();
+            service.applyAdjudication(root, {
+                decision: 'mergeExisting',
+                rawDomain: 'asset-label-display',
+                targetCanonical: 'asset-label',
+            });
+
+            const load = service.loadRegistry(root);
+            const entry = service.findEntryByCanonical(load.registry, 'asset-label');
+            assert.ok(entry);
+            assert.equal(entry.aliases.includes('asset-label-display'), true);
+
+            const normalized = service.normalizeDomain(load.registry, 'asset-label-display', 'Req-1', {
+                explicitDomain: 'asset-label-display',
+            });
+            assert.equal(normalized.canonical, 'asset-label');
+            assert.equal(normalized.isSuspectedNew, false);
+        } finally {
+            cleanup(root);
+        }
+    });
 });

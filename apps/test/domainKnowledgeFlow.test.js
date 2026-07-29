@@ -110,7 +110,7 @@ function buildTaskView() {
 }
 
 describe('DomainKnowledge flow constraints', () => {
-    test('main panel renders exactly the three governance entries, worktree panel does not render them', () => {
+    test('main panel renders governance entries including commit action, worktree panel does not render them', () => {
         const view = buildTaskView();
 
         const mainHtml = buildMainPageHtml([view], {}, {
@@ -123,7 +123,8 @@ describe('DomainKnowledge flow constraints', () => {
 
         assert.equal(mainHtml.includes('领域基线聚合'), true);
         assert.equal(mainHtml.includes('疑似领域裁决'), true);
-        assert.equal(mainHtml.includes('领域总览预览'), true);
+        assert.equal(mainHtml.includes('提交'), true);
+        assert.equal(mainHtml.includes('预览'), true);
 
         const worktreeHtml = buildMainPageHtml([view], {}, {
             compactTaskDecomposition: false,
@@ -140,9 +141,10 @@ describe('DomainKnowledge flow constraints', () => {
             },
         });
 
-        assert.equal(worktreeHtml.includes('领域基线聚合'), false);
-        assert.equal(worktreeHtml.includes('疑似领域裁决'), false);
-        assert.equal(worktreeHtml.includes('领域总览预览'), false);
+        assert.equal(worktreeHtml.includes('data-domain-action="runDomainBaselineAggregation"'), false);
+        assert.equal(worktreeHtml.includes('data-domain-action="applyDomainAdjudication"'), false);
+        assert.equal(worktreeHtml.includes('data-domain-action="commitDomainBaseline"'), false);
+        assert.equal(worktreeHtml.includes('data-domain-action="previewDomainBaselineSummary"'), false);
     });
 
     test('message/command route contract keeps aggregation routes out of worktree-allowlist', () => {
@@ -154,16 +156,19 @@ describe('DomainKnowledge flow constraints', () => {
 
         assert.equal(controllerSource.includes("case 'runDomainBaselineAggregation':"), true);
         assert.equal(controllerSource.includes("case 'reviewSuspectedDomains':"), true);
+        assert.equal(controllerSource.includes("case 'commitDomainBaseline':"), true);
         assert.equal(controllerSource.includes("case 'previewDomainBaselineSummary':"), true);
 
         const allowListMatch = controllerSource.match(/switch \(msg\.type\) \{([\s\S]*?)\n\s*\}/);
         const allowListSegment = allowListMatch ? allowListMatch[1] : '';
         assert.equal(allowListSegment.includes("case 'runDomainBaselineAggregation':"), false);
         assert.equal(allowListSegment.includes("case 'reviewSuspectedDomains':"), false);
+        assert.equal(allowListSegment.includes("case 'commitDomainBaseline':"), false);
         assert.equal(allowListSegment.includes("case 'previewDomainBaselineSummary':"), false);
 
         assert.equal(extensionSource.includes("registerCommand('fun-harness.runDomainBaselineAggregation'"), true);
         assert.equal(extensionSource.includes("registerCommand('fun-harness.reviewSuspectedDomains'"), true);
+        assert.equal(extensionSource.includes("registerCommand('fun-harness.commitDomainBaseline'"), true);
         assert.equal(extensionSource.includes("registerCommand('fun-harness.previewDomainBaselineSummary'"), true);
         assert.equal(extensionSource.includes("缺少 testcase 产物"), false);
     });

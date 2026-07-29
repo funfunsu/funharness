@@ -133,6 +133,15 @@ export class GitService {
         appendHarnessLog(canUsePreferred ? preferred : this.workspaceRoot, 'git', line);
     }
 
+    /**
+     * Always writes to the workspace root `.harness/harness.log`, regardless of whether
+     * the current iteration dir has a `.git` yet. Use for pre-operation progress messages
+     * so the log file exists even while a blocking network command (clone/fetch) is running.
+     */
+    private logGitToRoot(line: string): void {
+        appendHarnessLog(this.workspaceRoot || this.currentLogDir, 'git', line);
+    }
+
     async initializeRepos(): Promise<{ success: boolean; message: string }> {
         this.currentLogDir = ''; // no single task → log repo init to the master root
         this.lastExecError = '';
@@ -172,6 +181,9 @@ export class GitService {
         if (!branchName || branchName.length < 2) {
             return { success: false, message: '迭代名称必须使用英文' };
         }
+
+        // Write immediately so the log file exists even if a subsequent network command hangs.
+        this.logGitToRoot(`=== 开始重建代码目录：task="${task.name}" iterDir=${iterationDir} baseBranch=${baseBranch} ===`);
 
         const descriptors = this.resolveRepoDescriptors(iterationDir);
         if (descriptors.length === 0) {
@@ -309,8 +321,14 @@ export class GitService {
         }
         if (!fs.existsSync(repoDir) || !fs.existsSync(path.join(repoDir, '.git'))) {
             fs.mkdirSync(path.dirname(repoDir), { recursive: true });
+            this.logGitToRoot(`正在克隆仓库（可能需要几分钟）：${remote} → ${repoDir}`);
             const cloned = await this.execCmd(`git clone ${remote} "${repoDir}"`, this.workspaceRoot || path.dirname(repoDir));
             if (!cloned) {
+                // Clean up any partial clone so the next attempt starts fresh.
+                if (fs.existsSync(repoDir)) {
+                    this.logGitToRoot(`克隆失败，清理残缺目录：${repoDir}`);
+                    this.safeRemovePath(repoDir, { recursive: true });
+                }
                 return { success: false };
             }
         }
@@ -504,6 +522,46 @@ export class GitService {
             return { success: false, message: `同步失败：\n${detail}` };
         }
         return { success: true, message: `✅ 已同步主仓库最新代码（${baseBranch}）到当前 worktree` };
+    }
+
+    /**
+     * Commit docs/domains baseline updates on the current branch without pushing.
+     */
+    async commitDomainBaseline(repoRoot: string): Promise<{ success: boolean; message: string }> {
+        this.currentLogDir = repoRoot;
+        this.lastExecError = '';
+        this.clearOperationNotices();
+
+        const domainsDir = path.join(repoRoot, 'docs', 'domains');
+        if (!fs.existsSync(domainsDir)) {
+            return { success: false, message: `目录不存在：${domainsDir}` };
+        }
+
+        const inRepo = await this.execCmdOutput('git rev-parse --is-inside-work-tree', repoRoot);
+        if (!inRepo.success || inRepo.stdout.trim() !== 'true') {
+            return { success: false, message: this.withExecError('当前目录不是 Git 仓库') };
+        }
+
+        const addOk = await this.execCmd('git add docs/domains', repoRoot);
+        if (!addOk) {
+            return { success: false, message: this.withExecError('暂存 docs/domains 失败') };
+        }
+
+        const status = await this.execCmdOutput('git status --porcelain -- docs/domains', repoRoot);
+        if (!status.success) {
+            return { success: false, message: this.withExecError('检查 docs/domains 变更失败') };
+        }
+        if (!status.stdout.trim()) {
+            return { success: true, message: 'ℹ️ docs/domains 无待提交变更' };
+        }
+
+        const commitMessage = `chore(domain-baseline): update docs/domains ${new Date().toISOString().slice(0, 10)}`;
+        const committed = await this.execCmd(`git commit -m "${commitMessage}"`, repoRoot);
+        if (!committed) {
+            return { success: false, message: this.withExecError('提交领域基线失败') };
+        }
+
+        return { success: true, message: `✅ 已提交领域基线：${commitMessage}` };
     }
 
     private async syncRepoToWorktree(mainRepoDir: string, worktreeDir: string, baseBranch: string, expectedBranch?: string): Promise<{ ok: boolean; reason?: string }> {
@@ -918,6 +976,7 @@ export class GitService {
     }
 
     private async checkoutAndPullBase(repoDir: string, baseBranch: string, requireExactBaseBranch: boolean): Promise<{ success: boolean; baseBranch?: string }> {
+        this.logGitToRoot(`正在 fetch 远端：${repoDir}`);
         const fetched = await this.execCmd('git fetch origin', repoDir);
         if (!fetched) {
             return { success: false };
@@ -1199,9 +1258,26 @@ export class GitService {
         return false;
     }
 
+    /** Default timeout (ms) for network git operations (clone / fetch / push). */
+    private static readonly NETWORK_TIMEOUT_MS = 180_000;
+    /** Default timeout (ms) for fast local git operations. */
+    private static readonly LOCAL_TIMEOUT_MS = 30_000;
+
+    private static isNetworkCmd(cmd: string): boolean {
+        return /\b(clone|fetch|pull|push|ls-remote)\b/.test(cmd);
+    }
+
+    private static gitEnv(): NodeJS.ProcessEnv {
+        // Prevent git from blocking on interactive credential prompts in a headless process.
+        return { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' };
+    }
+
     private async execCmd(cmd: string, cwd: string): Promise<boolean> {
+        const timeout = GitService.isNetworkCmd(cmd)
+            ? GitService.NETWORK_TIMEOUT_MS
+            : GitService.LOCAL_TIMEOUT_MS;
         return new Promise((resolve) => {
-            exec(cmd, { cwd }, (err, stdout, stderr) => {
+            exec(cmd, { cwd, timeout, env: GitService.gitEnv() }, (err, stdout, stderr) => {
                 const outText = (stdout || '').toString().trim();
                 const errText = (stderr || '').toString().trim();
                 if (err) {
@@ -1219,8 +1295,11 @@ export class GitService {
     }
 
     private async execCmdOutput(cmd: string, cwd: string): Promise<{ success: boolean; stdout: string; stderr: string }> {
+        const timeout = GitService.isNetworkCmd(cmd)
+            ? GitService.NETWORK_TIMEOUT_MS
+            : GitService.LOCAL_TIMEOUT_MS;
         return new Promise((resolve) => {
-            exec(cmd, { cwd }, (err, stdout, stderr) => {
+            exec(cmd, { cwd, timeout, env: GitService.gitEnv() }, (err, stdout, stderr) => {
                 const out = (stdout || '').toString();
                 const errText = (stderr || '').toString();
                 if (err) {

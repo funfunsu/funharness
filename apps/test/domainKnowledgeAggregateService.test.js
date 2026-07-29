@@ -13,6 +13,7 @@ const path = require('node:path');
 
 const { DomainKnowledgeAggregateService } = require('../out/services/domainKnowledgeAggregateService');
 const { CapabilityDeltaService } = require('../out/services/capabilityDeltaService');
+const { DomainRegistryService } = require('../out/services/domainRegistryService');
 
 /** Create isolated temp workspace. */
 function makeTempDir() {
@@ -56,6 +57,25 @@ function writeDelta(root, iteration, domainDelta) {
     const payload = { ...draft, contentHash: validation.contentHash };
 
     const deltaPath = path.join(root, 'specs', iteration, 'delta', 'capability-delta.json');
+    fs.mkdirSync(path.dirname(deltaPath), { recursive: true });
+    fs.writeFileSync(deltaPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+    return payload;
+}
+
+/** Build a valid delta payload and persist under a specific specs root. */
+function writeDeltaUnderSpecs(specsRoot, iteration, domainDelta) {
+    const service = new CapabilityDeltaService();
+    const draft = {
+        iteration,
+        generatedAt: '2026-01-01T00:00:00.000Z',
+        contentHash: '',
+        domains: [domainDelta],
+    };
+    const validation = service.validateDelta(draft);
+    assert.equal(validation.valid, true);
+    const payload = { ...draft, contentHash: validation.contentHash };
+
+    const deltaPath = path.join(specsRoot, iteration, 'delta', 'capability-delta.json');
     fs.mkdirSync(path.dirname(deltaPath), { recursive: true });
     fs.writeFileSync(deltaPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
     return payload;
@@ -226,6 +246,213 @@ describe('DomainKnowledgeAggregateService', () => {
             assert.equal(content.includes('Req-keep'), true);
             assert.equal(content.includes('Req-remove'), true);
             assert.equal(content.includes('| Req-remove | Will become removed | removed |'), true);
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('aggregatePendingDeltas discovers capability-delta from worktrees/*/specs directories', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            writeDeltaUnderSpecs(path.join(root, 'worktrees', 'asset-label', 'specs'), 'asset-label', {
+                canonical: 'billing',
+                rawDomain: 'payments',
+                isSuspectedNew: false,
+                capabilities: [
+                    { reqId: 'Req-worktree-1', title: 'From worktree specs', userStory: 'story', status: 'active' },
+                ],
+                contracts: [],
+                invariants: [],
+            });
+
+            const service = new DomainKnowledgeAggregateService();
+            const result = service.aggregatePendingDeltas(root, false);
+
+            assert.equal(result.processed.length, 1);
+            assert.equal(result.processed[0].iteration, 'asset-label');
+
+            const content = readDomainDoc(root, 'billing');
+            assert.equal(content.includes('Req-worktree-1'), true);
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('aggregatePendingDeltas discovers capability-delta from legacy worktree locations', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+
+            const service = new CapabilityDeltaService();
+            const draft = {
+                iteration: 'asset-label',
+                generatedAt: '2026-01-01T00:00:00.000Z',
+                contentHash: '',
+                domains: [
+                    {
+                        canonical: 'billing',
+                        rawDomain: 'payments',
+                        isSuspectedNew: false,
+                        capabilities: [
+                            { reqId: 'Req-legacy-1', title: 'From legacy worktree path', userStory: 'story', status: 'active' },
+                        ],
+                        contracts: [],
+                        invariants: [],
+                    },
+                ],
+            };
+            const validation = service.validateDelta(draft);
+            assert.equal(validation.valid, true);
+            const payload = { ...draft, contentHash: validation.contentHash };
+
+            const legacyPath = path.join(root, 'worktrees', 'asset-label', 'delta', 'capability-delta.json');
+            fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+            fs.writeFileSync(legacyPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+
+            const aggregateService = new DomainKnowledgeAggregateService();
+            const result = aggregateService.aggregatePendingDeltas(root, false);
+
+            assert.equal(result.processed.length, 1);
+            assert.equal(result.processed[0].iteration, 'asset-label');
+
+            const content = readDomainDoc(root, 'billing');
+            assert.equal(content.includes('Req-legacy-1'), true);
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('aggregatePendingDeltas resolves suspected rawDomain via registry aliases and writes domain doc', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            writeDelta(root, 'iter-alias-fallback', {
+                canonical: null,
+                rawDomain: 'payments',
+                isSuspectedNew: true,
+                capabilities: [
+                    { reqId: 'Req-alias-1', title: 'Alias fallback capability', userStory: 'story', status: 'active' },
+                ],
+                contracts: [],
+                invariants: [],
+            });
+
+            const service = new DomainKnowledgeAggregateService();
+            const result = service.aggregatePendingDeltas(root, false);
+
+            assert.equal(result.suspectedDomains.length, 0);
+            assert.equal(result.processed.length, 1);
+
+            const content = readDomainDoc(root, 'billing');
+            assert.equal(content.includes('Req-alias-1'), true);
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('aggregatePendingDeltas keeps unresolved delta re-runnable until adjudicated', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            const payload = writeDelta(root, 'iter-unresolved', {
+                canonical: null,
+                rawDomain: 'brand-new-domain',
+                isSuspectedNew: true,
+                capabilities: [
+                    { reqId: 'Req-unresolved-1', title: 'Needs adjudication', userStory: 'story', status: 'active' },
+                ],
+                contracts: [],
+                invariants: [],
+            });
+
+            const service = new DomainKnowledgeAggregateService();
+            const first = service.aggregatePendingDeltas(root, false);
+            const second = service.aggregatePendingDeltas(root, false);
+
+            assert.equal(first.suspectedDomains.length, 1);
+            assert.equal(second.suspectedDomains.length, 1);
+            assert.equal(second.skipped.some(item => item.reason === 'already-aggregated' && item.iteration === payload.iteration), false);
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('aggregatePendingDeltas reprocesses previously aggregated suspected delta after adjudication', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            writeDelta(root, 'iter-reprocess', {
+                canonical: null,
+                rawDomain: 'asset-label-association',
+                isSuspectedNew: true,
+                capabilities: [
+                    { reqId: 'Req-reprocess-1', title: 'Needs late mapping', userStory: 'story', status: 'active' },
+                ],
+                contracts: [],
+                invariants: [],
+            });
+
+            const service = new DomainKnowledgeAggregateService();
+            const first = service.aggregatePendingDeltas(root, false);
+            assert.equal(first.suspectedDomains.length, 1);
+            assert.equal(first.processed.length, 0);
+
+            const registryService = new DomainRegistryService();
+            registryService.applyAdjudication(root, {
+                decision: 'appendAlias',
+                rawDomain: 'asset-label-association',
+                targetCanonical: 'billing',
+            });
+
+            // Simulate a previously buggy state where this delta had been marked as aggregated.
+            const load = registryService.loadRegistry(root);
+            load.registry.lastAggregated = [
+                {
+                    iteration: 'iter-reprocess',
+                    contentHash: JSON.parse(fs.readFileSync(path.join(root, 'specs', 'iter-reprocess', 'delta', 'capability-delta.json'), 'utf8')).contentHash,
+                    aggregatedAt: '2026-01-02T00:00:00.000Z',
+                },
+            ];
+            registryService.saveRegistry(root, load.registry);
+
+            const second = service.aggregatePendingDeltas(root, false);
+            assert.equal(second.processed.some(item => item.iteration === 'iter-reprocess'), true);
+
+            const content = readDomainDoc(root, 'billing');
+            assert.equal(content.includes('Req-reprocess-1'), true);
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('aggregatePendingDeltas writes baseline to separate docs repo root in mono-main layout', () => {
+        const root = makeTempDir();
+        try {
+            const monoMainRoot = path.join(root, 'repos', 'mono-main');
+            writeRegistry(monoMainRoot);
+            writeDelta(root, 'iter-mono-docs-root', {
+                canonical: 'billing',
+                rawDomain: 'payments',
+                isSuspectedNew: false,
+                capabilities: [
+                    { reqId: 'Req-mono-root-1', title: 'Write under mono-main docs', userStory: 'story', status: 'active' },
+                ],
+                contracts: [],
+                invariants: [],
+            });
+
+            const service = new DomainKnowledgeAggregateService();
+            const result = service.aggregatePendingDeltas(root, false, monoMainRoot);
+
+            assert.equal(result.processed.length, 1);
+            const monoDocPath = path.join(monoMainRoot, 'docs', 'domains', 'billing.md');
+            assert.equal(fs.existsSync(monoDocPath), true);
+            const content = fs.readFileSync(monoDocPath, 'utf8');
+            assert.equal(content.includes('Req-mono-root-1'), true);
+
+            const workspaceDocPath = path.join(root, 'docs', 'domains', 'billing.md');
+            assert.equal(fs.existsSync(workspaceDocPath), false);
         } finally {
             cleanup(root);
         }

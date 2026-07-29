@@ -34,6 +34,8 @@ export const AUTO_POLL_LOCK_FILE = 'auto-poll-lock.json';
  */
 export const HARNESS_LOG_FILE = 'harness.log';
 export const PROMPTS_DIR = 'prompts';
+/** Git-tracked specs directory name used for shared constitution/custom prompts. */
+export const TRACKED_SPECS_DIR = 'specs';
 export const TASK_PLAN_PRIMARY_REL_PATH = 'docs/tasks.md';
 export const TASK_PLAN_LEGACY_REL_PATH = 'doc/task.md';
 export const HARNESS_STATE_FILE = 'iteration-state.json';
@@ -515,6 +517,49 @@ export function resolveGateLevel(config: Pick<Config, 'gateLevel'> | undefined):
 }
 
 type SpecDocsConfig = Pick<Config, 'monorepoGit' | 'monorepoDirs' | 'specRootDir'> | undefined;
+
+/**
+ * Derive master root from a worktree path. For non-worktree paths returns itself.
+ */
+export function deriveMasterRoot(workspaceRoot: string): string {
+    const normalized = workspaceRoot.replace(/\\/g, '/');
+    const marker = '/worktrees/';
+    const idx = normalized.indexOf(marker);
+    if (idx > 0) {
+        return workspaceRoot.slice(0, idx);
+    }
+    return workspaceRoot;
+}
+
+/**
+ * Ordered candidates for git-tracked specs directories used by shared governance assets.
+ * Priority intentionally prefers monorepo main clone when present in the workspace layout.
+ */
+export function getTrackedSpecsDirCandidates(workspaceRoot: string): string[] {
+    const masterRoot = deriveMasterRoot(workspaceRoot);
+    const candidates = [
+        path.join(masterRoot, 'repos', 'mono-main', TRACKED_SPECS_DIR),
+        path.join(masterRoot, 'repos', 'backend-main', TRACKED_SPECS_DIR),
+        path.join(masterRoot, 'repos', 'frontend-main', TRACKED_SPECS_DIR),
+        path.join(workspaceRoot, TRACKED_SPECS_DIR),
+        path.join(masterRoot, TRACKED_SPECS_DIR),
+    ];
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const candidate of candidates) {
+        if (!seen.has(candidate)) {
+            seen.add(candidate);
+            result.push(candidate);
+        }
+    }
+    return result;
+}
+
+/** Preferred git-tracked specs directory for writes/seeding. */
+export function getPrimaryTrackedSpecsDir(workspaceRoot: string): string {
+    const candidates = getTrackedSpecsDirCandidates(workspaceRoot);
+    return candidates[0] || path.join(workspaceRoot, TRACKED_SPECS_DIR);
+}
 
 /** Whether the harness operates in single-repository (monorepo) mode. */
 export function isMonoMode(config: Pick<Config, 'monorepoGit'> | undefined): boolean {

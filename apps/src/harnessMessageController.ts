@@ -11,8 +11,11 @@ interface HarnessMessageControllerDeps {
     generateCapabilityDelta: (taskId: string) => Promise<void>;
     runDomainBaselineAggregation: (taskId: string) => Promise<void>;
     reviewSuspectedDomains: (taskId: string) => Promise<void>;
+    applyDomainAdjudication: (taskId: string) => Promise<void>;
+    commitDomainBaseline: (taskId: string) => Promise<void>;
     previewDomainBaselineSummary: (taskId: string) => Promise<void>;
     openCustomPrompt: (step: 'req' | 'des' | 'tcs' | 'tsk' | 'dev') => Promise<void>;
+    openCustomConstitution: () => Promise<void>;
     saveGit:(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi') => Promise<void>;
     saveAdvancedConfig: (msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>) => void;
     initProjectStructure: () => Promise<void>;
@@ -233,6 +236,7 @@ export class HarnessMessageController {
             case 'openMasterWorkspace':
             case 'toggleAutoPoll':
             case 'openCustomPrompt':
+            case 'openCustomConstitution':
             case 'todo.create':
             case 'todo.update':
             case 'todo.delete':
@@ -273,11 +277,20 @@ export class HarnessMessageController {
             case 'reviewSuspectedDomains':
                 await this.deps.reviewSuspectedDomains(msg.id);
                 return;
+            case 'applyDomainAdjudication':
+                await this.deps.applyDomainAdjudication(msg.id);
+                return;
+            case 'commitDomainBaseline':
+                await this.deps.commitDomainBaseline(msg.id);
+                return;
             case 'previewDomainBaselineSummary':
                 await this.deps.previewDomainBaselineSummary(msg.id);
                 return;
             case 'openCustomPrompt':
                 await this.deps.openCustomPrompt(msg.step);
+                return;
+            case 'openCustomConstitution':
+                await this.deps.openCustomConstitution();
                 return;
             case 'saveGit':
                 await this.deps.saveGit(msg.fg, msg.bg, msg.bb, msg.dr, msg.mg, msg.md, msg.mode);
