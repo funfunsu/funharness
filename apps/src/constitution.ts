@@ -1,9 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { BASE, PROMPTS_DIR } from './models';
+import { BASE, PROMPTS_DIR, deriveMasterRoot, getPrimaryTrackedSpecsDir, getTrackedSpecsDirCandidates } from './models';
 
 /** Team-owned, git-tracked constitution location inside the target repository. */
-export const CONSTITUTION_DIR = '.spec';
+export const CONSTITUTION_DIR = 'specs';
+export const LEGACY_CONSTITUTION_DIR = '.spec';
 export const CONSTITUTION_FILE = 'constitution.md';
 export const CONSTITUTION_REL_PATH = `${CONSTITUTION_DIR}/${CONSTITUTION_FILE}`;
 
@@ -28,25 +29,16 @@ function readIfPresent(candidate: string): string | undefined {
     return undefined;
 }
 
-function deriveMasterRoot(workspaceRoot: string): string {
-    const normalized = workspaceRoot.replace(/\\/g, '/');
-    const marker = '/worktrees/';
-    const idx = normalized.indexOf(marker);
-    if (idx > 0) {
-        return workspaceRoot.slice(0, idx);
-    }
-    return workspaceRoot;
-}
-
 /**
  * Resolve the effective constitution for a pipeline run.
  *
  * Search order (first non-empty wins):
- *   1. <iterDir>/.spec/constitution.md                     (per-iteration override)
- *   2. <workspaceRoot>/.spec/constitution.md               (current window / worktree repo)
- *   3. <masterRoot>/repos/{mono-main,backend-main,frontend-main}/.spec/constitution.md (governance repo)
- *   4. <masterRoot>/.spec/constitution.md                  (master workspace)
- *   5. bundled default (apps/system-prompts/constitution_default.md)
+ *   1. <iterDir>/specs/constitution.md                     (per-iteration override)
+ *   2. <masterRoot>/repos/{mono-main,backend-main,frontend-main}/specs/constitution.md
+ *   3. <workspaceRoot>/specs/constitution.md
+ *   4. <masterRoot>/specs/constitution.md
+ *   5. Legacy .spec/* fallbacks for backward compatibility
+ *   6. bundled default (apps/system-prompts/constitution_default.md)
  */
 export function resolveConstitution(
     iterDir: string,
@@ -56,11 +48,14 @@ export function resolveConstitution(
     const masterRoot = deriveMasterRoot(workspaceRoot);
     const projectCandidates: string[] = [
         path.join(iterDir, CONSTITUTION_DIR, CONSTITUTION_FILE),
-        path.join(workspaceRoot, CONSTITUTION_DIR, CONSTITUTION_FILE),
-        path.join(masterRoot, 'repos', 'mono-main', CONSTITUTION_DIR, CONSTITUTION_FILE),
-        path.join(masterRoot, 'repos', 'backend-main', CONSTITUTION_DIR, CONSTITUTION_FILE),
-        path.join(masterRoot, 'repos', 'frontend-main', CONSTITUTION_DIR, CONSTITUTION_FILE),
-        path.join(masterRoot, CONSTITUTION_DIR, CONSTITUTION_FILE),
+        ...getTrackedSpecsDirCandidates(workspaceRoot).map(dir => path.join(dir, CONSTITUTION_FILE)),
+        // Backward compatibility: read legacy .spec path if present.
+        path.join(iterDir, LEGACY_CONSTITUTION_DIR, CONSTITUTION_FILE),
+        path.join(workspaceRoot, LEGACY_CONSTITUTION_DIR, CONSTITUTION_FILE),
+        path.join(masterRoot, 'repos', 'mono-main', LEGACY_CONSTITUTION_DIR, CONSTITUTION_FILE),
+        path.join(masterRoot, 'repos', 'backend-main', LEGACY_CONSTITUTION_DIR, CONSTITUTION_FILE),
+        path.join(masterRoot, 'repos', 'frontend-main', LEGACY_CONSTITUTION_DIR, CONSTITUTION_FILE),
+        path.join(masterRoot, LEGACY_CONSTITUTION_DIR, CONSTITUTION_FILE),
     ];
     const seen = new Set<string>();
     for (const candidate of projectCandidates) {
@@ -81,10 +76,8 @@ export function resolveConstitution(
     for (const candidate of bundledCandidates) {
         const content = readIfPresent(candidate);
         if (content !== undefined) {
-            // Auto-seed workspaceRoot/.spec/constitution.md so the user has an editable copy.
-            // Use workspaceRoot (not iterDir or masterRoot) so the file lives in the current
-            // window/repo — the most natural "project-local" location for the user to find and edit.
-            const seedPath = path.join(workspaceRoot, CONSTITUTION_DIR, CONSTITUTION_FILE);
+            // Auto-seed the preferred git-tracked specs location so users can edit and commit it.
+            const seedPath = path.join(getPrimaryTrackedSpecsDir(workspaceRoot), CONSTITUTION_FILE);
             if (!fs.existsSync(seedPath)) {
                 try {
                     fs.mkdirSync(path.dirname(seedPath), { recursive: true });

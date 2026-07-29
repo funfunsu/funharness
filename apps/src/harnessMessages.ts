@@ -20,8 +20,11 @@ export type HarnessMessage =
     | { type: 'generateCapabilityDelta'; id: string }
     | { type: 'runDomainBaselineAggregation'; id: string }
     | { type: 'reviewSuspectedDomains'; id: string }
+    | { type: 'applyDomainAdjudication'; id: string }
+    | { type: 'commitDomainBaseline'; id: string }
     | { type: 'previewDomainBaselineSummary'; id: string }
     | { type: 'openCustomPrompt'; step: HarnessStep }
+    | { type: 'openCustomConstitution' }
     | { type: 'saveGit'; fg: string; bg: string; bb: string; dr: boolean; mg?: string; md?: { frontend?: string; backend?: string; docs?: string; scripts?: string }; mode?: 'mono' | 'multi' }
     | { type: 'saveAdvancedConfig'; pc: string; mc: number; am: boolean; cm: boolean; ad: boolean; sk: string; ck: string; wsd: string; cps: string; prm: 'local' | 'local+ai'; srd: string; gl: 'relaxed' | 'standard' | 'strict'; cct: string; afm: boolean; pas: boolean }
     | { type: 'initProjectStructure' }

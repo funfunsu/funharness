@@ -10,8 +10,15 @@
 
 - requirementIds: Req-dk-6, Req-dk-7, Req-dk-10
 - 前置条件：主面板与 worktree 子视图都可打开。
-- GIVEN 主面板加载完成，WHEN 渲染治理区，THEN 页面应包含 `Aggregate domain baselines`、`Review suspected domains`、`Preview domain index` 三个入口。
+- GIVEN 主面板加载完成，WHEN 渲染治理区，THEN 页面应包含 `领域基线聚合`、`疑似领域裁决`、`领域总览预览` 三个入口。
 - GIVEN worktree 子视图加载完成，WHEN 渲染页面，THEN 不应出现上述三个治理入口。
+
+### TC-DK-006 领域基线聚合结果提示语义
+
+- requirementIds: Req-dk-6, Req-dk-8
+- 前置条件：主面板可执行聚合，且存在/不存在可处理迭代两种场景。
+- GIVEN 执行领域基线聚合后无待裁决领域且本次存在处理项，WHEN 聚合结束，THEN 提示应明确返回已处理迭代数量。
+- GIVEN 执行领域基线聚合后无待裁决领域且本次无处理项，WHEN 聚合结束，THEN 提示应为聚合预检查完成，不应误导为处理失败。
 
 ### TC-DK-002 路由契约覆盖与 allowlist 约束
 
@@ -38,6 +45,15 @@
 - requirementIds: Req-dk-11
 - 前置条件：已存在合法 delta，且 AI 润色调用抛错。
 - GIVEN 启用可选 AI 润色，WHEN 润色失败，THEN 聚合过程不得失败，必须回退到纯结构化输出并完成落盘。
+
+### TC-DK-007 领域基线 Git 提交与 worktree 隔离
+
+- requirementIds: Req-dk-6
+- 前置条件：主面板可执行提交，`docs/domains` 目录存在且所在目录为 Git 工作树。
+- GIVEN 主面板执行「提交」动作，WHEN 调用 commitDomainBaseline，THEN 应对 `docs/domains` 执行 git add 并 git commit，提交信息以 `chore(domain-baseline):` 开头。
+- GIVEN `docs/domains` 下无待提交变更，WHEN 执行提交，THEN 应返回「无待提交变更」提示，不产生空 commit。
+- GIVEN worktree 子视图收到 `commitDomainBaseline` 消息，WHEN 控制器处理，THEN 应被 worktree allowlist 拦截，不得触达 Git 操作层。
+- GIVEN 扩展命令注册，WHEN 检查命令定义，THEN 必须存在 `fun-harness.commitDomainBaseline`。
 
 ## 执行记录
 
@@ -78,6 +94,18 @@ testCases:
     requirementIds: [Req-dk-11]
     title: AI 润色失败回退
     type: integration
+    automated: true
+    script: apps/test/domainKnowledgeFlow.test.js
+  - id: TC-DK-006
+    requirementIds: [Req-dk-6, Req-dk-8]
+    title: 领域基线聚合结果提示语义
+    type: contract
+    automated: false
+    script: manual
+  - id: TC-DK-007
+    requirementIds: [Req-dk-6]
+    title: 领域基线 Git 提交与 worktree 隔离
+    type: contract
     automated: true
     script: apps/test/domainKnowledgeFlow.test.js
 ```

@@ -135,6 +135,29 @@ domainDefinitions:
       - sms
       - push
 
+  - id: domain-knowledge
+    name: Domain Knowledge
+    aliases:
+      - dk
+      - domain knowledge
+      - domain-governance
+      - domain capability baseline
+    reqIdPrefixes:
+      - Req-dk-
+    artifactPathPatterns:
+      - "/domain-knowledge/"
+      - "/docs/domains/"
+      - "/spec-delta/"
+    contractPatterns:
+      - "^/api/domain"
+      - "^/api/spec-delta"
+    keywords:
+      - domain baseline
+      - domain registry
+      - capability delta
+      - suspected domain
+      - spec delta
+
 mappingRules:
   explicitDomainField:
     enabled: true

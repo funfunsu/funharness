@@ -33,15 +33,6 @@ amendments:
 2. 所有 spec 读取与写入都必须按**当前仓库根目录**解析路径，禁止硬编码 workspace 根路径。
 3. `multiRepo` 模式下，每个 repo 保留自己的 `.spec/constitution.md`；共享规则可引用治理仓库版本，但不得弱化本宪法红线。
 
-## 四、前端按钮风格基线（Button Style Baseline）
-
-1. **颜色**：必须使用 VS Code ThemeColor token；禁止硬编码 hex/rgb。
-2. **尺寸**：统一 `height: 28px`、`line-height: 28px`、`padding: 0 12px`、`border-radius: 2px`。
-3. **字体**：使用 `var(--vscode-font-family)` 与 `var(--vscode-font-size)`；主按钮可用 `font-weight: 600`。
-4. **变体**：仅允许 `primary` / `secondary` / `ghost` / `danger` 四类，不得私增。
-5. **交互**：必须保留 focus ring（`var(--vscode-focusBorder)`）；disabled 使用 `opacity: 0.4` 且禁用交互；loading 使用 `codicon-loading`。
-6. **文案**：按钮文本使用 sentence case（如“Save changes”）。
-
 ## 五、质量基线（Quality Bar）
 
 1. 代码遵守 `.github/instructions/` 规范；冲突时以本宪法红线优先。

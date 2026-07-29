@@ -115,6 +115,7 @@ specs/
 | ROUTE-3 | `reviewSuspectedDomains` | 主面板 | `HarnessActionsService.reviewSuspectedDomains` | Req-dk-7 |
 | ROUTE-4 | `applyDomainAdjudication` | 主面板 | `DomainRegistryService.applyAdjudication` | Req-dk-7 |
 | ROUTE-5 | `previewDomainBaselineSummary` | 主面板 | `DomainKnowledgeAggregateService.previewIndexChanges` | Req-dk-10 |
+| ROUTE-6 | `commitDomainBaseline` | 主面板 | `HarnessActionsService.commitDomainBaselineByTaskId` | Req-dk-6 |
 
 路由约束：
 
@@ -122,6 +123,7 @@ specs/
 - `generateCapabilityDelta` 只能依赖 requirements/design/delta，不得回读业务代码之外的主干聚合状态。绑定 Req-dk-5。
 - `reviewSuspectedDomains` 只处理查无此名的归类项，不直接写领域文档。绑定 Req-dk-7。
 - `testcase.md` 为可选产物，主面板健康状态评估不得因 testcase 缺失单独降级或阻断。绑定 Req-dk-6。
+- `commitDomainBaseline` 只能在主面板注册，worktree 子视图必须拦截该消息。绑定 Req-dk-6。
 
 ## 3. 组件与接口设计
 
@@ -146,6 +148,8 @@ specs/
 | API-DK-13 | 主面板触发疑似领域审阅 | MESSAGE | `HarnessMessageController.reviewSuspectedDomains` | Req-dk-7 |
 | API-DK-14 | 主面板预览领域总览摘要 | MESSAGE | `HarnessMessageController.previewDomainBaselineSummary` | Req-dk-10 |
 | API-DK-15 | 主面板执行领域裁决写回 | COMMAND | `Extension.applyDomainAdjudication` | Req-dk-7 |
+| API-DK-16 | 提交领域基线变更到 Git | SERVICE | `GitService.commitDomainBaseline` | Req-dk-6 |
+| API-DK-17 | 主面板触发领域基线 Git 提交 | COMMAND | `Extension.commitDomainBaseline` | Req-dk-6 |
 
 详细契约：
 
@@ -237,6 +241,21 @@ specs/
   - response:
     - `void`
   - 约束：裁决写回必须落在 `docs/domains/registry.yaml`，且不得直接写入能力基线文档。绑定 Req-dk-7。
+
+- API-DK-16 `GitService.commitDomainBaseline`
+  - request:
+    - `repoRoot: string`
+  - response:
+    - `success: boolean`
+    - `message: string`
+  - 约束：仅对 `docs/domains` 执行 git add + git commit；若目录下无待提交变更则返回 `success=true` 且不产生空 commit；提交信息格式固定为 `chore(domain-baseline): update docs/domains YYYY-MM-DD`；repoRoot 必须是 git 工作树，否则返回 `success=false`。绑定 Req-dk-6。
+
+- API-DK-17 `Extension.commitDomainBaseline`
+  - request:
+    - `command arguments: none`
+  - response:
+    - `void`
+  - 约束：该命令仅在主面板注册；worktree 子视图拦截同名消息并提示「领域基线提交仅支持主面板执行」；内部委托 `GitService.commitDomainBaseline` 完成落盘。绑定 Req-dk-6。
 
 ### 3.2 数据模型
 
@@ -348,9 +367,10 @@ interface SuspectedDomainRecord {
 | 组件 ID | 组件 | Props | Events | 绑定需求 |
 | --- | --- | --- | --- | --- |
 | UI-DK-1 | Worktree「Generate capability delta」按钮 | `variant='secondary'`, `disabled`, `loading`, `readOnly` | `generateCapabilityDelta` | Req-dk-5 |
-| UI-DK-2 | Main Panel「Aggregate domain baselines」按钮 | `variant='primary'`, `disabled`, `loading`, `hasPendingDeltas` | `runDomainBaselineAggregation` | Req-dk-6, Req-dk-8 |
-| UI-DK-3 | Main Panel「Review suspected domains」按钮 | `variant='danger'`, `disabled`, `pendingCount` | `reviewSuspectedDomains` | Req-dk-7 |
-| UI-DK-4 | Main Panel「Preview domain index」按钮 | `variant='ghost'`, `disabled` | `previewDomainBaselineSummary` | Req-dk-10 |
+| UI-DK-2 | 主面板「领域基线聚合」按钮 | `variant='primary'`, `disabled`, `loading`, `hasPendingDeltas` | `runDomainBaselineAggregation` | Req-dk-6, Req-dk-8 |
+| UI-DK-3 | 主面板「疑似领域裁决」按钮 | `variant='danger'`, `disabled`, `pendingCount` | `reviewSuspectedDomains` | Req-dk-7 |
+| UI-DK-4 | 主面板「领域总览预览」按钮 | `variant='ghost'`, `disabled` | `previewDomainBaselineSummary` | Req-dk-10 |
+| UI-DK-5 | 主面板「提交」按钮 | `variant='success'`, `disabled` | `commitDomainBaseline` | Req-dk-6 |
 
 按钮样式基线：
 
@@ -363,6 +383,8 @@ interface SuspectedDomainRecord {
 
 - `generateCapabilityDelta` 在 readOnly 或非当前迭代上下文中必须禁用。绑定 Req-dk-5。
 - `runDomainBaselineAggregation` 在存在未裁决疑似领域时可运行，但只能写已归一化领域，疑似领域进入待确认清单。绑定 Req-dk-7、Req-dk-8。
+- `runDomainBaselineAggregation` 完成后，若 `suspectedDomains` 为空且 `processed.length>0`，前端提示必须返回已处理迭代数量；若 `processed.length===0`，返回聚合预检查完成提示。绑定 Req-dk-6、Req-dk-8。
+- `commitDomainBaseline` 在 worktree 子视图中必须被拦截，不得触达 git 操作层。绑定 Req-dk-6。
 
 ### 3.4 Store 设计
 
@@ -585,6 +607,23 @@ apiContracts:
       commandArgs: none
     response:
       void: true
+  - id: API-DK-16
+    requirementIds: [Req-dk-6]
+    method: SERVICE
+    path: GitService.commitDomainBaseline
+    request:
+      repoRoot: string
+    response:
+      success: boolean
+      message: string
+  - id: API-DK-17
+    requirementIds: [Req-dk-6]
+    method: COMMAND
+    path: Extension.commitDomainBaseline
+    request:
+      commandArgs: none
+    response:
+      void: true
 dataModels:
   - id: MODEL-DK-1
     requirementIds: [Req-dk-1, Req-dk-8]
@@ -614,19 +653,24 @@ components:
     events: [generateCapabilityDelta]
   - id: UI-DK-2
     requirementIds: [Req-dk-6, Req-dk-8]
-    name: Aggregate domain baselines button
+    name: 领域基线聚合按钮
     variant: primary
     events: [runDomainBaselineAggregation]
   - id: UI-DK-3
     requirementIds: [Req-dk-7]
-    name: Review suspected domains button
+    name: 疑似领域裁决按钮
     variant: danger
     events: [reviewSuspectedDomains, applyDomainAdjudication]
   - id: UI-DK-4
     requirementIds: [Req-dk-10]
-    name: Preview domain index button
+    name: 领域总览预览按钮
     variant: ghost
     events: [previewDomainBaselineSummary]
+  - id: UI-DK-5
+    requirementIds: [Req-dk-6]
+    name: 提交按钮
+    variant: success
+    events: [commitDomainBaseline]
 invariants:
   - id: INV-DK-1
     requirementId: Req-dk-1

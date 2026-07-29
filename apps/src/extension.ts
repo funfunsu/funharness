@@ -13,7 +13,6 @@ import {
     DEFAULT_POLL_SCRIPT,
     HARNESS_LOG_FILE,
     HookEntry,
-    PROMPTS_DIR,
     ScriptInventory,
     TODO_FILE,
     STAGE,
@@ -23,6 +22,7 @@ import {
     Task,
     TaskStats,
     getAiProvider,
+    getPrimaryTrackedSpecsDir,
     getScriptsSubdir,
     resolveSpecFile,
     resolveTaskPlanFileForIteration,
@@ -44,6 +44,7 @@ import { ProjectStructureService } from './services/projectStructureService';
 import { AutoPollService } from './services/autoPollService';
 import { appendStructureGateFailureLog } from './services/harnessLog';
 import { CapabilityDeltaService } from './services/capabilityDeltaService';
+import { resolveHarnessWorkspaceRoot } from './workspaceRoot';
 
 let harness: Harness | undefined;
 let workspaceRoot: string;
@@ -94,6 +95,12 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         vscode.commands.registerCommand('fun-harness.applyDomainAdjudication', async () => {
             await harness?.handleApplyDomainAdjudicationCommand();
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('fun-harness.commitDomainBaseline', async () => {
+            await harness?.handleCommitDomainBaselineCommand();
         })
     );
 }
@@ -151,7 +158,8 @@ class Harness {
         this.openedWorkspacePath = root.uri.fsPath;
         try {
             // Keep all reads/writes bounded to the currently opened workspace.
-            workspaceRoot = this.openedWorkspacePath;
+            const resolvedRoot = resolveHarnessWorkspaceRoot(this.openedWorkspacePath);
+            workspaceRoot = resolvedRoot.workspaceRoot;
 
             this.gitService.setWorkspaceRoot(workspaceRoot);
             this.taskStore = new TaskStoreService(workspaceRoot);
@@ -194,6 +202,7 @@ class Harness {
                 onPass: (task) => vscode.window.showInformationMessage(`✅ ${task.name} 完成`),
                 isWorktreeSubview: () => this.isWorktreeSubview(),
                 dispatchAi: async (query, iterDir, source, providerOverride) => this.aiDispatchService.dispatch(query, iterDir, source, providerOverride),
+                runDomainSummaryAiRefiner: (prompt) => this.aiDispatchService.refineToTextSync(prompt, this.getMasterRoot()),
                 copyProjectStructureToIteration: (iterDir) => this.copyProjectStructureToIteration(iterDir),
                 renderAgentPrompt: (step, taskName, taskDesc, iterDir) => this.promptService.getRenderedPromptWithSource(step, taskName, taskDesc, iterDir, this.config),
             });
@@ -205,8 +214,11 @@ class Harness {
                 generateCapabilityDelta: async (taskId) => this.handleGenerateCapabilityDelta(taskId),
                 runDomainBaselineAggregation: async (taskId) => this.handleRunDomainBaselineAggregationByTaskId(taskId),
                 reviewSuspectedDomains: async (taskId) => this.handleReviewSuspectedDomainsByTaskId(taskId),
+                applyDomainAdjudication: async (taskId) => this.actionsService.applyDomainAdjudicationByTaskId(taskId),
+                commitDomainBaseline: async (taskId) => this.actionsService.commitDomainBaselineByTaskId(taskId),
                 previewDomainBaselineSummary: async (taskId) => this.handlePreviewDomainBaselineSummaryByTaskId(taskId),
                 openCustomPrompt: (step) => this.handleOpenCustomPrompt(step),
+                openCustomConstitution: () => this.handleOpenCustomConstitution(),
                 saveGit: (frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode) => this.handleSaveGit(frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode),
                 saveAdvancedConfig: (msg) => this.handleSaveAdvancedConfig(msg),
                 initProjectStructure: () => this.handleInitProjectStructure(),
@@ -373,6 +385,21 @@ class Harness {
             return this.configMeta.masterRoot;
         }
         return workspaceRoot;
+    }
+
+    /** Resolve tracked docs owner root for domain baseline in monorepo mode. */
+    private resolveDomainBaselineRepoRoot(): string {
+        const masterRoot = this.getMasterRoot();
+        const isMono = Boolean((this.config.monorepoGit || '').trim());
+        if (!isMono) {
+            return masterRoot;
+        }
+
+        const monoMainRoot = path.join(masterRoot, 'repos', 'mono-main');
+        if (fs.existsSync(monoMainRoot)) {
+            return monoMainRoot;
+        }
+        return masterRoot;
     }
 
     /** Scan a directory for OS-appropriate script files (hidden files excluded). */
@@ -641,13 +668,21 @@ class Harness {
             dev: 'dev_custom_prompt.md',
         };
         const fileName = promptFileMap[step];
-        const promptPath = path.join(this.getMasterRoot(), BASE, PROMPTS_DIR, fileName);
-        const legacyPromptPath = path.join(this.getMasterRoot(), PROMPTS_DIR, fileName);
+        const masterRoot = this.getMasterRoot();
+        const promptPath = path.join(getPrimaryTrackedSpecsDir(masterRoot), fileName);
+        const legacyPromptCandidates = [
+            path.join(masterRoot, BASE, 'prompts', fileName),
+            path.join(masterRoot, 'prompts', fileName),
+            path.join(this.openedWorkspacePath || workspaceRoot, BASE, 'prompts', fileName),
+            path.join(this.openedWorkspacePath || workspaceRoot, 'prompts', fileName),
+        ];
         try {
             fs.mkdirSync(path.dirname(promptPath), { recursive: true });
-            if (!fs.existsSync(promptPath) && fs.existsSync(legacyPromptPath)) {
-                // Auto-migrate legacy root-level prompts/<file> to .harness/prompts/<file>.
-                fs.renameSync(legacyPromptPath, promptPath);
+            if (!fs.existsSync(promptPath)) {
+                const legacyPromptPath = legacyPromptCandidates.find(candidate => fs.existsSync(candidate));
+                if (legacyPromptPath) {
+                    fs.renameSync(legacyPromptPath, promptPath);
+                }
             }
             if (!fs.existsSync(promptPath)) {
                 fs.writeFileSync(promptPath, '', 'utf8');
@@ -657,6 +692,32 @@ class Harness {
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             vscode.window.showErrorMessage(`打开 custom prompt 失败：${message}`);
+        }
+    }
+
+    private async handleOpenCustomConstitution(): Promise<void> {
+        const masterRoot = this.getMasterRoot();
+        const constitutionPath = path.join(getPrimaryTrackedSpecsDir(masterRoot), 'constitution.md');
+        const legacyCandidates = [
+            path.join(masterRoot, '.spec', 'constitution.md'),
+            path.join(this.openedWorkspacePath || workspaceRoot, '.spec', 'constitution.md'),
+        ];
+        try {
+            fs.mkdirSync(path.dirname(constitutionPath), { recursive: true });
+            if (!fs.existsSync(constitutionPath)) {
+                const legacyPath = legacyCandidates.find(candidate => fs.existsSync(candidate));
+                if (legacyPath) {
+                    fs.renameSync(legacyPath, constitutionPath);
+                }
+            }
+            if (!fs.existsSync(constitutionPath)) {
+                fs.writeFileSync(constitutionPath, '', 'utf8');
+            }
+            const document = await vscode.workspace.openTextDocument(constitutionPath);
+            await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`打开 custom constitution 失败：${message}`);
         }
     }
 
@@ -706,7 +767,10 @@ class Harness {
         const result = await this.gitService.initializeRepos();
         if (result.success) {
             vscode.window.showInformationMessage(result.message);
-            await this.handleInitProjectStructure();
+            const existingStructure = this.projectStructureService?.readRootStructure();
+            if (!existingStructure) {
+                await this.handleInitProjectStructure();
+            }
         } else {
             vscode.window.showErrorMessage(result.message);
         }
@@ -1203,9 +1267,9 @@ class Harness {
             return;
         }
 
-        const indexPath = path.join(this.getMasterRoot(), 'docs', 'domains', '_index.md');
+        const indexPath = path.join(this.resolveDomainBaselineRepoRoot(), 'docs', 'domains', '_index.md');
         if (!fs.existsSync(indexPath)) {
-            vscode.window.showWarningMessage('尚未生成 docs/domains/_index.md，请先执行 Aggregate domain baselines');
+            vscode.window.showWarningMessage(`尚未生成 ${indexPath}，请先执行 Aggregate domain baselines`);
             return;
         }
 
@@ -1222,6 +1286,18 @@ class Harness {
             return;
         }
         await this.actionsService.applyDomainAdjudicationByTaskId(task.id);
+        this.render();
+    }
+
+    /**
+     * Run domain baseline commit action from command palette in main panel context.
+     */
+    async handleCommitDomainBaselineCommand(): Promise<void> {
+        const task = await this.pickTaskForDomainGovernance();
+        if (!task) {
+            return;
+        }
+        await this.actionsService.commitDomainBaselineByTaskId(task.id);
         this.render();
     }
 
@@ -1253,7 +1329,7 @@ class Harness {
      */
     private async handleGenerateCapabilityDelta(taskId: string): Promise<void> {
         if (!this.isWorktreeSubview()) {
-            vscode.window.showWarningMessage('仅 worktree 子视图支持生成 capability delta');
+            vscode.window.showWarningMessage('仅 worktree 子视图支持生成领域能力增量');
             return;
         }
 
@@ -1267,10 +1343,10 @@ class Harness {
         try {
             const result = this.capabilityDeltaService.generateForIteration(workspaceRoot, iterationPath);
             const relPath = path.relative(workspaceRoot, result.deltaPath).replace(/\\/g, '/');
-            vscode.window.showInformationMessage(`✅ capability delta 已生成：${relPath}`);
+            vscode.window.showInformationMessage(`✅ 领域能力增量文件已生成：${relPath}`);
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error || 'unknown');
-            vscode.window.showErrorMessage(`生成 capability delta 失败：${detail}`);
+            vscode.window.showErrorMessage(`生成领域能力增量失败：${detail}`);
         }
     }
 

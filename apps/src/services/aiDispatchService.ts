@@ -10,6 +10,35 @@ type DispatchSource = 'stage-agent' | 'dev-subtask';
 export class AiDispatchService {
     constructor(private readonly getConfig: () => Config) {}
 
+    /**
+     * Best-effort text refinement for workflows that require AI output inline.
+     * Currently supports CLI providers that can print the result to stdout.
+     */
+    refineToTextSync(query: string, iterDir: string, providerOverride?: string): string | null {
+        const cfg = this.getConfig();
+        const provider = getAiProvider(providerOverride || cfg.aiProvider || 'copilot-chat');
+        if (provider.kind !== 'cli') {
+            return null;
+        }
+
+        const promptFile = this.writePromptFile(query, iterDir, 'stage-agent');
+        const template = this.resolveCliTemplate(cfg, provider);
+        const command = this.buildCliCommand(template, promptFile);
+        try {
+            const output = execSync(command, {
+                cwd: iterDir,
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'pipe'],
+                maxBuffer: 1024 * 1024,
+                timeout: 120000,
+            }).trim();
+            return output || null;
+        } catch (error) {
+            console.warn('[fun-harness] refineToTextSync failed:', error);
+            return null;
+        }
+    }
+
     async dispatch(query: string, iterDir: string, source: DispatchSource, providerOverride?: string): Promise<void> {
         const cfg = this.getConfig();
         const provider = getAiProvider(providerOverride || cfg.aiProvider || 'copilot-chat');
