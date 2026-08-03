@@ -5,6 +5,9 @@
 
 $ErrorActionPreference = 'Stop'
 
+# 初始化 fnm 环境
+Invoke-Expression (fnm env --shell powershell | Out-String)
+
 # 定位仓库根目录与扩展目录（apps）
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot  = Split-Path -Parent $scriptDir
@@ -20,6 +23,13 @@ if (-not (Test-Path $appsDir)) {
 
 Push-Location $appsDir
 try {
+    # 0. 检查依赖是否已安装
+    if (-not (Test-Path (Join-Path $appsDir 'node_modules'))) {
+        Write-Host "==> 安装依赖 (npm install)" -ForegroundColor Cyan
+        npm install
+        if ($LASTEXITCODE -ne 0) { throw "npm install 失败 (exit $LASTEXITCODE)" }
+    }
+
     # 1. 清理输出目录下已有的 vsix
     Write-Host "==> 清理旧的 .vsix 文件（$outDir）" -ForegroundColor Cyan
     Get-ChildItem -Path $outDir -Filter '*.vsix' -File -ErrorAction SilentlyContinue | ForEach-Object {
@@ -39,7 +49,7 @@ try {
 
     # 4. 打包
     Write-Host "==> 打包 $outPath" -ForegroundColor Cyan
-    npx --no-install vsce package --allow-missing-repository --allow-star-activation -o $outPath
+    npx @vscode/vsce package --allow-missing-repository --allow-star-activation -o $outPath
     if ($LASTEXITCODE -ne 0) { throw "打包失败 (exit $LASTEXITCODE)" }
 
     Write-Host "==> 完成：$outPath" -ForegroundColor Green

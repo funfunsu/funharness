@@ -1,11 +1,11 @@
-import * as vscode from 'vscode';
+﻿import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
-import { Config, GateLevel, SubTask, Task, getSpecDocsDir, resolveGateLevel, resolveTaskPlanFileForIteration } from './models';
+import { Config, GateLevel, SubFeature, Feature, getSpecDocsDir, resolveGateLevel, resolveFeaturePlanFileForIteration } from './models';
 import { appendHarnessLog } from './services/harnessLog';
 
-export class TaskScheduler {
+export class FeatureScheduler {
     private iterDir: string;
     private readonly workspaceRoot: string;
     private readonly docsDir: string;
@@ -17,7 +17,7 @@ export class TaskScheduler {
     private onStatusChange: () => void;
     private config: Config;
     private readonly dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string) => Promise<void>;
-    private readonly getDevSystemPrompt: (subTask: SubTask, iterTask: Task) => string;
+    private readonly getDevSystemPrompt: (subFeature: SubFeature, iterFeature: Feature) => string;
 
     constructor(
         iterDir: string,
@@ -25,7 +25,7 @@ export class TaskScheduler {
         config: Config,
         dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask') => Promise<void>,
         onStatusChange: () => void,
-        getDevSystemPrompt: (subTask: SubTask, iterTask: Task) => string,
+        getDevSystemPrompt: (subFeature: SubFeature, iterFeature: Feature) => string,
     ) {
         this.iterDir = iterDir;
         this.workspaceRoot = workspaceRoot;
@@ -102,14 +102,14 @@ export class TaskScheduler {
         return { requirementIds, propertyIds };
     }
 
-    parseTasksMd(): SubTask[] {
+    parseSubFeaturesMd(): SubFeature[] {
         const file = this.resolveTaskPlanFile();
         if (!fs.existsSync(file)) return [];
 
         const content = fs.readFileSync(file, 'utf8');
         const lines = content.split('\n');
-        const tasks: SubTask[] = [];
-        let current: SubTask | null = null;
+        const tasks: SubFeature[] = [];
+        let current: SubFeature | null = null;
         let currentField = '';
 
         for (const line of lines) {
@@ -117,7 +117,7 @@ export class TaskScheduler {
             if (taskMatch) {
                 if (current) tasks.push(current);
                 const statusRaw = taskMatch[1].trim().toLowerCase();
-                let status: SubTask['status'] = 'todo';
+                let status: SubFeature['status'] = 'todo';
                 if (statusRaw === 'x') status = 'done';
                 else if (statusRaw === 'doing') status = 'doing';
                 else if (statusRaw === 'failed') status = 'failed';
@@ -193,8 +193,8 @@ export class TaskScheduler {
         return tasks;
     }
 
-    getNextTask(): SubTask | null {
-        const subTasks = this.parseTasksMd();
+    getNextSubFeature(): SubFeature | null {
+        const subTasks = this.parseSubFeaturesMd();
         const doneIds = new Set(subTasks.filter(t => t.status === 'done').map(t => t.id));
         return subTasks.find(t =>
             t.status === 'todo' &&
@@ -202,12 +202,12 @@ export class TaskScheduler {
         ) || null;
     }
 
-    getCurrentTask(): SubTask | null {
-        const subTasks = this.parseTasksMd();
+    getCurrentSubFeature(): SubFeature | null {
+        const subTasks = this.parseSubFeaturesMd();
         return subTasks.find(t => t.status === 'doing') || null;
     }
 
-    updateSubTaskStatus(taskId: string, newStatus: 'todo' | 'doing' | 'done' | 'failed'): void {
+    updateSubFeatureStatus(subFeatureId: string, newStatus: 'todo' | 'doing' | 'done' | 'failed'): void {
         const file = this.resolveTaskPlanFile();
         if (!fs.existsSync(file)) return;
 
@@ -221,14 +221,14 @@ export class TaskScheduler {
         const marker = statusMap[newStatus];
 
         content = content.replace(
-            new RegExp(`^(-\\s*\\[)[^\\]]*?(\\]\\s*${taskId.replace('.', '\\.')}\\s)`, 'm'),
+            new RegExp(`^(-\\s*\\[)[^\\]]*?(\\]\\s*${subFeatureId.replace('.', '\\.')}\\s)`, 'm'),
             `$1${marker}$2`
         );
 
         fs.writeFileSync(file, content, 'utf8');
     }
 
-    buildDispatchQuery(subTask: SubTask, iterTask: Task): string {
+    buildDispatchQuery(subTask: SubFeature, iterFeature: Feature): string {
         const signalsDir = path.join(this.iterDir, 'signals');
         const windowsTestScriptPath = path.join(this.iterDir, 'tests', `test-${subTask.id}.ps1`).replace(/\\/g, '/');
         const nonWindowsTestScriptPath = path.join(this.iterDir, 'tests', `test-${subTask.id}.sh`).replace(/\\/g, '/');
@@ -255,7 +255,7 @@ export class TaskScheduler {
 
         let dependencySection = '';
         if (subTask.depends.length > 0) {
-            const allTasks = this.parseTasksMd();
+            const allTasks = this.parseSubFeaturesMd();
             const depTasks = allTasks.filter(t => subTask.depends.includes(t.id));
             const depParts: string[] = [];
 
@@ -292,9 +292,9 @@ export class TaskScheduler {
             dependencySection = `\n## 前置依赖任务及其产出物\n\n**以下是本任务依赖的前置任务。它们的输出文件（如 API 协议、接口定义、数据模型等）是本任务的输入约束，请严格遵循。**\n\n${depParts.join('\n\n')}\n`;
         }
 
-        const devSystemPrompt = this.fillTemplateVars(this.getDevSystemPrompt(subTask, iterTask), {
+        const devSystemPrompt = this.fillTemplateVars(this.getDevSystemPrompt(subTask, iterFeature), {
             taskName: subTask.name,
-            taskDesc: iterTask.desc || '',
+            taskDesc: iterFeature.desc || '',
             subTaskId: subTask.id,
             subTaskName: subTask.name,
             subTaskOwner: subTask.owner,
@@ -306,7 +306,7 @@ export class TaskScheduler {
             acceptanceCriteria,
             techStack,
             codingStandards,
-            taskSplitMode: iterTask.taskSplitMode || 'standard',
+            taskSplitMode: iterFeature.taskSplitMode || 'standard',
         }).trim();
         const systemPromptSection = devSystemPrompt
             ? `${devSystemPrompt}\n\n=====================================================================\n# 当前要执行的具体任务（请严格按以下指令完成本次编码）\n\n`
@@ -319,7 +319,7 @@ export class TaskScheduler {
 
 - 任务ID：${subTask.id}
 - 任务名称：${subTask.name}
-- 任务描述：${iterTask.desc || '(无任务描述)'}
+- 任务描述：${iterFeature.desc || '(无任务描述)'}
 - 任务类型：${subTask.owner}
 - 技术栈：${techStack}
 - 当前工作空间（currentWorkSpace）：${this.iterDir}${subTask.depends.length > 0 ? `\n- 前置依赖任务：${subTask.depends.join(', ')}` : ''}
@@ -363,7 +363,7 @@ files:
 ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，请生成验收脚本（平台差异如下）：\n- Windows: \`${windowsTestScriptPath}\`\n- Non-Windows: \`${nonWindowsTestScriptPath}\`\n脚本仅供人工触发验证，不自动执行。` : ''}`;
     }
 
-    private buildRequirementsContext(subTask: SubTask): string {
+    private buildRequirementsContext(subTask: SubFeature): string {
         const reqFile = path.join(this.docsDir, 'requirements.md');
         if (!fs.existsSync(reqFile)) {
             return '(无 docs/requirements.md)';
@@ -445,7 +445,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         return wrapped.length > maxLen ? wrapped.substring(0, maxLen) : wrapped;
     }
 
-    private buildDesignContext(subTask: SubTask): string {
+    private buildDesignContext(subTask: SubFeature): string {
         const designFile = path.join(this.docsDir, 'design.md');
         if (!fs.existsSync(designFile)) {
             return '(无设计文档)';
@@ -476,7 +476,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         return this.extractContextByKeywords(content, keywordIds, 1200);
     }
 
-    private buildTestcaseContext(subTask: SubTask): string {
+    private buildTestcaseContext(subTask: SubFeature): string {
         const testcaseFile = path.join(this.docsDir, 'testcase.md');
         if (!fs.existsSync(testcaseFile)) {
             return '(无 docs/testcase.md)';
@@ -604,7 +604,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         return out.join('\n').trim();
     }
 
-    private buildManifestContext(subTask: SubTask): string {
+    private buildManifestContext(subTask: SubFeature): string {
         const manifestFile = path.join(this.iterDir, 'tests', 'test-manifest.json');
         if (!fs.existsSync(manifestFile)) {
             return '(无 tests/test-manifest.json)';
@@ -709,7 +709,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     }
 
     private resolveTaskPlanFile(): string {
-        return resolveTaskPlanFileForIteration(this.iterDir, this.config);
+        return resolveFeaturePlanFileForIteration(this.iterDir, this.config);
     }
 
     private clearStaleSignal(taskId: string): void {
@@ -726,7 +726,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         }
     }
 
-    async dispatchTask(subTask: SubTask, iterTask: Task): Promise<void> {
+    async dispatchSubFeature(subTask: SubFeature, iterFeature: Feature): Promise<void> {
         fs.mkdirSync(path.join(this.iterDir, 'signals'), { recursive: true });
         fs.mkdirSync(path.join(this.iterDir, 'tests'), { recursive: true });
         fs.mkdirSync(path.join(this.iterDir, 'logs'), { recursive: true });
@@ -734,26 +734,26 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         this.handledSignals.delete(subTask.id);
         this.clearStaleSignal(subTask.id);
 
-        this.updateSubTaskStatus(subTask.id, 'doing');
+        this.updateSubFeatureStatus(subTask.id, 'doing');
         this.onStatusChange();
 
-        const query = this.buildDispatchQuery(subTask, iterTask);
-        await this.dispatchAi(query, this.iterDir, 'dev-subtask', iterTask.aiProvider);
+        const query = this.buildDispatchQuery(subTask, iterFeature);
+        await this.dispatchAi(query, this.iterDir, 'dev-subtask', iterFeature.aiProvider);
 
         this.startTimeout(subTask.id);
     }
 
-    async dispatchNext(iterTask: Task): Promise<boolean> {
-        const next = this.getNextTask();
+    async dispatchNext(iterTask: Feature): Promise<boolean> {
+        const next = this.getNextSubFeature();
         if (next) {
-            await this.dispatchTask(next, iterTask);
+            await this.dispatchSubFeature(next, iterTask);
             return true;
         }
         // No 'todo' available. Only celebrate when literally everything is done.
         // If there are still 'doing' tasks, stay silent and wait — they'll trigger
         // dispatchNext again on completion. If there are 'failed' or dependency-blocked
         // tasks, also stay silent so the user doesn't get a misleading "全部完成".
-        const subTasks = this.parseTasksMd();
+        const subTasks = this.parseSubFeaturesMd();
         const allDone = subTasks.length > 0 && subTasks.every(t => t.status === 'done');
         if (allDone) {
             vscode.window.showInformationMessage('🎉 所有编码任务已完成！');
@@ -762,7 +762,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         return false;
     }
 
-    startWatching(iterTask: Task): void {
+    startWatching(iterTask: Feature): void {
         if (this.watcher) return;
 
         const signalsDir = path.join(this.iterDir, 'signals');
@@ -791,7 +791,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         this.autoMode = false;
     }
 
-    private startPolling(signalsDir: string, iterTask: Task): void {
+    private startPolling(signalsDir: string, iterTask: Feature): void {
         this.stopPolling();
         this.pollTimer = setInterval(async () => {
             if (!fs.existsSync(signalsDir)) return;
@@ -817,12 +817,12 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         }
     }
 
-    private async handleSignal(taskId: string, signalFilePath: string, iterTask: Task): Promise<void> {
+    private async handleSignal(taskId: string, signalFilePath: string, iterTask: Feature): Promise<void> {
         if (this.handledSignals.has(taskId)) return;
 
         // Only handle signals for known subtasks in the current tasks.md.
         // This prevents stale done-* files from previous runs/specs from causing false prompts.
-        const currentTasks = this.parseTasksMd();
+        const currentTasks = this.parseSubFeaturesMd();
         const currentTask = currentTasks.find(t => t.id === taskId);
         if (!currentTask) {
             this.handledSignals.add(taskId);
@@ -842,7 +842,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         this.clearTimeout();
         this.writeLog(taskId, `信号文件检测到: done-${taskId}`);
 
-        const subTasks = this.parseTasksMd();
+        const subTasks = this.parseSubFeaturesMd();
         const subTask = subTasks.find(t => t.id === taskId);
         let outputOk = true;
         const expectedOutputFiles = this.getPathLikeOutputs(subTask);
@@ -876,7 +876,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
 
             if (this.autoMode) {
                 if (gateFailed) {
-                    this.updateSubTaskStatus(taskId, 'failed');
+                    this.updateSubFeatureStatus(taskId, 'failed');
                     const summary = gateResults.filter(r => !r.passed).map(r => `${r.name}(exit=${r.code})`).join('、');
                     this.writeLog(taskId, `❌ 执行门禁未通过（gateLevel=${gate}）：${summary}`);
                     appendHarnessLog(this.iterDir, 'scheduler', `[${taskId}] 执行门禁失败 gate=${gate} | ${summary}`);
@@ -885,7 +885,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
                     vscode.window.showWarningMessage(`❌ 任务 ${taskId} 执行门禁未通过：${summary}`);
                     return;
                 }
-                this.updateSubTaskStatus(taskId, 'done');
+                this.updateSubFeatureStatus(taskId, 'done');
                 const passNote = gateResults.length > 0
                     ? `，执行门禁通过（${gateResults.map(r => r.name).join('、')}）`
                     : '';
@@ -903,13 +903,13 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
                     '确认完成', '人工检查'
                 );
                 if (choice === '确认完成') {
-                    this.updateSubTaskStatus(taskId, 'done');
+                    this.updateSubFeatureStatus(taskId, 'done');
                     this.writeLog(taskId, '✅ 用户确认完成');
                     this.onStatusChange();
                 }
             }
         } else {
-            this.updateSubTaskStatus(taskId, 'failed');
+            this.updateSubFeatureStatus(taskId, 'failed');
             const source = expectedOutputFiles.length > 0 ? 'tasks.md' : 'signal file';
             const detail = [
                 `source=${source}`,
@@ -932,14 +932,14 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             if (choice === '查看日志') {
                 appendHarnessLog(this.iterDir, 'scheduler', `[${taskId}] 用户查看日志以诊断问题`);
             } else if (choice === '忽略并继续') {
-                this.updateSubTaskStatus(taskId, 'done');
+                this.updateSubFeatureStatus(taskId, 'done');
                 this.writeLog(taskId, '⚠️ 用户选择忽略验证继续推进');
                 this.onStatusChange();
                 if (this.autoMode) {
                     await this.dispatchNext(iterTask);
                 }
             } else if (choice === '标记重试') {
-                this.updateSubTaskStatus(taskId, 'todo');
+                this.updateSubFeatureStatus(taskId, 'todo');
                 this.handledSignals.delete(taskId);
                 this.writeLog(taskId, '🔄 用户标记重试');
                 this.onStatusChange();
@@ -1046,10 +1046,10 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         });
     }
 
-    async startAuto(iterTask: Task): Promise<void> {
+    async startAuto(iterTask: Feature): Promise<void> {
         this.autoMode = true;
         this.startWatching(iterTask);
-        const currentDoing = this.getCurrentTask();
+        const currentDoing = this.getCurrentSubFeature();
         if (currentDoing) {
             this.handledSignals.delete(currentDoing.id);
             this.clearStaleSignal(currentDoing.id);
@@ -1071,10 +1071,10 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         return this.autoMode;
     }
 
-    async manualNext(iterTask: Task): Promise<void> {
-        const current = this.getCurrentTask();
+    async manualNext(iterTask: Feature): Promise<void> {
+        const current = this.getCurrentSubFeature();
         if (current) {
-            this.updateSubTaskStatus(current.id, 'done');
+            this.updateSubFeatureStatus(current.id, 'done');
             this.writeLog(current.id, '⏭ 用户手动标记完成');
         }
         this.clearTimeout();
@@ -1084,22 +1084,22 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         await this.dispatchNext(iterTask);
     }
 
-    async retryTask(taskId: string, iterTask: Task): Promise<void> {
-        this.updateSubTaskStatus(taskId, 'todo');
+    async retrySubFeature(subFeatureId: string, iterFeature: Feature): Promise<void> {
+        this.updateSubFeatureStatus(subFeatureId, 'todo');
         // Allow the retried task's new done signal to be consumed again.
-        this.handledSignals.delete(taskId);
+        this.handledSignals.delete(subFeatureId);
         this.onStatusChange();
 
-        const signalFile = path.join(this.iterDir, 'signals', `done-${taskId}`);
+        const signalFile = path.join(this.iterDir, 'signals', `done-${subFeatureId}`);
         if (fs.existsSync(signalFile)) {
             fs.unlinkSync(signalFile);
         }
 
-        const subTasks = this.parseTasksMd();
-        const subTask = subTasks.find(t => t.id === taskId);
+        const subTasks = this.parseSubFeaturesMd();
+        const subTask = subTasks.find(t => t.id === subFeatureId);
         if (subTask) {
-            this.startWatching(iterTask);
-            await this.dispatchTask(subTask, iterTask);
+            this.startWatching(iterFeature);
+            await this.dispatchSubFeature(subTask, iterFeature);
         }
     }
 
@@ -1130,7 +1130,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${message}\n`, 'utf8');
     }
 
-    private getPathLikeOutputs(subTask: SubTask | undefined): string[] {
+    private getPathLikeOutputs(subTask: SubFeature | undefined): string[] {
         if (!subTask || subTask.output.length === 0) {
             return [];
         }

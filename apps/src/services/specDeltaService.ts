@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
-import { BASE, Config, getSpecDocsDir, getSpecFile, getSpecFileRel, resolveGateLevel, resolveTaskPlanFileForIteration, Task } from '../models';
+import { BASE, Config, getSpecDocsDir, getSpecFile, getSpecFileRel, resolveGateLevel, resolveFeaturePlanFileForIteration, Feature } from '../models';
 import { collectDefinedReqIds, collectReferencedReqIds, extractMachineBlock } from '../specTrace';
 
 type StageKey = 'req' | 'des' | 'tcs' | 'tsk';
@@ -126,7 +126,7 @@ export class SpecDeltaService {
         private readonly getConfig: () => Config,
     ) {}
 
-    recordStageSnapshot(task: Task, iterDir: string, stage: StageKey, sourcePath: string, content: string): string {
+    recordStageSnapshot(task: Feature, iterDir: string, stage: StageKey, sourcePath: string, content: string): string {
         const rules = this.loadDomainRules(iterDir);
         const state = this.loadState(iterDir);
         const snapshot = this.buildSnapshot(stage, sourcePath, content, this.getConfig());
@@ -168,7 +168,7 @@ export class SpecDeltaService {
         return this.generateDomainDigest(task, iterDir, rules);
     }
 
-    evaluateDriftGate(task: Task, iterDir: string): DriftEvaluation {
+    evaluateDriftGate(task: Feature, iterDir: string): DriftEvaluation {
         const cfg = this.getConfig();
         const rules = this.loadDomainRules(iterDir);
         const changedFiles = this.collectChangedFiles(iterDir);
@@ -242,7 +242,7 @@ export class SpecDeltaService {
         };
     }
 
-    getLastReviewStatus(task: Task, iterDir: string): { severity: 'low' | 'medium' | 'high'; gateBlocked: boolean; at: string; summary: string; digestPath: string } | null {
+    getLastReviewStatus(task: Feature, iterDir: string): { severity: 'low' | 'medium' | 'high'; gateBlocked: boolean; at: string; summary: string; digestPath: string } | null {
         const entries = this.readLedger(iterDir).filter(e => e.taskId === task.id);
         if (entries.length === 0) {
             return null;
@@ -259,7 +259,7 @@ export class SpecDeltaService {
         };
     }
 
-    getSpecDeltaOverview(tasks: Array<{ task: Task; iterDir: string }>): Array<{ domain: string; total: number; high: number; blocked: number; lastAt: string }> {
+    getSpecDeltaOverview(tasks: Array<{ task: Feature; iterDir: string }>): Array<{ domain: string; total: number; high: number; blocked: number; lastAt: string }> {
         const map = new Map<string, { total: number; high: number; blocked: number; lastAt: string }>();
         for (const { task, iterDir } of tasks) {
             const entries = this.readLedger(iterDir).filter(e => e.taskId === task.id);
@@ -280,13 +280,13 @@ export class SpecDeltaService {
             .sort((a, b) => b.high - a.high || b.blocked - a.blocked);
     }
 
-    runFullSpecReview(task: Task, iterDir: string): DriftEvaluation {
+    runFullSpecReview(task: Feature, iterDir: string): DriftEvaluation {
         const cfg = this.getConfig();
         const files: Array<{ stage: StageKey; path: string }> = [
             { stage: 'req', path: getSpecFile(iterDir, cfg, 'requirements.md') },
             { stage: 'des', path: getSpecFile(iterDir, cfg, 'design.md') },
             { stage: 'tcs', path: getSpecFile(iterDir, cfg, 'testcase.md') },
-            { stage: 'tsk', path: resolveTaskPlanFileForIteration(iterDir, cfg) },
+            { stage: 'tsk', path: resolveFeaturePlanFileForIteration(iterDir, cfg) },
         ];
 
         for (const item of files) {
@@ -637,7 +637,7 @@ export class SpecDeltaService {
             || /(^|\/)(docs|specs)\/[\w-]+\/(requirements|design|testcase|tasks)\.md$/.test(file);
     }
 
-    private generateDomainDigest(task: Task, iterDir: string, rules: DomainRules): string {
+    private generateDomainDigest(task: Feature, iterDir: string, rules: DomainRules): string {
         const entries = this.readLedger(iterDir).filter(item => item.taskId === task.id);
         const grouped = new Map<string, LedgerEntry[]>();
         for (const entry of entries) {

@@ -1,6 +1,6 @@
-import * as fs from 'fs';
+﻿import * as fs from 'fs';
 import * as path from 'path';
-import { BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_ARCHIVE_FILE, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, ITERATION_ARCHIVE_SCHEMA_VERSION, IterationArchiveDocument, IterationArchiveItem, STAGE, Stage, Task, normalizeCustomButton, resolveSpecFile, resolveTaskPlanFileForIteration } from '../models';
+import { BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_ARCHIVE_FILE, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, ITERATION_ARCHIVE_SCHEMA_VERSION, IterationArchiveDocument, IterationArchiveItem, STAGE, Stage, Feature, normalizeCustomButton, resolveSpecFile, resolveFeaturePlanFileForIteration } from '../models';
 import { appendHarnessLog } from './harnessLog';
 import { safeRemovePath } from './fileOps';
 import { buildTraceMatrixSnapshot, TraceMatrixSnapshot } from '../specTrace';
@@ -22,20 +22,20 @@ export interface HarnessConfigMeta {
     readOnly: boolean;
 }
 
-export class TaskStoreService {
+export class FeatureStoreService {
     constructor(private readonly workspaceRoot: string) {}
 
     /**
      * Build the latest Req-* trace snapshot for a task iteration using current spec artifacts.
      * Returns empty-content derived results when optional artifacts are missing.
      */
-    getRequirementTraceSnapshot(task: Task): TraceMatrixSnapshot {
+    getRequirementTraceSnapshot(task: Feature): TraceMatrixSnapshot {
         const iterDir = this.getIterationDir(task);
         const config = this.loadConfig();
         const requirementsPath = resolveSpecFile(iterDir, config, 'requirements.md');
         const designPath = resolveSpecFile(iterDir, config, 'design.md');
         const testcasePath = resolveSpecFile(iterDir, config, 'testcase.md');
-        const tasksPath = resolveTaskPlanFileForIteration(iterDir, config);
+        const tasksPath = resolveFeaturePlanFileForIteration(iterDir, config);
 
         const requirementsContent = this.readOptionalTextFile(requirementsPath);
         const designContent = this.readOptionalTextFile(designPath);
@@ -50,7 +50,7 @@ export class TaskStoreService {
         );
     }
 
-    getIterationDir(task: Task): string {
+    getIterationDir(task: Feature): string {
         const meta = this.getConfigMeta();
         if (meta.origin === 'worktreeSnapshot') {
             // In a child worktree window, always read artifacts from current workspace root.
@@ -59,14 +59,14 @@ export class TaskStoreService {
         return task.worktreePath || path.join(this.workspaceRoot, 'worktrees', task.name);
     }
 
-    ensureIterationDir(task: Task): void {
+    ensureIterationDir(task: Feature): void {
         const worktreePath = this.getIterationDir(task);
         task.worktreePath = worktreePath;
         // Lazy-init mode: only record the intended path; physical creation happens
         // when user explicitly opens the task worktree.
     }
 
-    loadTasks(): Task[] {
+    loadFeatures(): Feature[] {
         const meta = this.getConfigMeta();
         if (meta.origin === 'worktreeSnapshot') {
             return this.migrateTaskBaselines(this.loadLocalTasks());
@@ -75,8 +75,8 @@ export class TaskStoreService {
         const localTasks = this.loadLocalTasks();
         const localIds = new Set(localTasks.map(t => t.id));
 
-        const worktreeTasks = this.loadTasksFromWorktrees();
-        if (worktreeTasks.length === 0) {
+        const worktreeFeatures = this.loadFeaturesFromWorktrees();
+        if (worktreeFeatures.length === 0) {
             return this.migrateTaskBaselines(localTasks);
         }
 
@@ -84,19 +84,19 @@ export class TaskStoreService {
         // Worktree snapshots carry richer per-task state (e.g. substage progress),
         // so prefer their version, but only for tasks that still exist in the root file.
         if (localIds.size > 0) {
-            const worktreeMap = new Map(worktreeTasks.map(t => [t.id, t]));
+            const worktreeMap = new Map(worktreeFeatures.map(t => [t.id, t]));
             return this.migrateTaskBaselines(localTasks.map(t => worktreeMap.get(t.id) || t));
         }
 
         // No root file yet (fresh workspace) — trust worktree scan as-is.
-        return this.migrateTaskBaselines(worktreeTasks);
+        return this.migrateTaskBaselines(worktreeFeatures);
     }
 
     /**
      * Collapse legacy per-task baseline aliases (baseSyncBranchUsed / mergeTargetBranchUsed) into
      * the single canonical baseBranchUsed, so the rest of the app only ever reads one field.
      */
-    private migrateTaskBaselines(tasks: Task[]): Task[] {
+    private migrateTaskBaselines(tasks: Feature[]): Feature[] {
         for (const t of tasks) {
             if (t.baseBranchUsed) {
                 continue;
@@ -110,24 +110,24 @@ export class TaskStoreService {
         return tasks;
     }
 
-    saveTasks(tasks: Task[]): void {
+    saveFeatures(features: Feature[]): void {
         const meta = this.getConfigMeta();
         if (meta.origin === 'worktreeSnapshot') {
-            this.saveLocalTasks(tasks);
+            this.saveLocalTasks(features);
             // Propagate to master root if reachable, so that:
             // 1) The master root's iteration-state.json reflects the latest task state
             //    instead of lagging until master itself triggers a save.
             // 2) The user reading the file directly (e.g. after passByTaskId) sees the
             //    expected stage, not the stale pre-merge value.
-            this.propagateTasksToMaster(meta.masterRoot, tasks);
+            this.propagateTasksToMaster(meta.masterRoot, features);
             return;
         }
 
         // Keep legacy master copy for backward compatibility.
-        this.saveLocalTasks(tasks);
+        this.saveLocalTasks(features);
 
         // Use per-worktree task snapshots as the source of truth.
-        for (const task of tasks) {
+        for (const task of features) {
             const iterDir = this.getIterationDir(task);
             if (!iterDir) {
                 continue;
@@ -150,7 +150,7 @@ export class TaskStoreService {
             const taskToSave = { ...task };
             if (fs.existsSync(file)) {
                 try {
-                    const existing = JSON.parse(fs.readFileSync(file, 'utf8')) as Task[];
+                    const existing = JSON.parse(fs.readFileSync(file, 'utf8')) as Feature[];
                     const existingTask = existing.find(t => t.id === task.id);
                     if (existingTask?.aiProvider && !task.aiProvider) {
                         taskToSave.aiProvider = existingTask.aiProvider;
@@ -283,11 +283,11 @@ export class TaskStoreService {
         fs.writeFileSync(file, JSON.stringify(payload, null, 2), 'utf8');
     }
 
-    private loadLocalTasks(): Task[] {
+    private loadLocalTasks(): Feature[] {
         const file = this.getTaskFile();
         if (fs.existsSync(file)) {
             try {
-                return JSON.parse(fs.readFileSync(file, 'utf8')) as Task[];
+                return JSON.parse(fs.readFileSync(file, 'utf8')) as Feature[];
             } catch {
                 return [];
             }
@@ -300,7 +300,7 @@ export class TaskStoreService {
         }
 
         try {
-            const tasks = JSON.parse(fs.readFileSync(legacy, 'utf8')) as Task[];
+            const tasks = JSON.parse(fs.readFileSync(legacy, 'utf8')) as Feature[];
             fs.mkdirSync(path.dirname(file), { recursive: true });
             fs.writeFileSync(file, JSON.stringify(tasks, null, 2), 'utf8');
             safeRemovePath(legacy);
@@ -328,7 +328,7 @@ export class TaskStoreService {
      * active state file. If archiving fails the done tasks are kept in the active file
      * so they are not silently lost (Req-5, INV-6).
      */
-    private saveLocalTasks(tasks: Task[]): void {
+    private saveLocalTasks(tasks: Feature[]): void {
         // Split done tasks from active tasks (Req-1, Req-2, INV-1).
         const completedTasks = tasks.filter(t => t.stage === STAGE.DONE);
         const activeTasks = tasks.filter(t => t.stage !== STAGE.DONE);
@@ -357,7 +357,7 @@ export class TaskStoreService {
      * they can be re-tried on the next propagation and are not silently lost (INV-6).
      * All propagation failures are swallowed so the worktree local save is never blocked.
      */
-    private propagateTasksToMaster(masterRoot: string | undefined, tasks: Task[]): void {
+    private propagateTasksToMaster(masterRoot: string | undefined, tasks: Feature[]): void {
         if (!masterRoot || !fs.existsSync(masterRoot)) {
             return;
         }
@@ -368,10 +368,10 @@ export class TaskStoreService {
 
             const masterFile = path.join(masterRoot, BASE, HARNESS_STATE_FILE);
             fs.mkdirSync(path.dirname(masterFile), { recursive: true });
-            let masterTasks: Task[] = [];
+            let masterTasks: Feature[] = [];
             if (fs.existsSync(masterFile)) {
                 try {
-                    const parsed = JSON.parse(fs.readFileSync(masterFile, 'utf8')) as Task[];
+                    const parsed = JSON.parse(fs.readFileSync(masterFile, 'utf8')) as Feature[];
                     if (Array.isArray(parsed)) {
                         masterTasks = parsed;
                     }
@@ -384,7 +384,7 @@ export class TaskStoreService {
             const archiveOk = this.writeArchiveDocument(masterRoot, completedTasks);
 
             // Merge active tasks into the master's task map.
-            const byId = new Map<string, Task>(masterTasks.map(t => [t.id, t]));
+            const byId = new Map<string, Feature>(masterTasks.map(t => [t.id, t]));
             for (const task of activeTasks) {
                 byId.set(task.id, { ...byId.get(task.id), ...task });
             }
@@ -406,13 +406,13 @@ export class TaskStoreService {
         }
     }
 
-    private loadTasksFromWorktrees(): Task[] {
+    private loadFeaturesFromWorktrees(): Feature[] {
         const worktreesRoot = path.join(this.workspaceRoot, 'worktrees');
         if (!fs.existsSync(worktreesRoot)) {
             return [];
         }
 
-        const taskMap = new Map<string, Task>();
+        const taskMap = new Map<string, Feature>();
         for (const entry of fs.readdirSync(worktreesRoot, { withFileTypes: true })) {
             if (!entry.isDirectory()) {
                 continue;
@@ -427,7 +427,7 @@ export class TaskStoreService {
                 continue;
             }
             try {
-                const list = JSON.parse(fs.readFileSync(taskFile, 'utf8')) as Task[];
+                const list = JSON.parse(fs.readFileSync(taskFile, 'utf8')) as Feature[];
                 if (taskFile === legacyFile) {
                     fs.writeFileSync(currentFile, JSON.stringify(list, null, 2), 'utf8');
                     safeRemovePath(legacyFile);
@@ -478,7 +478,7 @@ export class TaskStoreService {
      * the caller can keep the task in the active state file rather than losing the record.
      * Returns true on success, false on any failure.
      */
-    private writeArchiveDocument(root: string, completedTasks: Task[]): boolean {
+    private writeArchiveDocument(root: string, completedTasks: Feature[]): boolean {
         if (!completedTasks.length) {
             return true;
         }

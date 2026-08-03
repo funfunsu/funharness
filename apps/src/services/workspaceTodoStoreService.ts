@@ -317,12 +317,28 @@ export class WorkspaceTodoStoreService {
      * Ensure the workspace-level Todo store file is locally ignored by git.
      */
     private ensureTodoStoreIgnoredByGit(): void {
-        const gitDir = path.join(this.workspaceRoot, '.git');
-        if (!fs.existsSync(gitDir)) {
+        const gitPath = path.join(this.workspaceRoot, '.git');
+        if (!fs.existsSync(gitPath)) {
             return;
         }
 
-        const infoDir = path.join(gitDir, 'info');
+        // In a git worktree, .git is a file (not a directory) containing the real git dir path.
+        // Resolve the actual git directory before attempting to write to info/exclude.
+        let resolvedGitDir = gitPath;
+        const gitStat = fs.statSync(gitPath);
+        if (!gitStat.isDirectory()) {
+            const content = fs.readFileSync(gitPath, 'utf8').trim();
+            const match = content.match(/^gitdir:\s*(.+)$/);
+            if (!match) {
+                return;
+            }
+            resolvedGitDir = path.resolve(this.workspaceRoot, match[1]);
+            if (!fs.existsSync(resolvedGitDir) || !fs.statSync(resolvedGitDir).isDirectory()) {
+                return;
+            }
+        }
+
+        const infoDir = path.join(resolvedGitDir, 'info');
         const excludeFile = path.join(infoDir, 'exclude');
         const ignoreEntries = [
             '/.harness/workspace-todos.json',

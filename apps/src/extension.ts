@@ -1,6 +1,7 @@
-import * as vscode from 'vscode';
+﻿import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import {
     BASE,
     Config,
@@ -16,23 +17,23 @@ import {
     ScriptInventory,
     TODO_FILE,
     STAGE,
-    SubTask,
-    TASK_PLAN_LEGACY_REL_PATH,
-    TASK_PLAN_PRIMARY_REL_PATH,
-    Task,
-    TaskStats,
+    SubFeature,
+    FEATURE_PLAN_LEGACY_REL_PATH,
+    FEATURE_PLAN_PRIMARY_REL_PATH,
+    Feature,
+    FeatureStats,
     getAiProvider,
     getPrimaryTrackedSpecsDir,
     getScriptsSubdir,
     resolveSpecFile,
-    resolveTaskPlanFileForIteration,
+    resolveFeaturePlanFileForIteration,
     isOsScriptFile,
     normalizeCustomButton
 } from './models';
-import { TaskScheduler } from './taskScheduler';
+import { FeatureScheduler } from './featureScheduler';
 import { startMasterArtifactWatcher } from './masterArtifactWatcher';
-import { buildErrorPageHtml, buildMainPageHtml, buildSettingsPageHtml, MainTaskViewModel } from './webviewTemplates';
-import { HarnessConfigMeta, TaskStoreService } from './services/taskStoreService';
+import { buildErrorPageHtml, buildMainPageHtml, buildSettingsPageHtml, MainFeatureViewModel } from './webviewTemplates';
+import { HarnessConfigMeta, FeatureStoreService } from './services/featureStoreService';
 import { PromptService } from './services/promptService';
 import { GitService } from './services/gitService';
 import { AiDispatchService } from './services/aiDispatchService';
@@ -127,11 +128,11 @@ class Harness {
     private context: vscode.ExtensionContext;
     panel: vscode.WebviewPanel | null = null;
     private sidebarView?: vscode.WebviewView;
-    tasks: Task[] = [];
+    features: Feature[] = [];
     private currentPage: string = 'main';
     private config: Config = { ...DEFAULT_CONFIG };
     private schedulerRegistry!: SchedulerRegistry;
-    private taskStore!: TaskStoreService;
+    private featureStore!: FeatureStoreService;
     private configMeta: HarnessConfigMeta = { origin: 'unknown', readOnly: false };
     private promptService!: PromptService;
     private gitService: GitService = new GitService(this.config);
@@ -144,6 +145,10 @@ class Harness {
     private autoAdvanceRunning: boolean = false;
     private openedWorkspacePath: string = '';
     private initializationError?: string;
+    /** Mutex flag: prevents concurrent execution of handleInitProjectStructure. */
+    private isInitializingProjectStructure: boolean = false;
+    /** Cache of the SHA-256 hash of the last successfully dispatched preview content (Req-3 deduplication). */
+    private lastDispatchedPreviewHash: string | undefined = undefined;
 
     constructor(context: vscode.ExtensionContext) {
         this.context = context;
@@ -162,7 +167,7 @@ class Harness {
             workspaceRoot = resolvedRoot.workspaceRoot;
 
             this.gitService.setWorkspaceRoot(workspaceRoot);
-            this.taskStore = new TaskStoreService(workspaceRoot);
+            this.featureStore = new FeatureStoreService(workspaceRoot);
             this.promptService = new PromptService(workspaceRoot, extensionPath);
             this.projectStructureService = new ProjectStructureService(workspaceRoot, extensionPath);
             this.aiDispatchService = new AiDispatchService(() => this.config);
@@ -189,16 +194,16 @@ class Harness {
                 ),
             );
             this.actionsService = new HarnessActionsService({
-                getTasks: () => this.tasks,
+                getFeatures: () => this.features,
                 getConfig: () => this.config,
                 reloadConfig: () => this.loadConfig(),
                 getMasterRoot: () => this.getMasterRoot(),
                 getIterationDir: (task) => this.getIterationDir(task),
-                ensureIterationDir: (task) => this.taskStore.ensureIterationDir(task),
+                ensureIterationDir: (task) => this.featureStore.ensureIterationDir(task),
                 saveAndRender: () => this.saveAndRender(),
                 gitService: this.gitService,
                 getScheduler: (task) => this.getScheduler(task),
-                stopScheduler: (taskId) => this.schedulerRegistry.stop(taskId),
+                stopScheduler: (featureId) => this.schedulerRegistry.stop(featureId),
                 onPass: (task) => vscode.window.showInformationMessage(`✅ ${task.name} 完成`),
                 isWorktreeSubview: () => this.isWorktreeSubview(),
                 dispatchAi: async (query, iterDir, source, providerOverride) => this.aiDispatchService.dispatch(query, iterDir, source, providerOverride),
@@ -209,14 +214,14 @@ class Harness {
             this.messageController = new HarnessMessageController({
                 isWorktreeSubview: () => this.isWorktreeSubview(),
                 setPage: (page) => { this.currentPage = page; },
-                reloadTasks: () => { if (this.isWorktreeSubview()) { this.loadConfig(); } this.loadTasks(); },
+                reloadFeatures: () => { if (this.isWorktreeSubview()) { this.loadConfig(); } this.loadFeatures(); },
                 render: () => this.render(),
-                generateCapabilityDelta: async (taskId) => this.handleGenerateCapabilityDelta(taskId),
-                runDomainBaselineAggregation: async (taskId) => this.handleRunDomainBaselineAggregationByTaskId(taskId),
-                reviewSuspectedDomains: async (taskId) => this.handleReviewSuspectedDomainsByTaskId(taskId),
-                applyDomainAdjudication: async (taskId) => this.actionsService.applyDomainAdjudicationByTaskId(taskId),
-                commitDomainBaseline: async (taskId) => this.actionsService.commitDomainBaselineByTaskId(taskId),
-                previewDomainBaselineSummary: async (taskId) => this.handlePreviewDomainBaselineSummaryByTaskId(taskId),
+                generateCapabilityDelta: async (featureId) => this.handleGenerateCapabilityDelta(featureId),
+                runDomainBaselineAggregation: async (featureId) => this.handleRunDomainBaselineAggregationByFeatureId(featureId),
+                reviewSuspectedDomains: async (featureId) => this.handleReviewSuspectedDomainsByFeatureId(featureId),
+                applyDomainAdjudication: async (featureId) => this.actionsService.applyDomainAdjudicationByFeatureId(featureId),
+                commitDomainBaseline: async (featureId) => this.actionsService.commitDomainBaselineByFeatureId(featureId),
+                previewDomainBaselineSummary: async (featureId) => this.handlePreviewDomainBaselineSummaryByFeatureId(featureId),
                 openCustomPrompt: (step) => this.handleOpenCustomPrompt(step),
                 openCustomConstitution: () => this.handleOpenCustomConstitution(),
                 saveGit: (frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode) => this.handleSaveGit(frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode),
@@ -226,39 +231,39 @@ class Harness {
                 openArtifactsIndex: () => this.handleOpenArtifactsIndex(),
                 openMasterWorkspace: () => this.handleOpenMasterWorkspace(),
                 testAiProvider: async () => this.aiDispatchService.testConnection(),
-                setSubTaskStatus: async (taskId, subId, status) => this.actionsService.setSubTaskStatusByTaskId(taskId, subId, status),
-                createTask: async (name, desc, quickMode) => this.actionsService.createTask(name, desc, quickMode),
-                createTaskFromTodo: async (name, desc) => this.actionsService.createTaskFromTodo(name, desc),
-                logWebviewEvent: (taskId, event, detail) => this.actionsService.logUiEventByTaskId(taskId, event, detail),
-                requestEditTaskDesc: async (taskId) => this.actionsService.promptUpdateTaskDescByTaskId(taskId),
-                updateTaskDesc: (taskId, desc) => this.actionsService.updateTaskDescByTaskId(taskId, desc),
-                resetTask: async (taskId) => this.actionsService.resetTaskByTaskId(taskId),
-                pushAllCode: async (taskId) => this.actionsService.pushAllByTaskId(taskId),
-                runAgent: async (taskId, step) => this.actionsService.runAgentByTaskId(taskId, step),
-                specDeltaReview: async (taskId) => this.actionsService.reviewSpecDeltaByTaskId(taskId),
-                startAuto: async (taskId) => this.actionsService.startAutoByTaskId(taskId),
-                pauseAuto: (taskId) => this.actionsService.pauseAutoByTaskId(taskId),
-                nextTask: async (taskId) => this.actionsService.nextTaskByTaskId(taskId),
-                retryTask: async (taskId, subId) => this.actionsService.retryTaskByTaskId(taskId, subId),
-                setTaskAutomation: (taskId, aa, ar) => this.actionsService.setTaskAutomationByTaskId(taskId, aa, ar),
-                setTaskAiProvider: (taskId, ap) => {
-                    const task = this.tasks.find(t => t.id === taskId);
-                    if (task) {
-                        task.aiProvider = ap;
+                setSubFeatureStatus: async (featureId, subId, status) => this.actionsService.setSubFeatureStatusByFeatureId(featureId, subId, status),
+                createFeature: async (name, desc, quickMode) => this.actionsService.createFeature(name, desc, quickMode),
+                createFeatureFromTodo: async (name, desc) => this.actionsService.createFeatureFromTodo(name, desc),
+                logWebviewEvent: (featureId, event, detail) => this.actionsService.logUiEventByFeatureId(featureId, event, detail),
+                requestEditFeatureDesc: async (featureId) => this.actionsService.promptUpdateFeatureDescByFeatureId(featureId),
+                updateFeatureDesc: (featureId, desc) => this.actionsService.updateFeatureDescByFeatureId(featureId, desc),
+                resetFeature: async (featureId) => this.actionsService.resetFeatureByFeatureId(featureId),
+                pushAllCode: async (featureId) => this.actionsService.pushAllByFeatureId(featureId),
+                runAgent: async (featureId, step) => this.actionsService.runAgentByFeatureId(featureId, step),
+                specDeltaReview: async (featureId) => this.actionsService.reviewSpecDeltaByFeatureId(featureId),
+                startAuto: async (featureId) => this.actionsService.startAutoByFeatureId(featureId),
+                pauseAuto: (featureId) => this.actionsService.pauseAutoByFeatureId(featureId),
+                nextFeature: async (featureId) => this.actionsService.nextFeatureByFeatureId(featureId),
+                retryFeature: async (featureId, subId) => this.actionsService.retryFeatureByFeatureId(featureId, subId),
+                setFeatureAutomation: (featureId, aa, ar) => this.actionsService.setFeatureAutomationByFeatureId(featureId, aa, ar),
+                setFeatureAiProvider: (featureId, ap) => {
+                    const feature = this.features.find(t => t.id === featureId);
+                    if (feature) {
+                        feature.aiProvider = ap;
                         this.saveAndRender();
                     }
                 },
-                openFolderLocation: async (taskId, location) => this.actionsService.openFolderLocationByTaskId(taskId, location),
-                openArtifact: async (taskId, artifact) => this.actionsService.openArtifactByTaskId(taskId, artifact),
-                nextStage: async (taskId, step, targetStage) => this.actionsService.nextStageByTaskId(taskId, step, targetStage),
-                pass: async (taskId) => this.actionsService.passByTaskId(taskId),
-                syncMainCode: async (taskId) => this.actionsService.syncMainCodeByTaskId(taskId),
-                completeDevWithPush: async (taskId) => this.actionsService.completeDevWithPush(taskId),
-                pushAndNextStage: async (taskId) => this.actionsService.pushAndNextStage(taskId),
-                commitToBaseline: async (taskId) => this.actionsService.commitToBaselineByTaskId(taskId),
+                openFolderLocation: async (featureId, location) => this.actionsService.openFolderLocationByFeatureId(featureId, location),
+                openArtifact: async (featureId, artifact) => this.actionsService.openArtifactByFeatureId(featureId, artifact),
+                nextStage: async (featureId, step, targetStage) => this.actionsService.nextStageByFeatureId(featureId, step, targetStage),
+                pass: async (featureId) => this.actionsService.passByFeatureId(featureId),
+                syncMainCode: async (featureId) => this.actionsService.syncMainCodeByFeatureId(featureId),
+                completeDevWithPush: async (featureId) => this.actionsService.completeDevWithPush(featureId),
+                pushAndNextStage: async (featureId) => this.actionsService.pushAndNextStage(featureId),
+                commitToBaseline: async (featureId) => this.actionsService.commitToBaselineByFeatureId(featureId),
                 saveCustomButtons: (buttons) => this.handleSaveCustomButtons(buttons),
                 saveLifecycleHooks: (hooks) => this.handleSaveLifecycleHooks(hooks),
-                runCustomButton: async (taskId, buttonId) => this.actionsService.runCustomButtonByTaskId(taskId, buttonId),
+                runCustomButton: async (featureId, buttonId) => this.actionsService.runCustomButtonByFeatureId(featureId, buttonId),
                 runMainCustomButton: async (buttonId) => this.actionsService.runStandaloneCustomButton(buttonId),
                 openScriptDir: () => this.handleOpenScriptDir(),
                 openHarnessLog: () => this.handleOpenHarnessLog(),
@@ -278,10 +283,10 @@ class Harness {
                 workspaceRoot,
                 baseDirName: BASE,
             });
-            this.loadTasks();
+            this.loadFeatures();
             this.loadConfig();
             this.ensureProjectStructureBaseline();
-            if (!this.taskStore.configFileExists()) {
+            if (!this.featureStore.configFileExists()) {
                 this.currentPage = 'settings';
             }
             this.gitService.setConfig(this.config);
@@ -309,13 +314,13 @@ class Harness {
         }
     }
 
-    private getScheduler(task: Task): TaskScheduler {
+    private getScheduler(task: Feature): FeatureScheduler {
         return this.schedulerRegistry.get(task);
     }
 
     private loadConfig(): void {
-        this.config = this.taskStore.loadConfig();
-        this.configMeta = this.taskStore.getConfigMeta();
+        this.config = this.featureStore.loadConfig();
+        this.configMeta = this.featureStore.getConfigMeta();
         const effectiveGitRoot = (this.configMeta.origin === 'worktreeSnapshot' && this.configMeta.masterRoot && fs.existsSync(this.configMeta.masterRoot))
             ? this.configMeta.masterRoot
             : workspaceRoot;
@@ -323,13 +328,13 @@ class Harness {
     }
 
     private saveConfig(): void {
-        this.taskStore.saveConfig(this.config);
-        this.configMeta = this.taskStore.getConfigMeta();
+        this.featureStore.saveConfig(this.config);
+        this.configMeta = this.featureStore.getConfigMeta();
         this.gitService.setConfig(this.config);
     }
 
-    private loadTasks(): void {
-        this.tasks = this.taskStore.loadTasks();
+    private loadFeatures(): void {
+        this.features = this.featureStore.loadFeatures();
         this.reconcileStagesWithArtifacts();
     }
 
@@ -340,13 +345,13 @@ class Harness {
      */
     private reconcileStagesWithArtifacts(): void {
         let dirty = false;
-        for (const task of this.tasks) {
+            for (const task of this.features) {
             if (task.stage === STAGE.DONE || task.stage === STAGE.READY_FOR_REVIEW) {
                 continue;
             }
             const iterDir = this.getIterationDir(task);
             const hasTestcase = this.hasMeaningfulArtifactContent(resolveSpecFile(iterDir, this.config, 'testcase.md'));
-            const hasTaskPlan = fs.existsSync(resolveTaskPlanFileForIteration(iterDir, this.config));
+            const hasTaskPlan = fs.existsSync(resolveFeaturePlanFileForIteration(iterDir, this.config));
 
             let target = task.stage;
             if (hasTaskPlan) {
@@ -367,16 +372,16 @@ class Harness {
             }
         }
         if (dirty) {
-            this.saveTasks();
+            this.saveFeatures();
         }
     }
 
-    private saveTasks(): void {
-        this.taskStore.saveTasks(this.tasks);
+    private saveFeatures(): void {
+        this.featureStore.saveFeatures(this.features);
     }
 
-    private getIterationDir(task: Task): string {
-        return this.taskStore.getIterationDir(task);
+    private getIterationDir(task: Feature): string {
+        return this.featureStore.getIterationDir(task);
     }
 
     /** The master workspace root ("主目录"), resolved even from a worktree subview window. */
@@ -480,18 +485,18 @@ class Harness {
         vscode.commands.executeCommand('vscode.open', vscode.Uri.file(logPath));
     }
 
-    private getTaskStats(task: Task): TaskStats {
+    private getFeatureStats(task: Feature): FeatureStats {
         const scheduler = this.getScheduler(task);
-        const subTasks = scheduler.parseTasksMd();
-        if (subTasks.length === 0) {
+        const subFeatures = scheduler.parseSubFeaturesMd();
+        if (subFeatures.length === 0) {
             return { total: 0, todo: 0, doing: 0, done: 0, failed: 0 };
         }
         return {
-            total: subTasks.length,
-            todo: subTasks.filter(t => t.status === 'todo').length,
-            doing: subTasks.filter(t => t.status === 'doing').length,
-            done: subTasks.filter(t => t.status === 'done').length,
-            failed: subTasks.filter(t => t.status === 'failed').length
+            total: subFeatures.length,
+            todo: subFeatures.filter(t => t.status === 'todo').length,
+            doing: subFeatures.filter(t => t.status === 'doing').length,
+            done: subFeatures.filter(t => t.status === 'done').length,
+            failed: subFeatures.filter(t => t.status === 'failed').length
         };
     }
 
@@ -510,12 +515,12 @@ class Harness {
         }
         try {
         if (this.currentPage === 'settings') return this.renderSettings();
-        const running = this.tasks.filter(t => t.stage !== STAGE.DONE);
-        const taskViews: MainTaskViewModel[] = running.map((task) => {
-            const stats = this.getTaskStats(task);
+        const running = this.features.filter(t => t.stage !== STAGE.DONE);
+        const featureViews: MainFeatureViewModel[] = running.map((task) => {
+            const stats = this.getFeatureStats(task);
             const pct = stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : 0;
             const scheduler = this.getScheduler(task);
-            const subTasks = scheduler.parseTasksMd();
+            const subFeatures = scheduler.parseSubFeaturesMd();
             const iterDir = this.getIterationDir(task);
             const testScriptName = process.platform === 'win32' ? 'test-api.ps1' : 'test-api.sh';
             const isMono = Boolean(this.config.monorepoGit?.trim());
@@ -526,7 +531,7 @@ class Harness {
             const mainBackendDir = isMono ? path.join(workspaceRoot, 'repos', 'mono-main') : path.join(workspaceRoot, 'repos', 'backend-main');
             const requirementsFile = resolveSpecFile(iterDir, this.config, 'requirements.md');
             const designFile = resolveSpecFile(iterDir, this.config, 'design.md');
-            const taskPlanFile = resolveTaskPlanFileForIteration(iterDir, this.config);
+            const taskPlanFile = resolveFeaturePlanFileForIteration(iterDir, this.config);
             const artifacts = {
                 requirements: fs.existsSync(requirementsFile),
                 requirementsReady: this.hasMeaningfulArtifactContent(requirementsFile),
@@ -574,7 +579,7 @@ class Harness {
                 severity = 'warn';
             }
             if (severity === 'good' && !artifacts.tasks && task.stage === STAGE.DEVELOPING) {
-                healthReasons.push(`开发阶段缺少 ${TASK_PLAN_PRIMARY_REL_PATH}（兼容 ${TASK_PLAN_LEGACY_REL_PATH}）`);
+                healthReasons.push(`开发阶段缺少 ${FEATURE_PLAN_PRIMARY_REL_PATH}（兼容 ${FEATURE_PLAN_LEGACY_REL_PATH}）`);
                 severity = 'warn';
             }
 
@@ -582,8 +587,8 @@ class Harness {
                 task,
                 stats,
                 pct,
-                subTasks,
-                latestFailureReason: this.readLatestFailureReason(iterDir, subTasks),
+                subTasks: subFeatures,
+                latestFailureReason: this.readLatestFailureReason(iterDir, subFeatures),
                 isAuto: scheduler.isAutoMode(),
                 artifacts,
                 health: {
@@ -591,10 +596,10 @@ class Harness {
                     severity,
                     summary: healthReasons.length > 0 ? healthReasons.join('；') : '状态正常',
                 },
-                specDeltaStatus: this.actionsService.getTaskSpecDeltaStatus(task.id),
+                specDeltaStatus: this.actionsService.getFeatureSpecDeltaStatus(task.id),
             };
         });
-        taskViews.sort((left, right) => {
+        featureViews.sort((left, right) => {
             const severityRank = { bad: 0, warn: 1, good: 2 };
             const leftRank = severityRank[left.health.severity];
             const rightRank = severityRank[right.health.severity];
@@ -610,7 +615,7 @@ class Harness {
             return left.task.name.localeCompare(right.task.name);
         });
 
-        webview.html = buildMainPageHtml(taskViews, {}, {
+        webview.html = buildMainPageHtml(featureViews, {}, {
             compactTaskDecomposition: this.config.compactTaskDecomposition,
             isWorktreeSubview: this.isWorktreeSubview(),
             aiProvider: this.config.aiProvider,
@@ -823,7 +828,7 @@ class Harness {
         this.saveConfig();
         // Push the latest buttons into existing worktree snapshots so their subview
         // panels reflect them after a window reload (new worktrees inherit on creation).
-        this.taskStore.syncCustomButtonsToWorktrees(normalized);
+        this.featureStore.syncCustomButtonsToWorktrees(normalized);
         // Ensure the shared master script dir exists so the user always has a place to drop
         // uncommitted scripts (committed source dirs are created with the repo scaffold).
         const scriptDir = path.join(this.getMasterRoot(), CUSTOM_SCRIPT_DIR);
@@ -896,7 +901,7 @@ class Harness {
      * configured AI executor (Claude Code panel/CLI, Copilot, etc.).
      */
     private async dispatchTodoToAi(todoContent: string, worktreePath: string, promptOverride?: string): Promise<void> {
-        const task = this.tasks.find(t => t.stage !== STAGE.DONE) || this.tasks[0];
+        const task = this.features.find(t => t.stage !== STAGE.DONE) || this.features[0];
         const provider = (task?.aiProvider || this.config.aiProvider || '').trim() || undefined;
         const query = this.buildAutoPollDispatchQuery(todoContent, promptOverride);
         await this.aiDispatchService.dispatch(query, worktreePath, 'dev-subtask', provider);
@@ -951,7 +956,7 @@ class Harness {
 
     private handleToggleAutoPoll(enable: boolean): void {
         if (enable) {
-            const task = this.tasks.find(t => t.stage !== STAGE.DONE) || this.tasks[0];
+            const task = this.features.find(t => t.stage !== STAGE.DONE) || this.features[0];
             this.autoPollService.enable(task?.name || path.basename(this.openedWorkspacePath || workspaceRoot));
         } else {
             this.autoPollService.disable();
@@ -959,6 +964,9 @@ class Harness {
     }
 
     private ensureProjectStructureBaseline(): void {
+        // Side-effect boundary: no AI dispatch, no UI dialogs, no openTextDocument.
+        // This method only performs file-write operations (ensureBaseline).
+        // Called from: handleSaveGitConfig, handleSaveAdvancedConfig, extension activation.
         if (this.configMeta.readOnly || !this.projectStructureService) {
             return;
         }
@@ -1014,6 +1022,31 @@ class Harness {
             return;
         }
 
+        // Req-2: Concurrent guard — prevent multiple simultaneous initializations.
+        if (this.isInitializingProjectStructure) {
+            vscode.window.showInformationMessage('项目结构初始化正在进行中，请稍候');
+            return;
+        }
+        this.isInitializingProjectStructure = true;
+
+        try {
+        // Req-1: Read existing project-structure.md before running detection.
+        // A non-empty result means the file exists and has content — show a
+        // confirmation dialog so the user can cancel unnecessary re-initialization.
+        const existingStructure = this.projectStructureService.readRootStructure();
+        if (existingStructure) {
+            // Req-1 INV-2/INV-5: Prompt before any file write or AI dispatch.
+            const answer = await vscode.window.showInformationMessage(
+                'project-structure.md 已存在，是否重新初始化？',
+                '重新初始化',
+                '取消'
+            );
+            // '取消' or dialog dismissed (undefined) → abort; finally releases the lock.
+            if (answer !== '重新初始化') {
+                return;
+            }
+        }
+
         // Align detection roots with monorepo config so it scans the configured
         // frontend/backend subdirectories (and the mono-main clone) rather than
         // only the hardcoded conventional candidates.
@@ -1028,19 +1061,26 @@ class Harness {
         const previewPath = this.projectStructureService.writePreviewStructure(detected.content);
         const structureDoc = await vscode.workspace.openTextDocument(previewPath);
         await vscode.window.showTextDocument(structureDoc, { preview: false, preserveFocus: false });
-
         const aiReviewMode = detected.detected && this.config.projectStructureRefineMode !== 'local';
         if (aiReviewMode) {
-            const reviewPrompt = this.buildProjectStructureAiReviewPrompt(detected.content, detected.summary, previewPath);
-            try {
-                await this.aiDispatchService.dispatch(reviewPrompt, workspaceRoot, 'stage-agent');
-                vscode.window.showInformationMessage('已触发 AI 二次审阅：请根据 AI 建议完善预览文档后再点击“应用预览结构”。');
-            } catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                vscode.window.showWarningMessage(`AI 二次审阅触发失败：${message}`);
+            // Req-3 INV-3: Compute SHA-256 hash of preview content for dispatch deduplication.
+            const currentHash = crypto.createHash('sha256').update(detected.content).digest('hex');
+            if (currentHash === this.lastDispatchedPreviewHash) {
+                // Preview content unchanged — skip AI dispatch to avoid redundant conversation.
+                vscode.window.showInformationMessage('预览内容未变更，已跳过 AI 审阅');
+            } else {
+                const reviewPrompt = this.buildProjectStructureAiReviewPrompt(detected.content, detected.summary, previewPath);
+                try {
+                    await this.aiDispatchService.dispatch(reviewPrompt, workspaceRoot, 'stage-agent');
+                    // Req-3 INV-3: Update hash cache only on successful dispatch.
+                    this.lastDispatchedPreviewHash = currentHash;
+                    vscode.window.showInformationMessage('已触发 AI 二次审阅：请根据 AI 建议完善预览文档后再点击"应用预览结构"。');
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    vscode.window.showWarningMessage(`AI 二次审阅触发失败：${message}`);
+                }
             }
         }
-
         if (detected.detected) {
             // In AI review mode the preview is still being refined, so the immediate
             // apply option is omitted to avoid applying the un-reviewed tree.
@@ -1066,6 +1106,10 @@ class Harness {
         const defaultDoc = await vscode.workspace.openTextDocument(this.projectStructureService.getRootStructureFilePath());
         await vscode.window.showTextDocument(defaultDoc, { preview: false, preserveFocus: false });
         vscode.window.showInformationMessage('未检测到可提炼的现有结构，已写入默认项目结构模板。');
+        } finally {
+            // Req-2 INV-1: Release mutex on all exit paths (normal, cancel, exception).
+            this.isInitializingProjectStructure = false;
+        }
     }
 
     private buildProjectStructureAiReviewPrompt(detectedContent: string, summary: string, previewPath: string): string {
@@ -1098,6 +1142,11 @@ class Harness {
             '3. 仅在每个目录/关键节点行尾用 “# 说明” 补充一句话职责描述（已有说明则保持或微调）。',
             '4. 每条说明不超过 20 个字，只描述该目录的职责，不写改动指引、不写落包规则、不写示例代码。',
             '5. 不要新增章节、表格、前言或总结，输出仍是一棵带注释的目录树。',
+            '6. 对同级存在多个仅业务名不同、结构完全相同的兄弟目录或文件（同义重复节点），必须合并为占位符行，用 XXX 替换可变业务名称部分，并在行尾注明合并数量（如"# 共 N 组"）；合并后删除被替换的重复行，只保留一行占位符。',
+            '   示例：label/Label.java、label/LabelRepository.java、asset/Asset.java、asset/AssetRepository.java',
+            '   → XXX/XXX.java  # 共 2 组',
+            '     XXX/XXXRepository.java  # 共 2 组',
+            '   触发条件：同父级节点下同结构兄弟数 ≥ 2。',
             '',
             extractionSection,
             '',
@@ -1185,7 +1234,7 @@ class Harness {
     }
 
     private saveAndRender(): void {
-        this.saveTasks();
+        this.saveFeatures();
         this.render();
     }
 
@@ -1204,7 +1253,7 @@ class Harness {
         if (!task) {
             return;
         }
-        await this.handleReviewSuspectedDomainsByTaskId(task.id);
+        await this.handleReviewSuspectedDomainsByFeatureId(task.id);
         this.render();
     }
 
@@ -1216,7 +1265,7 @@ class Harness {
         if (!task) {
             return;
         }
-        await this.handleRunDomainBaselineAggregationByTaskId(task.id);
+        await this.handleRunDomainBaselineAggregationByFeatureId(task.id);
         this.render();
     }
 
@@ -1228,42 +1277,42 @@ class Harness {
         if (!task) {
             return;
         }
-        await this.handlePreviewDomainBaselineSummaryByTaskId(task.id);
+        await this.handleReviewSuspectedDomainsByFeatureId(task.id);
         this.render();
     }
 
     /**
      * Trigger main-panel aggregation route for one task context.
      */
-    private async handleRunDomainBaselineAggregationByTaskId(taskId: string): Promise<void> {
+    private async handleRunDomainBaselineAggregationByFeatureId(featureId: string): Promise<void> {
         if (this.isWorktreeSubview()) {
             vscode.window.showWarningMessage('领域基线聚合仅支持主面板执行');
             return;
         }
-        await this.actionsService.reviewSuspectedDomainsByTaskId(taskId);
+        await this.actionsService.reviewSuspectedDomainsByFeatureId(featureId);
     }
 
     /**
      * Trigger suspected-domain review route for one task context.
      */
-    private async handleReviewSuspectedDomainsByTaskId(taskId: string): Promise<void> {
+    private async handleReviewSuspectedDomainsByFeatureId(featureId: string): Promise<void> {
         if (this.isWorktreeSubview()) {
             vscode.window.showWarningMessage('疑似新领域裁决仅支持主面板执行');
             return;
         }
-        await this.actionsService.reviewSuspectedDomainsByTaskId(taskId);
+        await this.actionsService.reviewSuspectedDomainsByFeatureId(featureId);
     }
 
     /**
      * Open docs/domains/_index.md as domain baseline summary preview.
      */
-    private async handlePreviewDomainBaselineSummaryByTaskId(taskId: string): Promise<void> {
+    private async handlePreviewDomainBaselineSummaryByFeatureId(featureId: string): Promise<void> {
         if (this.isWorktreeSubview()) {
             vscode.window.showWarningMessage('领域总览预览仅支持主面板执行');
             return;
         }
-        if (!this.tasks.some(item => item.id === taskId)) {
-            vscode.window.showWarningMessage(`未找到任务：${taskId}`);
+        if (!this.features.some(item => item.id === featureId)) {
+            vscode.window.showWarningMessage(`未找到任务：${featureId}`);
             return;
         }
 
@@ -1285,7 +1334,7 @@ class Harness {
         if (!task) {
             return;
         }
-        await this.actionsService.applyDomainAdjudicationByTaskId(task.id);
+        await this.actionsService.applyDomainAdjudicationByFeatureId(task.id);
         this.render();
     }
 
@@ -1297,15 +1346,15 @@ class Harness {
         if (!task) {
             return;
         }
-        await this.actionsService.commitDomainBaselineByTaskId(task.id);
+        await this.actionsService.commitDomainBaselineByFeatureId(task.id);
         this.render();
     }
 
     /**
      * Pick one active task as governance action context.
      */
-    private async pickTaskForDomainGovernance(): Promise<Task | null> {
-        const activeTasks = this.tasks.filter(task => task.stage !== STAGE.DONE);
+    private async pickTaskForDomainGovernance(): Promise<Feature | null> {
+        const activeTasks = this.features.filter(task => task.stage !== STAGE.DONE);
         if (activeTasks.length === 0) {
             vscode.window.showWarningMessage('没有可用的迭代任务用于领域治理操作');
             return null;
@@ -1327,15 +1376,15 @@ class Harness {
     /**
      * Generate capability-delta.json for one iteration from worktree-only route.
      */
-    private async handleGenerateCapabilityDelta(taskId: string): Promise<void> {
+    private async handleGenerateCapabilityDelta(featureId: string): Promise<void> {
         if (!this.isWorktreeSubview()) {
             vscode.window.showWarningMessage('仅 worktree 子视图支持生成领域能力增量');
             return;
         }
 
-        const task = this.tasks.find(item => item.id === taskId);
+        const task = this.features.find(item => item.id === featureId);
         if (!task) {
-            vscode.window.showWarningMessage(`未找到任务：${taskId}`);
+            vscode.window.showWarningMessage(`未找到任务：${featureId}`);
             return;
         }
 
@@ -1358,7 +1407,7 @@ class Harness {
         this.autoPollService?.dispose();
     }
 
-    private readLatestFailureReason(iterDir: string, subTasks: SubTask[]): string {
+    private readLatestFailureReason(iterDir: string, subTasks: SubFeature[]): string {
         const failed = subTasks.filter(item => item.status === 'failed').map(item => item.id);
         if (failed.length === 0) {
             return '';

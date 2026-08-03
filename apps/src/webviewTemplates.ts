@@ -1,5 +1,5 @@
-import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubTask, Task, TaskStats, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, normalizeCustomButton } from './models';
-import { HarnessConfigMeta } from './services/taskStoreService';
+﻿import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubFeature, Feature, FeatureStats, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, normalizeCustomButton } from './models';
+import { HarnessConfigMeta } from './services/featureStoreService';
 import { AutoPollStatus } from './services/autoPollService';
 
 
@@ -14,7 +14,7 @@ function escapeHtml(value: string): string {
 }
 
 /** Badge showing last Spec Delta review status for a task. */
-function buildDeltaBadgeHtml(taskId: string, status: MainTaskViewModel['specDeltaStatus']): string {
+function buildDeltaBadgeHtml(taskId: string, status: MainFeatureViewModel['specDeltaStatus']): string {
     if (status == null) {
         return `<span class="delta-badge delta-none" onclick="specReview('${taskId}')" title="尚未评审，点击执行">Spec Δ 未评审</span>`;
     }
@@ -74,11 +74,11 @@ ${scriptNote}
 
 
 
-export interface MainTaskViewModel {
-    task: Task;
-    stats: TaskStats;
+export interface MainFeatureViewModel {
+    task: Feature;
+    stats: FeatureStats;
     pct: number;
-    subTasks: SubTask[];
+    subTasks: SubFeature[];
     latestFailureReason?: string;
     isAuto: boolean;
     artifacts: {
@@ -113,25 +113,25 @@ export interface MainTaskViewModel {
 type PanelMode = 'main' | 'worktree';
 type ActionPlacement = 'primary' | 'side';
 
-interface TaskActionContext {
+interface FeatureActionContext {
     panelMode: PanelMode;
     isWorktreeSubview: boolean;
-    taskView: MainTaskViewModel;
-    task: Task;
+    taskView: MainFeatureViewModel;
+    task: Feature;
     allSubTasksDone: boolean;
     hasWorktree: boolean;
 }
 
-interface TaskActionConfig {
+interface FeatureActionConfig {
     key: string;
     placement: ActionPlacement;
     panels: PanelMode[];
-    stages: Task['stage'][] | 'all';
-    when?: (ctx: TaskActionContext) => boolean;
-    render: (ctx: TaskActionContext) => string;
+    stages: Feature['stage'][] | 'all';
+    when?: (ctx: FeatureActionContext) => boolean;
+    render: (ctx: FeatureActionContext) => string;
 }
 
-const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
+const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
     {
         key: 'req-run',
         placement: 'primary',
@@ -248,7 +248,7 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
         when: (ctx) => !ctx.allSubTasksDone && !ctx.task.quickMode,
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="nextTask('${ctx.task.id}')">⏭ 下一个</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="nextFeature('${ctx.task.id}')">⏭ 下一个</button>`,
     },
     {
         key: 'dev-run-quick',
@@ -315,15 +315,15 @@ const TASK_ACTION_CONFIGS: TaskActionConfig[] = [
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: 'all',
-        render: (ctx) => `<button class="action-btn action-btn--danger" onclick="resetTask('${ctx.task.id}')">♻ 重置任务</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--danger" onclick="resetFeature('${ctx.task.id}')">♻ 重置任务</button>`,
     },
 ];
 
-function collectTaskActions(ctx: TaskActionContext): { primaryActions: string[]; sideActions: string[] } {
+function collectTaskActions(ctx: FeatureActionContext): { primaryActions: string[]; sideActions: string[] } {
     const primaryActions: string[] = [];
     const sideActions: string[] = [];
 
-    for (const action of TASK_ACTION_CONFIGS) {
+    for (const action of FEATURE_ACTION_CONFIGS) {
         if (!action.panels.includes(ctx.panelMode)) {
             continue;
         }
@@ -348,7 +348,7 @@ function collectTaskActions(ctx: TaskActionContext): { primaryActions: string[];
 }
 
 export function buildMainPageHtml(
-    taskViews: MainTaskViewModel[],
+    taskViews: MainFeatureViewModel[],
     dashboard: Record<string, never>,
     config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; autoPollEnabled: boolean; autoPoll?: AutoPollStatus; specDeltaOverview?: Array<{ domain: string; total: number; high: number; blocked: number; lastAt: string }> }
 ): string {
@@ -634,18 +634,18 @@ ${!isWorktreeSubview && t.worktreePath ? `<button class="action-btn action-btn--
 <div class="task-desc-wrap" id="task-desc-wrap-${t.id}">
 <div class="task-desc-view" id="task-desc-view-${t.id}">
 <div class="task-desc" id="task-desc-${t.id}">${escapeHtml(t.desc || '')}</div>
-<button type="button" class="task-desc-edit-btn" onclick="openTaskDescEditor('${t.id}')" title="编辑需求描述">✎</button>
+<button type="button" class="task-desc-edit-btn" onclick="openFeatureDescEditor('${t.id}')" title="编辑需求描述">✎</button>
 </div>
 <div class="task-desc-editor-wrap" id="task-desc-editor-wrap-${t.id}">
 <textarea
 class="task-desc-editor"
 id="task-desc-editor-${t.id}"
-oninput="autoGrowTaskDescEditor('${t.id}')"
+oninput="autoGrowFeatureDescEditor('${t.id}')"
 placeholder="请输入需求描述"
 >${escapeHtml(t.desc || '')}</textarea>
 <div class="task-desc-editor-actions">
-<button type="button" class="action-btn action-btn--neutral" onclick="cancelTaskDescEditor('${t.id}')">取消</button>
-<button type="button" class="action-btn action-btn--primary" onclick="commitTaskDescEditor('${t.id}')">保存</button>
+<button type="button" class="action-btn action-btn--neutral" onclick="cancelFeatureDescEditor('${t.id}')">取消</button>
+<button type="button" class="action-btn action-btn--primary" onclick="commitFeatureDescEditor('${t.id}')">保存</button>
 </div>
 </div>
 </div>
@@ -657,13 +657,13 @@ ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.lat
 <div class="task-progress"><div class="progress-bar" style="width:${view.pct}%"></div></div>
 <div style="font-size:12px">进度：${view.pct}%</div>` : ''}
 ${isWorktreeSubview ? `<div class="config-actions" style="margin-top:6px">
-<button class="action-btn action-btn--neutral" onclick="setTaskAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
-<button class="action-btn action-btn--neutral" onclick="setTaskAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
+<button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
+<button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
 </div>
 <div class="task-status">任务自动化：推进 ${taskAutoAdvance ? '开' : '关'} / 回修 ${taskAutoRepair ? '开' : '关'}</div>` : ''}
 <div class="toggle-row" style="margin:6px 0">
 <span style="font-size:12px">AI 执行器</span>
-<select style="width:auto;margin:0;padding:4px 6px;font-size:11px;background:#2c2c2e;color:#fff;border:none;border-radius:6px" onchange="setTaskAiProvider('${t.id}',this.value)">
+<select style="width:auto;margin:0;padding:4px 6px;font-size:11px;background:#2c2c2e;color:#fff;border:none;border-radius:6px" onchange="setFeatureAiProvider('${t.id}',this.value)">
 ${AI_PROVIDERS.map(p => `<option value="${p.id}" ${(t.aiProvider || config.aiProvider) === p.id ? 'selected' : ''}>${p.label}</option>`).join('')}
 </select>
 </div>
@@ -679,8 +679,8 @@ ${!isWorktreeSubview ? `<details class="task-config">
 <div class="task-status">文档：${artifactStatus}</div>
 <div class="task-status">任务自动化：推进 ${taskAutoAdvance ? '开' : '关'} / 回修 ${taskAutoRepair ? '开' : '关'}</div>
 <div class="config-actions">
-<button class="action-btn action-btn--neutral" onclick="setTaskAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
-<button class="action-btn action-btn--neutral" onclick="setTaskAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
+<button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
+<button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
 </div>
 </div>
 </details>` : ''}
@@ -886,13 +886,13 @@ function renderTodoPanel(){
         const safeId=escapeTodoHtml(todo.id);
         const safeTitle=escapeTodoHtml(todo.title||'');
         const safeDesc=escapeTodoHtml(todo.description||'');
-        const statusLabel=todo.status==='done'?'已完成':todo.status==='promoted'?'已转任务':'进行中';
+        const statusLabel=todo.status==='done'?'已完成':todo.status==='promoted'?'已进入迭代':'进行中';
         const updatedAt=escapeTodoHtml(todo.updatedAt||'');
         const nextStatus=todo.status==='done'?'open':'done';
         const descHtml=safeDesc?'<div class="todo-item-desc">'+safeDesc+'</div>':'';
         const titleClass=todo.status==='done'?'todo-item-title done':'todo-item-title';
         const toggleLabel=todo.status==='done'?'标记未完成':'标记完成';
-        const promoteLabel=todo.status==='promoted'?'再次转任务':'转任务';
+        const promoteLabel=todo.status==='promoted'?'再次进入迭代':'进入迭代';
         return '<div class="todo-item">'
             + '<div class="todo-item-head">'
             + '<div class="'+titleClass+'">'+safeTitle+'</div>'
@@ -1017,7 +1017,7 @@ function deleteTodo(id){
 }
 
 /** Promote a todo into a new iteration task and remove it from the todo list. */
-function promoteTodoToTask(id){
+function promoteTodoToFeature(id){
     const todo=findTodoById(id);
     if(!todo){
         return;
@@ -1027,7 +1027,7 @@ function promoteTodoToTask(id){
     saveTodoState();
     renderTodoPanel();
     v.postMessage({
-        type:'todo.promoteToTask',
+        type:'todo.promoteToFeature',
         todoId:id,
         promotionPolicy:'remove',
     });
@@ -1088,7 +1088,7 @@ document.addEventListener('click',(event)=>{
     const id=btn.getAttribute('data-todo-id')||'';
     if(action==='toggle'){toggleTodoStatus(id,btn.getAttribute('data-todo-next')||'done');}
     else if(action==='edit'){openTodoEditEditor(id);}
-    else if(action==='promote'){promoteTodoToTask(id);}
+    else if(action==='promote'){promoteTodoToFeature(id);}
     else if(action==='delete'){deleteTodo(id);}
 });
 
@@ -1111,14 +1111,14 @@ function pushAll(id){v.postMessage({type:'pushAndNextStage',id})}
 function commitToBaseline(id){v.postMessage({type:'commitToBaseline',id})}
 function startAuto(id){v.postMessage({type:'startAuto',id})}
 function pauseAuto(id){v.postMessage({type:'pauseAuto',id})}
-function nextTask(id){v.postMessage({type:'nextTask',id})}
-function retry(subId,id){v.postMessage({type:'retryTask',subId,id})}
+function nextFeature(id){v.postMessage({type:'nextFeature',id})}
+function retry(subId,id){v.postMessage({type:'retryFeature',subId,id})}
 function syncMainCode(id){v.postMessage({type:'syncMainCode',id})}
 function openMasterWorkspace(){v.postMessage({type:'openMasterWorkspace'})}
 function runCustomButton(id,buttonId){v.postMessage({type:'runCustomButton',id,buttonId})}
 function runMainCustomButton(buttonId){v.postMessage({type:'runMainCustomButton',buttonId})}
 function toggleAutoPoll(enable){v.postMessage({type:'toggleAutoPoll',enable})}
-function setSubStatus(id,subId,status){v.postMessage({type:'setSubTaskStatus',id,subId,status})}
+function setSubStatus(id,subId,status){v.postMessage({type:'setSubFeatureStatus',id,subId,status})}
 function logWebviewEvent(id,event,detail){
     try{v.postMessage({type:'logWebviewEvent',id,event,detail});}catch{}
 }
@@ -1130,24 +1130,24 @@ function getTaskDescNodes(id){
         desc:document.getElementById('task-desc-'+id),
     };
 }
-function setTaskDescEditing(id,editing){
+function setFeatureDescEditing(id,editing){
     const nodes=getTaskDescNodes(id);
     if(nodes.root){nodes.root.classList.toggle('editing',editing);}
 }
-function autoGrowTaskDescEditor(id){
+function autoGrowFeatureDescEditor(id){
     const nodes=getTaskDescNodes(id);
     const editor=nodes.editor;
     if(!editor){return;}
     editor.style.height='auto';
     editor.style.height=Math.min(Math.max(editor.scrollHeight,108),260)+'px';
 }
-function openTaskDescEditor(id){
+function openFeatureDescEditor(id){
     const {root,editor,desc}=getTaskDescNodes(id);
     if(!root||!editor||!desc){logWebviewEvent(id,'taskDescEditor.open.missingNodes');return;}
     logWebviewEvent(id,'taskDescEditor.open');
-    setTaskDescEditing(id,true);
+    setFeatureDescEditing(id,true);
     editor.value=desc.innerText;
-    autoGrowTaskDescEditor(id);
+    autoGrowFeatureDescEditor(id);
     editor.focus();
     if(typeof editor.selectionStart==='number'){
         const len=editor.value.length;
@@ -1155,15 +1155,15 @@ function openTaskDescEditor(id){
         editor.selectionEnd=len;
     }
 }
-function cancelTaskDescEditor(id){
+function cancelFeatureDescEditor(id){
     const {root,editor,desc}=getTaskDescNodes(id);
     if(!root||!editor||!desc){logWebviewEvent(id,'taskDescEditor.cancel.missingNodes');return;}
     logWebviewEvent(id,'taskDescEditor.cancel');
-    setTaskDescEditing(id,false);
+    setFeatureDescEditing(id,false);
     editor.value=desc.innerText;
-    autoGrowTaskDescEditor(id);
+    autoGrowFeatureDescEditor(id);
 }
-function commitTaskDescEditor(id){
+function commitFeatureDescEditor(id){
     try{
         var nodes=getTaskDescNodes(id);
         var root=nodes.root;
@@ -1182,7 +1182,7 @@ function commitTaskDescEditor(id){
         }
         desc.innerText=nextDesc;
         if(root){root.classList.remove('editing');}
-        v.postMessage({type:'updateTaskDesc',id:id,desc:nextDesc});
+        v.postMessage({type:'updateFeatureDesc',id:id,desc:nextDesc});
         logWebviewEvent(id,'taskDescEditor.save.postMessage','len='+nextDesc.length);
     }catch(error){
         var message=error&&error.message?error.message:String(error);
@@ -1190,11 +1190,11 @@ function commitTaskDescEditor(id){
         logWebviewEvent(id,'taskDescEditor.save.error.alert',message);
     }
 }
-function resetTask(id){v.postMessage({type:'resetTask',id})}
+function resetFeature(id){v.postMessage({type:'resetFeature',id})}
 function openArtifact(id,artifact){v.postMessage({type:'openArtifact',id,artifact})}
 function openFolderLocation(id,location){v.postMessage({type:'openFolderLocation',id,location})}
-function setTaskAutomation(id,aa,ar){v.postMessage({type:'setTaskAutomation',id,aa,ar})}
-function setTaskAiProvider(id,ap){v.postMessage({type:'setTaskAiProvider',id,ap})}
+function setFeatureAutomation(id,aa,ar){v.postMessage({type:'setFeatureAutomation',id,aa,ar})}
+function setFeatureAiProvider(id,ap){v.postMessage({type:'setFeatureAiProvider',id,ap})}
 function pushDev(id){v.postMessage({type:'pushAndNextStage',id})}
 function specReview(id){v.postMessage({type:'specDeltaReview',id})}
 
@@ -1612,6 +1612,18 @@ function addCustomButton(){
   if(cbAllScriptCount()===0){var em=document.getElementById('cbEmpty');if(em){em.style.display='block';}return;}
   document.getElementById('cbList').insertAdjacentHTML('beforeend',cbRowHtml({}));
   cbRefreshScripts();
+  // Auto-select first available script for the newly added row so the user doesn't
+  // have to manually open the dropdown and click — otherwise saving without clicking
+  // would record 0 buttons (empty script value is filtered out on save).
+  var rows=[].slice.call(document.querySelectorAll('#cbList .cb-row'));
+  if(rows.length>0){
+    var newRow=rows[rows.length-1];
+    var newCmd=newRow.querySelector('.cb-cmd');
+    if(newCmd&&!newCmd.value){
+      var firstOpt=[].slice.call(newCmd.options).find(function(o){return o.value;});
+      if(firstOpt){newCmd.setAttribute('data-val',firstOpt.value);cbRefreshScripts();}
+    }
+  }
 }
 function removeCustomButton(btn){var r=btn.closest('.cb-row');if(r)r.remove();cbRefreshScripts();}
 function openScriptDir(){v.postMessage({type:'openScriptDir'});}

@@ -36,8 +36,8 @@ export const HARNESS_LOG_FILE = 'harness.log';
 export const PROMPTS_DIR = 'prompts';
 /** Git-tracked specs directory name used for shared constitution/custom prompts. */
 export const TRACKED_SPECS_DIR = 'specs';
-export const TASK_PLAN_PRIMARY_REL_PATH = 'docs/tasks.md';
-export const TASK_PLAN_LEGACY_REL_PATH = 'doc/task.md';
+export const FEATURE_PLAN_PRIMARY_REL_PATH = 'docs/tasks.md';
+export const FEATURE_PLAN_LEGACY_REL_PATH = 'doc/task.md';
 export const HARNESS_STATE_FILE = 'iteration-state.json';
 export const HARNESS_STATE_FILE_LEGACY = 'tasks.json';
 
@@ -72,7 +72,7 @@ export interface PromptConfig {
     file: string;
 }
 
-export interface Task {
+export interface Feature {
     id: string;
     name: string;
     desc: string;
@@ -381,7 +381,7 @@ export interface Config {
     lifecycleHooks: LifecycleHooks;
 }
 
-export interface TaskStats {
+export interface FeatureStats {
     total: number;
     todo: number;
     doing: number;
@@ -473,7 +473,7 @@ export interface CapabilityDeltaValidationResult {
     contentHash: string;
 }
 
-export interface SubTask {
+export interface SubFeature {
     id: string;
     name: string;
     owner: string;
@@ -644,11 +644,11 @@ export function resolveSpecFile(iterDir: string, config: SpecDocsConfig, fileNam
  * then falling back to the legacy docs-based location (docs/tasks.md or docs/<task>/tasks.md) and
  * the very-legacy doc/task.md. Returns the canonical path when none exist (for write targets).
  */
-export function resolveTaskPlanFileForIteration(iterDir: string, config: SpecDocsConfig): string {
+export function resolveFeaturePlanFileForIteration(iterDir: string, config: SpecDocsConfig): string {
     const canonical = getSpecFile(iterDir, config, 'tasks.md');
     const legacySpec = path.join(iterDir, ...getLegacySpecDocsRelSegments(iterDir, config), 'tasks.md');
-    const legacyFlat = path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/'));
-    const legacyOld = path.join(iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/'));
+    const legacyFlat = path.join(iterDir, ...FEATURE_PLAN_PRIMARY_REL_PATH.split('/'));
+    const legacyOld = path.join(iterDir, ...FEATURE_PLAN_LEGACY_REL_PATH.split('/'));
     for (const candidate of [canonical, legacySpec, legacyFlat, legacyOld]) {
         if (fs.existsSync(candidate)) {
             return candidate;
@@ -668,8 +668,8 @@ export const DEFAULT_CONFIG: Config = {
     codingStandards: '',
     projectConventions: '',
     maxConcurrentAutoTasks: 2,
-    autoAdvanceEnabled: false,
-    autoRepairEnabled: false,
+    autoAdvanceEnabled: true,
+    autoRepairEnabled: true,
     autoContinueAfterManualDone: true,
     compactTaskDecomposition: false,
     autoDetectTaskSplitMode: true,
@@ -706,7 +706,7 @@ export const ITERATION_ARCHIVE_SCHEMA_VERSION = 1;
  * plus archive metadata (archivedAt, archiveReason). The id field acts as the
  * idempotent deduplication key across repeated archive runs.
  */
-export interface IterationArchiveItem extends Task {
+export interface IterationArchiveItem extends Feature {
     /** ISO-8601 timestamp when this iteration was archived. */
     archivedAt: string;
     /** Reason for archival. 'completed' indicates the iteration reached STAGE.DONE. */
