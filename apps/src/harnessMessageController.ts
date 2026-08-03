@@ -8,14 +8,14 @@ import { PromptContractIncompleteError } from './services/promptService';
 interface HarnessMessageControllerDeps {
     isWorktreeSubview: () => boolean;
     setPage: (page: string) => void;
-    reloadTasks: () => void;
+    reloadFeatures: () => void;
     render: () => void;
-    generateCapabilityDelta: (taskId: string) => Promise<void>;
-    runDomainBaselineAggregation: (taskId: string) => Promise<void>;
-    reviewSuspectedDomains: (taskId: string) => Promise<void>;
-    applyDomainAdjudication: (taskId: string) => Promise<void>;
-    commitDomainBaseline: (taskId: string) => Promise<void>;
-    previewDomainBaselineSummary: (taskId: string) => Promise<void>;
+    generateCapabilityDelta: (featureId: string) => Promise<void>;
+    runDomainBaselineAggregation: (featureId: string) => Promise<void>;
+    reviewSuspectedDomains: (featureId: string) => Promise<void>;
+    applyDomainAdjudication: (featureId: string) => Promise<void>;
+    commitDomainBaseline: (featureId: string) => Promise<void>;
+    previewDomainBaselineSummary: (featureId: string) => Promise<void>;
     openCustomPrompt: (step: 'req' | 'des' | 'tcs' | 'tsk' | 'dev') => Promise<void>;
     openCustomConstitution: () => Promise<void>;
     saveGit:(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi') => Promise<void>;
@@ -25,33 +25,33 @@ interface HarnessMessageControllerDeps {
     openArtifactsIndex: () => Promise<void>;
     openMasterWorkspace: () => Promise<void>;
     testAiProvider: () => Promise<void>;
-    createTask: (name: string, desc: string, quickMode?: boolean) => Promise<void>;
-    createTaskFromTodo?: (name: string, desc: string) => Promise<{ id: string }>;
-    logWebviewEvent: (taskId: string, event: string, detail?: string) => void;
-    requestEditTaskDesc: (taskId: string) => Promise<void>;
-    updateTaskDesc: (taskId: string, desc: string) => void;
-    resetTask: (taskId: string) => Promise<void>;
-    pushAllCode: (taskId: string) => Promise<void>;
-    runAgent: (taskId: string, step: Extract<HarnessMessage, { type: 'runAgent' }>['step']) => Promise<void>;
-    specDeltaReview: (taskId: string) => Promise<void>;
-    startAuto: (taskId: string) => Promise<void>;
-    pauseAuto: (taskId: string) => void;
-    nextTask: (taskId: string) => Promise<void>;
-    retryTask: (taskId: string, subId: string) => Promise<void>;
-    setSubTaskStatus: (taskId: string, subId: string, status: 'todo' | 'doing' | 'done' | 'failed') => Promise<void>;
-    setTaskAutomation: (taskId: string, aa: boolean, ar: boolean) => void;
-    setTaskAiProvider: (taskId: string, ap: string) => void;
-    openFolderLocation: (taskId: string, location: Extract<HarnessMessage, { type: 'openFolderLocation' }>['location']) => Promise<void>;
-    openArtifact: (taskId: string, artifact: Extract<HarnessMessage, { type: 'openArtifact' }>['artifact']) => Promise<void>;
-    nextStage: (taskId: string, step: Extract<HarnessMessage, { type: 'next' }>['step'], targetStage?: Extract<HarnessMessage, { type: 'next' }>['targetStage']) => Promise<void>;
-    pass: (taskId: string) => Promise<void>;
-    syncMainCode: (taskId: string) => Promise<void>;
-    completeDevWithPush: (taskId: string) => Promise<void>;
-    pushAndNextStage: (taskId: string) => Promise<void>;
-    commitToBaseline: (taskId: string) => Promise<void>;
+    createFeature: (name: string, desc: string, quickMode?: boolean) => Promise<void>;
+    createFeatureFromTodo?: (name: string, desc: string) => Promise<{ id: string }>;
+    logWebviewEvent: (featureId: string, event: string, detail?: string) => void;
+    requestEditFeatureDesc: (featureId: string) => Promise<void>;
+    updateFeatureDesc: (featureId: string, desc: string) => void;
+    resetFeature: (featureId: string) => Promise<void>;
+    pushAllCode: (featureId: string) => Promise<void>;
+    runAgent: (featureId: string, step: Extract<HarnessMessage, { type: 'runAgent' }>['step']) => Promise<void>;
+    specDeltaReview: (featureId: string) => Promise<void>;
+    startAuto: (featureId: string) => Promise<void>;
+    pauseAuto: (featureId: string) => void;
+    nextFeature: (featureId: string) => Promise<void>;
+    retryFeature: (featureId: string, subId: string) => Promise<void>;
+    setSubFeatureStatus: (featureId: string, subId: string, status: 'todo' | 'doing' | 'done' | 'failed') => Promise<void>;
+    setFeatureAutomation: (featureId: string, aa: boolean, ar: boolean) => void;
+    setFeatureAiProvider: (featureId: string, ap: string) => void;
+    openFolderLocation: (featureId: string, location: Extract<HarnessMessage, { type: 'openFolderLocation' }>['location']) => Promise<void>;
+    openArtifact: (featureId: string, artifact: Extract<HarnessMessage, { type: 'openArtifact' }>['artifact']) => Promise<void>;
+    nextStage: (featureId: string, step: Extract<HarnessMessage, { type: 'next' }>['step'], targetStage?: Extract<HarnessMessage, { type: 'next' }>['targetStage']) => Promise<void>;
+    pass: (featureId: string) => Promise<void>;
+    syncMainCode: (featureId: string) => Promise<void>;
+    completeDevWithPush: (featureId: string) => Promise<void>;
+    pushAndNextStage: (featureId: string) => Promise<void>;
+    commitToBaseline: (featureId: string) => Promise<void>;
     saveCustomButtons: (buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string; placement?: 'iteration' | 'main' }[]) => void;
     saveLifecycleHooks: (hooks: { script: string; scriptSource?: string; args?: string }[]) => void;
-    runCustomButton: (taskId: string, buttonId: string) => Promise<void>;
+    runCustomButton: (featureId: string, buttonId: string) => Promise<void>;
     runMainCustomButton: (buttonId: string) => Promise<void>;
     openScriptDir: () => Promise<void>;
     openHarnessLog: () => void;
@@ -63,7 +63,7 @@ interface HarnessMessageControllerDeps {
     todoUpdate?: (msg: Extract<HarnessMessage, { type: 'todo.update' }>) => Promise<void>;
     todoDelete?: (msg: Extract<HarnessMessage, { type: 'todo.delete' }>) => Promise<void>;
     todoList?: (msg: Extract<HarnessMessage, { type: 'todo.list' }>) => Promise<void>;
-    todoPromoteToTask?: (msg: Extract<HarnessMessage, { type: 'todo.promoteToTask' }>) => Promise<void>;
+    todoPromoteToFeature?: (msg: Extract<HarnessMessage, { type: 'todo.promoteToFeature' }>) => Promise<void>;
     todoChanged?: (msg: Extract<HarnessMessage, { type: 'todo.changed' }>) => void;
     todoError?: (msg: Extract<HarnessMessage, { type: 'todo.error' }>) => void;
 }
@@ -213,18 +213,18 @@ export class HarnessMessageController {
             case 'refresh':
             case 'generateCapabilityDelta':
             case 'logWebviewEvent':
-            case 'requestEditTaskDesc':
-            case 'updateTaskDesc':
-            case 'resetTask':
+            case 'requestEditFeatureDesc':
+            case 'updateFeatureDesc':
+            case 'resetFeature':
             case 'runAgent':
             case 'specDeltaReview':
             case 'startAuto':
             case 'pauseAuto':
-            case 'nextTask':
-            case 'retryTask':
-            case 'setSubTaskStatus':
-            case 'setTaskAutomation':
-            case 'setTaskAiProvider':
+            case 'nextFeature':
+            case 'retryFeature':
+            case 'setSubFeatureStatus':
+            case 'setFeatureAutomation':
+            case 'setFeatureAiProvider':
             case 'openArtifact':
             case 'openFolderLocation':
             case 'next':
@@ -243,7 +243,7 @@ export class HarnessMessageController {
             case 'todo.update':
             case 'todo.delete':
             case 'todo.list':
-            case 'todo.promoteToTask':
+            case 'todo.promoteToFeature':
                 return true;
             case 'page':
                 if (msg.page === 'main') {
@@ -313,7 +313,7 @@ export class HarnessMessageController {
                 this.deps.render();
                 return;
             case 'refresh':
-                this.deps.reloadTasks();
+                this.deps.reloadFeatures();
                 this.deps.render();
                 return;
             case 'generateCapabilityDelta':
@@ -367,19 +367,19 @@ export class HarnessMessageController {
                 await this.deps.testAiProvider();
                 return;
             case 'create':
-                await this.deps.createTask(msg.name, msg.desc, msg.quickMode);
+                await this.deps.createFeature(msg.name, msg.desc, msg.quickMode);
                 return;
             case 'logWebviewEvent':
                 this.deps.logWebviewEvent(msg.id, msg.event, msg.detail);
                 return;
-            case 'requestEditTaskDesc':
-                await this.deps.requestEditTaskDesc(msg.id);
+            case 'requestEditFeatureDesc':
+                await this.deps.requestEditFeatureDesc(msg.id);
                 return;
-            case 'updateTaskDesc':
-                this.deps.updateTaskDesc(msg.id, msg.desc);
+            case 'updateFeatureDesc':
+                this.deps.updateFeatureDesc(msg.id, msg.desc);
                 return;
-            case 'resetTask':
-                await this.deps.resetTask(msg.id);
+            case 'resetFeature':
+                await this.deps.resetFeature(msg.id);
                 return;
             case 'pushAll':
                 await this.deps.pushAllCode(msg.id);
@@ -396,20 +396,20 @@ export class HarnessMessageController {
             case 'pauseAuto':
                 this.deps.pauseAuto(msg.id);
                 return;
-            case 'nextTask':
-                await this.deps.nextTask(msg.id);
+            case 'nextFeature':
+                await this.deps.nextFeature(msg.id);
                 return;
-            case 'retryTask':
-                await this.deps.retryTask(msg.id, msg.subId);
+            case 'retryFeature':
+                await this.deps.retryFeature(msg.id, msg.subId);
                 return;
-            case 'setSubTaskStatus':
-                await this.deps.setSubTaskStatus(msg.id, msg.subId, msg.status);
+            case 'setSubFeatureStatus':
+                await this.deps.setSubFeatureStatus(msg.id, msg.subId, msg.status);
                 return;
-            case 'setTaskAutomation':
-                this.deps.setTaskAutomation(msg.id, msg.aa, msg.ar);
+            case 'setFeatureAutomation':
+                this.deps.setFeatureAutomation(msg.id, msg.aa, msg.ar);
                 return;
-            case 'setTaskAiProvider':
-                this.deps.setTaskAiProvider(msg.id, msg.ap);
+            case 'setFeatureAiProvider':
+                this.deps.setFeatureAiProvider(msg.id, msg.ap);
                 return;
             case 'openFolderLocation':
                 await this.deps.openFolderLocation(msg.id, msg.location);
@@ -534,9 +534,9 @@ export class HarnessMessageController {
                     this.emitTodoError(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                 }
                 return;
-            case 'todo.promoteToTask':
-                if (this.deps.todoPromoteToTask) {
-                    await this.deps.todoPromoteToTask(msg);
+            case 'todo.promoteToFeature':
+                if (this.deps.todoPromoteToFeature) {
+                    await this.deps.todoPromoteToFeature(msg);
                     return;
                 }
                 try {
@@ -549,12 +549,12 @@ export class HarnessMessageController {
                         return;
                     }
 
-                    const createdTask = this.deps.createTaskFromTodo
-                        ? await this.deps.createTaskFromTodo(todo.title, todo.description ?? '')
+                    const createdFeature = this.deps.createFeatureFromTodo
+                        ? await this.deps.createFeatureFromTodo(todo.title, todo.description ?? '')
                         : undefined;
 
-                    if (!createdTask?.id) {
-                        await this.deps.createTask(todo.title, todo.description ?? '', false);
+                    if (!createdFeature?.id) {
+                        await this.deps.createFeature(todo.title, todo.description ?? '', false);
                     }
 
                     // Always remove the promoted todo from the list.

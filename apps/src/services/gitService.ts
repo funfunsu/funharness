@@ -1,9 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
-import { Config, DEFAULT_MONOREPO_DIRS, Task } from '../models';
+import { Config, DEFAULT_MONOREPO_DIRS, Feature } from '../models';
 import { appendHarnessLog } from './harnessLog';
 import { clearDirChildrenPreserving, safeRemovePath } from './fileOps';
+import { deriveIterationBranchName } from './branchName';
 
 /**
  * Describes one git repository the harness manages for an iteration. In multi-repo mode there is
@@ -70,7 +71,7 @@ export class GitService {
      * All branch / merge / sync paths must resolve through here so there is exactly one notion
      * of "基线分支".
      */
-    private resolveBaseBranch(task?: Task): string {
+    private resolveBaseBranch(task?: Feature): string {
         return (task?.baseBranchUsed || this.config.baseBranch || 'main').trim();
     }
 
@@ -170,17 +171,14 @@ export class GitService {
         return { success: true, message: '✅ Git 配置已保存，代码初始化完成' };
     }
 
-    async createIterationBranches(task: Task, iterationDir: string): Promise<{ success: boolean; message?: string; baseBranch?: string; iterationBranch?: string }> {
+    async createIterationBranches(task: Feature, iterationDir: string): Promise<{ success: boolean; message?: string; baseBranch?: string; iterationBranch?: string }> {
         this.currentLogDir = iterationDir;
         this.lastExecError = '';
         this.clearOperationNotices();
-        const branchName = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
+        const branchName = deriveIterationBranchName(task);
         const baseBranch = (this.config.baseBranch || 'main').trim();
         const requireExactBaseBranch = Boolean(this.config.baseBranch?.trim());
         let resolvedBaseBranch = baseBranch;
-        if (!branchName || branchName.length < 2) {
-            return { success: false, message: '迭代名称必须使用英文' };
-        }
 
         // Write immediately so the log file exists even if a subsequent network command hangs.
         this.logGitToRoot(`=== 开始重建代码目录：task="${task.name}" iterDir=${iterationDir} baseBranch=${baseBranch} ===`);
@@ -300,7 +298,7 @@ export class GitService {
         }
     }
 
-    private buildCommitMessage(task: Task): string {
+    private buildCommitMessage(task: Feature): string {
         const raw = (task.desc || task.name || 'update').trim();
         const normalized = raw.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
         const truncated = normalized.length > 120 ? normalized.slice(0, 120).trim() : normalized;
@@ -442,11 +440,11 @@ export class GitService {
         }
     }
 
-    async pushAll(task: Task, iterationDir: string): Promise<{ success: boolean; message: string }> {
+    async pushAll(task: Feature, iterationDir: string): Promise<{ success: boolean; message: string }> {
         this.currentLogDir = iterationDir;
         const failures: Array<{ repo: string; reason: string }> = [];
         const commitMessage = this.buildCommitMessage(task);
-        const expectedBranch = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
+        const expectedBranch = deriveIterationBranchName(task);
         const repos = this.resolveRepoDescriptors(iterationDir);
 
         for (const repo of repos) {
@@ -504,11 +502,11 @@ export class GitService {
         return null;
     }
 
-    async syncMainCode(task: Task, iterationDir: string): Promise<{ success: boolean; message: string }> {
+    async syncMainCode(task: Feature, iterationDir: string): Promise<{ success: boolean; message: string }> {
         this.currentLogDir = iterationDir;
         this.clearOperationNotices();
         const baseBranch = this.resolveBaseBranch(task);
-        const expectedBranch = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
+        const expectedBranch = deriveIterationBranchName(task);
         const failures: Array<{ repo: string; reason: string }> = [];
         const repos = this.resolveRepoDescriptors(iterationDir);
 
@@ -630,7 +628,7 @@ export class GitService {
         return { ok: true };
     }
 
-    async mergeIterationToTarget(task: Task, iterationDir: string, options: { cleanup?: boolean } = {}): Promise<{ success: boolean; message: string; cleanupComplete?: boolean }> {
+    async mergeIterationToTarget(task: Feature, iterationDir: string, options: { cleanup?: boolean } = {}): Promise<{ success: boolean; message: string; cleanupComplete?: boolean }> {
         this.currentLogDir = iterationDir;
         const cleanup = options.cleanup !== false;
         // Single, consistent baseline resolution (task base → config baseline → main). Previously
@@ -638,7 +636,7 @@ export class GitService {
         // "提交代码" sometimes appeared to succeed without merging.
         const target = this.resolveBaseBranch(task);
 
-        const sourceBranch = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
+        const sourceBranch = deriveIterationBranchName(task);
         this.logGit(`=== 提交代码/合并到基线 开始：task="${task.name}" source=${sourceBranch} target=${target} cleanup=${cleanup} ===`);
         if (!sourceBranch) {
             return { success: false, message: '无法识别迭代分支名' };
@@ -743,7 +741,7 @@ export class GitService {
      * Returns the verified source SHA so the caller can later assert it is an ancestor of the
      * target branch after merge.
      */
-    private async prepareIterationForMerge(worktreeDir: string, sourceBranch: string, task: Task): Promise<{ ok: boolean; reason?: string; sha?: string }> {
+    private async prepareIterationForMerge(worktreeDir: string, sourceBranch: string, task: Feature): Promise<{ ok: boolean; reason?: string; sha?: string }> {
         if (!fs.existsSync(worktreeDir)) {
             return { ok: false, reason: `worktree 目录不存在：${worktreeDir}` };
         }

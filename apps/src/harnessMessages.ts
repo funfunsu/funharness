@@ -2,7 +2,7 @@ export type HarnessStep = 'req' | 'des' | 'tcs' | 'tsk' | 'dev';
 
 export type TodoSourcePanel = 'master' | 'worktree';
 export type TodoStatus = 'open' | 'done' | 'promoted';
-export type TodoPromotionPolicy = 'keep' | 'mark-promoted';
+export type TodoPromotionPolicy = 'keep' | 'mark-promoted' | 'remove';
 
 export interface TodoMessageItem {
     id: string;
@@ -34,19 +34,19 @@ export type HarnessMessage =
     | { type: 'testAiProvider' }
     | { type: 'create'; name: string; desc: string; quickMode?: boolean }
     | { type: 'logWebviewEvent'; id: string; event: string; detail?: string }
-    | { type: 'requestEditTaskDesc'; id: string }
-    | { type: 'updateTaskDesc'; id: string; desc: string }
-    | { type: 'resetTask'; id: string }
+    | { type: 'requestEditFeatureDesc'; id: string }
+    | { type: 'updateFeatureDesc'; id: string; desc: string }
+    | { type: 'resetFeature'; id: string }
     | { type: 'pushAll'; id: string }
     | { type: 'runAgent'; id: string; step: HarnessStep }
     | { type: 'specDeltaReview'; id: string }
     | { type: 'startAuto'; id: string }
     | { type: 'pauseAuto'; id: string }
-    | { type: 'nextTask'; id: string }
-    | { type: 'retryTask'; id: string; subId: string }
-    | { type: 'setSubTaskStatus'; id: string; subId: string; status: 'todo' | 'doing' | 'done' | 'failed' }
-    | { type: 'setTaskAutomation'; id: string; aa: boolean; ar: boolean }
-    | { type: 'setTaskAiProvider'; id: string; ap: string }
+    | { type: 'nextFeature'; id: string }
+    | { type: 'retryFeature'; id: string; subId: string }
+    | { type: 'setSubFeatureStatus'; id: string; subId: string; status: 'todo' | 'doing' | 'done' | 'failed' }
+    | { type: 'setFeatureAutomation'; id: string; aa: boolean; ar: boolean }
+    | { type: 'setFeatureAiProvider'; id: string; ap: string }
     | { type: 'openFolderLocation'; id: string; location: 'worktree' | 'frontend' | 'backend' | 'mainFrontend' | 'mainBackend' | 'mono' | 'mainMono' }
     | { type: 'openArtifact'; id: string; artifact: 'requirements' | 'design' | 'testcase' | 'tasks' | 'testScript' }
     | { type: 'next'; id: string; step: HarnessStep; targetStage?: HarnessStep }
@@ -68,6 +68,6 @@ export type HarnessMessage =
     | { type: 'todo.update'; id: string; title: string; description: string | null; status: TodoStatus }
     | { type: 'todo.delete'; id: string }
     | { type: 'todo.list' }
-    | { type: 'todo.promoteToTask'; todoId: string; promotionPolicy: TodoPromotionPolicy }
+    | { type: 'todo.promoteToFeature'; todoId: string; promotionPolicy: TodoPromotionPolicy }
     | { type: 'todo.changed'; reason: 'created' | 'updated' | 'deleted' | 'promoted' | 'reloaded'; todos: TodoMessageItem[] }
     | { type: 'todo.error'; code: string; message: string; detail?: string };

@@ -1,7 +1,7 @@
-'use strict';
+﻿'use strict';
 /**
  * Regression tests for iteration archive behaviour introduced by after-iteration feature.
- * Covers Req-2, Req-3, Req-4, Req-5, Req-6, Req-7 via TaskStoreService integration tests.
+ * Covers Req-2, Req-3, Req-4, Req-5, Req-6, Req-7 via FeatureStoreService integration tests.
  *
  * Test runner: Node.js built-in test runner (`node --test`).
  * Prerequisite: `npm run compile` must have been run so that `../out/` contains compiled JS.
@@ -16,7 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { TaskStoreService } = require('../out/services/taskStoreService');
+const { FeatureStoreService } = require('../out/services/featureStoreService');
 const {
     STAGE,
     BASE,
@@ -53,7 +53,7 @@ function makeTask(id, stage) {
 }
 
 /**
- * Write a harness config.json so that TaskStoreService reads the desired origin.
+ * Write a harness config.json so that FeatureStoreService reads the desired origin.
  * @param {string} workspaceRoot
  * @param {'master'|'worktreeSnapshot'|'unknown'} origin
  * @param {string|undefined} masterRoot
@@ -90,16 +90,16 @@ function readArchive(root) {
 
 // ── test suite ────────────────────────────────────────────────────────────────
 
-describe('TaskStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, Req-6)', () => {
+describe('FeatureStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, Req-6)', () => {
 
     // ── Req-1 / Req-2 / INV-1 ─────────────────────────────────────────────
 
     test('done task is removed from active state file after save (Req-2, INV-1)', () => {
         const root = makeTempDir();
         try {
-            const svc = new TaskStoreService(root);
+            const svc = new FeatureStoreService(root);
             const doneTask = makeTask('t1', STAGE.DONE);
-            svc.saveTasks([doneTask]);
+            svc.saveFeatures([doneTask]);
 
             const active = readActive(root);
             assert.equal(active.length, 0, 'active state must be empty after archiving the only done task');
@@ -109,9 +109,9 @@ describe('TaskStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, R
     test('non-done task is preserved unchanged in active state file (Req-1)', () => {
         const root = makeTempDir();
         try {
-            const svc = new TaskStoreService(root);
+            const svc = new FeatureStoreService(root);
             const activeTask = makeTask('t2', STAGE.DEVELOPING);
-            svc.saveTasks([activeTask]);
+            svc.saveFeatures([activeTask]);
 
             const active = readActive(root);
             assert.equal(active.length, 1, 'non-done task must remain in active state');
@@ -123,10 +123,10 @@ describe('TaskStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, R
     test('mixed save: only done tasks archived, non-done tasks preserved (Req-2)', () => {
         const root = makeTempDir();
         try {
-            const svc = new TaskStoreService(root);
+            const svc = new FeatureStoreService(root);
             const doneTask = makeTask('done-1', STAGE.DONE);
             const activeTask = makeTask('active-1', STAGE.DEVELOPING);
-            svc.saveTasks([doneTask, activeTask]);
+            svc.saveFeatures([doneTask, activeTask]);
 
             const active = readActive(root);
             assert.equal(active.length, 1, 'only non-done task must remain in active state');
@@ -142,10 +142,10 @@ describe('TaskStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, R
     test('loadTasks after archive does not return archived task id (Req-2, INV-2)', () => {
         const root = makeTempDir();
         try {
-            const svc = new TaskStoreService(root);
-            svc.saveTasks([makeTask('archived-t', STAGE.DONE), makeTask('alive-t', STAGE.DEVELOPING)]);
+            const svc = new FeatureStoreService(root);
+            svc.saveFeatures([makeTask('archived-t', STAGE.DONE), makeTask('alive-t', STAGE.DEVELOPING)]);
 
-            const loaded = svc.loadTasks();
+            const loaded = svc.loadFeatures();
             const ids = loaded.map(t => t.id);
             assert.ok(!ids.includes('archived-t'), 'loadTasks must not return archived task id');
             assert.ok(ids.includes('alive-t'), 'loadTasks must return non-done task');
@@ -157,8 +157,8 @@ describe('TaskStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, R
     test('first archive creates file with valid JSON, schemaVersion, and tasks array (Req-3, Req-4)', () => {
         const root = makeTempDir();
         try {
-            const svc = new TaskStoreService(root);
-            svc.saveTasks([makeTask('t-first', STAGE.DONE)]);
+            const svc = new FeatureStoreService(root);
+            svc.saveFeatures([makeTask('t-first', STAGE.DONE)]);
 
             const archive = readArchive(root);
             assert.ok(archive, 'archive file must exist after first archive');
@@ -171,8 +171,8 @@ describe('TaskStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, R
     test('archived item has archivedAt ISO-8601 and archiveReason=completed (Req-3)', () => {
         const root = makeTempDir();
         try {
-            const svc = new TaskStoreService(root);
-            svc.saveTasks([makeTask('t-meta', STAGE.DONE)]);
+            const svc = new FeatureStoreService(root);
+            svc.saveFeatures([makeTask('t-meta', STAGE.DONE)]);
 
             const archive = readArchive(root);
             const item = archive.tasks[0];
@@ -187,9 +187,9 @@ describe('TaskStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, R
     test('second archive appends without overwriting existing items (Req-3)', () => {
         const root = makeTempDir();
         try {
-            const svc = new TaskStoreService(root);
-            svc.saveTasks([makeTask('t-old', STAGE.DONE)]);
-            svc.saveTasks([makeTask('t-new', STAGE.DONE)]);
+            const svc = new FeatureStoreService(root);
+            svc.saveFeatures([makeTask('t-old', STAGE.DONE)]);
+            svc.saveFeatures([makeTask('t-new', STAGE.DONE)]);
 
             const archive = readArchive(root);
             assert.equal(archive.tasks.length, 2, 'both items must be in archive');
@@ -202,9 +202,9 @@ describe('TaskStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, R
     test('original task fields are preserved in archive item (Req-3)', () => {
         const root = makeTempDir();
         try {
-            const svc = new TaskStoreService(root);
+            const svc = new FeatureStoreService(root);
             const doneTask = makeTask('t-fields', STAGE.DONE);
-            svc.saveTasks([doneTask]);
+            svc.saveFeatures([doneTask]);
 
             const archive = readArchive(root);
             const item = archive.tasks[0];
@@ -219,10 +219,10 @@ describe('TaskStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, R
     test('archiving the same task twice does not create duplicate entries (Req-5, INV-5)', () => {
         const root = makeTempDir();
         try {
-            const svc = new TaskStoreService(root);
+            const svc = new FeatureStoreService(root);
             const doneTask = makeTask('dup-id', STAGE.DONE);
-            svc.saveTasks([doneTask]);
-            svc.saveTasks([doneTask]); // second run: same task, already archived
+            svc.saveFeatures([doneTask]);
+            svc.saveFeatures([doneTask]); // second run: same task, already archived
 
             const archive = readArchive(root);
             const matchingIds = archive.tasks.filter(i => i.id === 'dup-id');
@@ -238,11 +238,11 @@ describe('TaskStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, R
             fs.mkdirSync(harnessDir, { recursive: true });
             fs.writeFileSync(path.join(harnessDir, HARNESS_STATE_ARCHIVE_FILE), 'NOT_JSON', 'utf8');
 
-            const svc = new TaskStoreService(root);
+            const svc = new FeatureStoreService(root);
             const doneTask = makeTask('t-safe', STAGE.DONE);
 
             // Must not throw
-            assert.doesNotThrow(() => { svc.saveTasks([doneTask]); },
+            assert.doesNotThrow(() => { svc.saveFeatures([doneTask]); },
                 'saveTasks must not throw on corrupt archive file');
 
             // Done task must NOT be lost — it should remain in active state since archive failed
@@ -260,8 +260,8 @@ describe('TaskStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, R
         try {
             writeHarnessConfig(worktreeRoot, 'worktreeSnapshot', masterRoot);
 
-            const svc = new TaskStoreService(worktreeRoot);
-            svc.saveTasks([makeTask('wt-done', STAGE.DONE), makeTask('wt-active', STAGE.DEVELOPING)]);
+            const svc = new FeatureStoreService(worktreeRoot);
+            svc.saveFeatures([makeTask('wt-done', STAGE.DONE), makeTask('wt-active', STAGE.DEVELOPING)]);
 
             const masterActive = readActive(masterRoot);
             const masterIds = masterActive.map(t => t.id);
@@ -278,8 +278,8 @@ describe('TaskStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, R
         try {
             writeHarnessConfig(worktreeRoot, 'worktreeSnapshot', masterRoot);
 
-            const svc = new TaskStoreService(worktreeRoot);
-            svc.saveTasks([makeTask('wt-arc', STAGE.DONE)]);
+            const svc = new FeatureStoreService(worktreeRoot);
+            svc.saveFeatures([makeTask('wt-arc', STAGE.DONE)]);
 
             const masterArchive = readArchive(masterRoot);
             assert.ok(masterArchive, 'master archive file must be created after propagation');
@@ -295,10 +295,10 @@ describe('TaskStoreService – archive regression (Req-2, Req-3, Req-4, Req-5, R
         try {
             writeHarnessConfig(worktreeRoot, 'worktreeSnapshot', masterRoot);
 
-            const svc = new TaskStoreService(worktreeRoot);
+            const svc = new FeatureStoreService(worktreeRoot);
             const doneTask = makeTask('wt-dedup', STAGE.DONE);
-            svc.saveTasks([doneTask]);
-            svc.saveTasks([doneTask]); // repeat
+            svc.saveFeatures([doneTask]);
+            svc.saveFeatures([doneTask]); // repeat
 
             const masterArchive = readArchive(masterRoot);
             const matches = masterArchive.tasks.filter(i => i.id === 'wt-dedup');

@@ -274,7 +274,6 @@ export class ProjectStructureService {
             return { source: 'existing', filePath: this.getRootStructureFilePath() };
         }
 
-        this.writeRootStructure(this.getDefaultStructure());
         return { source: 'default', filePath: this.getRootStructureFilePath() };
     }
 

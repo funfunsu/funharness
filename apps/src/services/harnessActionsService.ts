@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+﻿import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
@@ -13,22 +13,22 @@ import {
     HARNESS_STATE_FILE_LEGACY,
     HookEntry,
     STAGE,
-    TASK_PLAN_LEGACY_REL_PATH,
-    TASK_PLAN_PRIMARY_REL_PATH,
-    Task,
+    FEATURE_PLAN_LEGACY_REL_PATH,
+    FEATURE_PLAN_PRIMARY_REL_PATH,
+    Feature,
     getScriptsSubdir,
     getSpecFile,
     getSpecFileRel,
     getLegacySpecDocsRelSegments,
     resolveGateLevel,
     resolveSpecFile,
-    resolveTaskPlanFileForIteration,
+    resolveFeaturePlanFileForIteration,
     getDocsRootDirName,
     isMonoMode,
     isOsScriptFile,
     normalizeCustomButton,
 } from '../models';
-import { TaskScheduler } from '../taskScheduler';
+import { FeatureScheduler } from '../featureScheduler';
 import { GitService } from './gitService';
 import { appendHarnessLog } from './harnessLog';
 import { validateTraceability } from '../specTrace';
@@ -53,23 +53,23 @@ interface ArtifactIndexFile {
 }
 
 interface HarnessActionsDeps {
-    getTasks: () => Task[];
+    getFeatures: () => Feature[];
     getConfig: () => Config;
     reloadConfig?: () => void;
     /** Master workspace root (the "主目录"), even when invoked from a worktree subview window. */
     getMasterRoot: () => string;
-    getIterationDir: (task: Task) => string;
-    ensureIterationDir: (task: Task) => void;
+    getIterationDir: (task: Feature) => string;
+    ensureIterationDir: (task: Feature) => void;
     saveAndRender: () => void;
     gitService: GitService;
-    getScheduler: (task: Task) => TaskScheduler;
-    stopScheduler: (taskId: string) => void;
-    onPass: (task: Task) => void;
+    getScheduler: (task: Feature) => FeatureScheduler;
+    stopScheduler: (featureId: string) => void;
+    onPass: (task: Feature) => void;
     isWorktreeSubview: () => boolean;
     dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string) => Promise<void>;
     runDomainSummaryAiRefiner?: (prompt: string) => string | null;
     copyProjectStructureToIteration: (iterDir: string) => void;
-    renderAgentPrompt: (step: HarnessStep, taskName: string, taskDesc: string, iterDir: string) => { content: string; source: string; path: string };
+    renderAgentPrompt: (step: HarnessStep, featureName: string, featureDesc: string, iterDir: string) => { content: string; source: string; path: string };
 }
 
 export class HarnessActionsService {
@@ -128,7 +128,7 @@ export class HarnessActionsService {
      * Build a targeted drift-repair prompt that instructs the AI which spec documents
      * need to be updated to match the current code implementation.
      */
-    private buildDriftRepairPrompt(task: Task, iterDir: string, driftErrors: string[]): string {
+    private buildDriftRepairPrompt(task: Feature, iterDir: string, driftErrors: string[]): string {
         const cfg = this.deps.getConfig();
         const errorList = driftErrors.map((e, i) => `${i + 1}. ${e}`).join('\n');
         const reqPath = resolveSpecFile(iterDir, cfg, 'requirements.md');
@@ -164,7 +164,7 @@ export class HarnessActionsService {
      * - If blocked and autoRepair on: silently dispatch a repair prompt, then return false.
      * - If blocked and autoRepair off: show modal error with one-click dispatch option, return false.
      */
-    private async runDevDriftGateWithRepair(task: Task): Promise<boolean> {
+    private async runDevDriftGateWithRepair(task: Feature): Promise<boolean> {
         const iterDir = this.deps.getIterationDir(task);
         const result = this.getSpecDeltaService().evaluateDriftGate(task, iterDir);
 
@@ -210,7 +210,7 @@ export class HarnessActionsService {
         return false;
     }
 
-    private runDevDriftGateOrNotify(task: Task): { passed: boolean; errors: string[]; warnings: string[]; digestPath: string } {
+    private runDevDriftGateOrNotify(task: Feature): { passed: boolean; errors: string[]; warnings: string[]; digestPath: string } {
         const iterDir = this.deps.getIterationDir(task);
         const result = this.getSpecDeltaService().evaluateDriftGate(task, iterDir);
         if (result.warnings.length > 0) {
@@ -235,7 +235,7 @@ export class HarnessActionsService {
         return rendered;
     }
 
-    private renderQuickDevPrompt(template: string, task: Task, iterDir: string): string {
+    private renderQuickDevPrompt(template: string, task: Feature, iterDir: string): string {
         const signalsDir = path.join(iterDir, 'signals');
         const techStack = (this.deps.getConfig().techStack || '').trim();
         const codingStandards = (this.deps.getConfig().codingStandards || '').trim();
@@ -254,7 +254,7 @@ export class HarnessActionsService {
             designContext: task.desc || '',
             outputFiles: '- (快捷模式未拆分子任务，请按任务描述输出实现文件)',
             acceptanceCriteria: '- 代码可正常编译运行并满足任务描述',
-            taskSplitMode: this.resolveTaskSplitMode(task),
+            taskSplitMode: this.resolveFeatureSplitMode(task),
             'current ISO timestamp': new Date().toISOString(),
             'list each file you created, one per line': '请按实际创建文件填写',
             'real Task ID from the instruction': task.id,
@@ -267,17 +267,17 @@ export class HarnessActionsService {
     }
 
     private hasTaskPlan(iterDir: string): boolean {
-        const canonical = resolveTaskPlanFileForIteration(iterDir, this.deps.getConfig());
-        const legacyFlat = path.join(iterDir, ...TASK_PLAN_PRIMARY_REL_PATH.split('/'));
-        const legacyOld = path.join(iterDir, ...TASK_PLAN_LEGACY_REL_PATH.split('/'));
+        const canonical = resolveFeaturePlanFileForIteration(iterDir, this.deps.getConfig());
+        const legacyFlat = path.join(iterDir, ...FEATURE_PLAN_PRIMARY_REL_PATH.split('/'));
+        const legacyOld = path.join(iterDir, ...FEATURE_PLAN_LEGACY_REL_PATH.split('/'));
         return fs.existsSync(canonical) || fs.existsSync(legacyFlat) || fs.existsSync(legacyOld);
     }
 
-    async createTask(name: string, desc: string, quickMode?: boolean): Promise<void> {
+    async createFeature(name: string, desc: string, quickMode?: boolean): Promise<void> {
         const id = `task_${Date.now()}`;
         const cfg = this.deps.getConfig();
-        const inferredSplitMode = this.inferTaskSplitMode(name, desc, cfg);
-        const newTask: Task = {
+        const inferredSplitMode = this.inferFeatureSplitMode(name, desc, cfg);
+        const newTask: Feature = {
             id,
             name,
             desc,
@@ -287,7 +287,7 @@ export class HarnessActionsService {
             autoRepairEnabled: cfg.autoRepairEnabled,
             quickMode: Boolean(quickMode),
         };
-        this.deps.getTasks().push(newTask);
+        this.deps.getFeatures().push(newTask);
         this.deps.ensureIterationDir(newTask);
         // Lazy-init mode: do not auto-create git worktree here.
         // Worktree/checkout is created only when user explicitly opens the task worktree.
@@ -310,7 +310,7 @@ export class HarnessActionsService {
     /**
      * Create an iteration task from a workspace todo and return the created task identity.
      */
-    async createTaskFromTodo(title: string, description: string): Promise<Task> {
+    async createFeatureFromTodo(title: string, description: string): Promise<Feature> {
         const normalizedTitle = (title || '').trim();
         if (!normalizedTitle) {
             throw new Error('TODO-PROMOTE-001: 待办标题为空，无法创建迭代任务');
@@ -319,8 +319,8 @@ export class HarnessActionsService {
         const normalizedDesc = (description || '').trim();
         const id = `task_${Date.now()}`;
         const cfg = this.deps.getConfig();
-        const inferredSplitMode = this.inferTaskSplitMode(normalizedTitle, normalizedDesc, cfg);
-        const newTask: Task = {
+        const inferredSplitMode = this.inferFeatureSplitMode(normalizedTitle, normalizedDesc, cfg);
+        const newTask: Feature = {
             id,
             name: normalizedTitle,
             desc: normalizedDesc,
@@ -331,7 +331,7 @@ export class HarnessActionsService {
             quickMode: false,
         };
 
-        this.deps.getTasks().push(newTask);
+        this.deps.getFeatures().push(newTask);
         this.deps.ensureIterationDir(newTask);
         newTask.stage = STAGE.WRITING_REQUIREMENT;
         this.deps.saveAndRender();
@@ -339,8 +339,8 @@ export class HarnessActionsService {
         return newTask;
     }
 
-    async resetTaskByTaskId(taskId: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async resetFeatureByFeatureId(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
         const iterDir = this.deps.getIterationDir(task);
         this.logTaskReset(task, `收到重置请求，当前阶段=${task.stage}`);
@@ -405,7 +405,7 @@ export class HarnessActionsService {
         this.deps.gitService.clearDirChildrenPreserving(iterDir, [BASE]);
     }
 
-    private resolveTaskLogDir(task: Task): string {
+    private resolveTaskLogDir(task: Feature): string {
         const iterDir = this.deps.getIterationDir(task);
         // Lazy-init safety: before worktree attach, avoid creating iterDir/.harness via logs.
         if (iterDir && fs.existsSync(path.join(iterDir, '.git'))) {
@@ -414,35 +414,35 @@ export class HarnessActionsService {
         return this.deps.getMasterRoot();
     }
 
-    private logTaskReset(task: Task, message: string): void {
+    private logTaskReset(task: Feature, message: string): void {
         appendHarnessLog(this.resolveTaskLogDir(task), 'reset', `[${task.id}] ${message}`);
     }
 
-    logUiEventByTaskId(taskId: string, event: string, detail?: string): void {
-        const task = this.getTaskById(taskId);
+    logUiEventByFeatureId(featureId: string, event: string, detail?: string): void {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
         const suffix = detail ? ` | ${detail}` : '';
         appendHarnessLog(this.resolveTaskLogDir(task), 'webview', `[${task.id}] ${event}${suffix}`);
     }
 
-    updateTaskDescByTaskId(taskId: string, desc: string): void {
-        const task = this.getTaskById(taskId);
+    updateFeatureDescByFeatureId(featureId: string, desc: string): void {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
         const trimmed = desc.trim();
         if (!trimmed) {
-            this.logUiEventByTaskId(taskId, 'updateTaskDesc.rejected', 'empty description');
+            this.logUiEventByFeatureId(featureId, 'updateTaskDesc.rejected', 'empty description');
             vscode.window.showWarningMessage('需求描述不能为空');
             return;
         }
         const oldLen = (task.desc || '').length;
         task.desc = trimmed;
         this.deps.saveAndRender();
-        this.logUiEventByTaskId(taskId, 'updateTaskDesc.saved', `oldLen=${oldLen};newLen=${trimmed.length}`);
+        this.logUiEventByFeatureId(featureId, 'updateTaskDesc.saved', `oldLen=${oldLen};newLen=${trimmed.length}`);
         vscode.window.showInformationMessage(`已更新任务需求描述：${task.name}`);
     }
 
-    async promptUpdateTaskDescByTaskId(taskId: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async promptUpdateFeatureDescByFeatureId(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
 
         const input = await vscode.window.showInputBox({
@@ -457,19 +457,19 @@ export class HarnessActionsService {
             return;
         }
 
-        this.updateTaskDescByTaskId(taskId, input);
+        this.updateFeatureDescByFeatureId(featureId, input);
     }
 
-    setTaskAutomationByTaskId(taskId: string, aa: boolean, ar: boolean): void {
-        const task = this.getTaskById(taskId);
+    setFeatureAutomationByFeatureId(featureId: string, aa: boolean, ar: boolean): void {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
         task.autoAdvanceEnabled = aa;
         task.autoRepairEnabled = ar;
         this.deps.saveAndRender();
     }
 
-    async pushAllByTaskId(taskId: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async pushAllByFeatureId(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
         const iterDir = this.deps.getIterationDir(task);
         vscode.window.showInformationMessage('正在推送代码...');
@@ -482,8 +482,8 @@ export class HarnessActionsService {
         }
     }
 
-    async commitToBaselineByTaskId(taskId: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async commitToBaselineByFeatureId(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
         const passed = await this.runDevDriftGateWithRepair(task);
         if (!passed) {
@@ -503,8 +503,8 @@ export class HarnessActionsService {
         vscode.window.showInformationMessage(result.message);
     }
 
-    async runAgentByTaskId(taskId: string, step: HarnessStep, repairFeedback?: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async runAgentByFeatureId(featureId: string, step: HarnessStep, repairFeedback?: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
 
         const dispatchKey = `${task.id}:${step}`;
@@ -539,7 +539,7 @@ export class HarnessActionsService {
                 return;
             }
 
-            const splitMode = this.resolveTaskSplitMode(task);
+            const splitMode = this.resolveFeatureSplitMode(task);
             const promptContent = step === 'dev' ? this.renderQuickDevPrompt(rendered.content, task, iterDir) : rendered.content;
             const repairSection = this.buildRepairFeedbackSection(repairFeedback);
             const query = `${promptContent}${repairSection}\n\n---\n运行参数：taskSplitMode=${splitMode}`;
@@ -548,17 +548,17 @@ export class HarnessActionsService {
             this.startArtifactRepairWatch(task, step);
 
             if (step === 'tcs') {
-                await this.openArtifactByTaskId(taskId, 'testcase');
+                await this.openArtifactByFeatureId(featureId, 'testcase');
             } else if (step === 'tsk') {
-                await this.openArtifactByTaskId(taskId, 'tasks');
+                await this.openArtifactByFeatureId(featureId, 'tasks');
             }
         } finally {
             this.inFlightStageDispatchKeys.delete(dispatchKey);
         }
     }
 
-    async openArtifactByTaskId(taskId: string, artifact: 'requirements' | 'design' | 'testcase' | 'tasks' | 'testScript'): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async openArtifactByFeatureId(featureId: string, artifact: 'requirements' | 'design' | 'testcase' | 'tasks' | 'testScript'): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
 
         const iterDir = this.deps.getIterationDir(task);
@@ -591,11 +591,11 @@ export class HarnessActionsService {
         await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
     }
 
-    async openFolderLocationByTaskId(
-        taskId: string,
+    async openFolderLocationByFeatureId(
+        featureId: string,
         location: 'worktree' | 'frontend' | 'backend' | 'mainFrontend' | 'mainBackend' | 'mono' | 'mainMono'
     ): Promise<void> {
-        const task = this.getTaskById(taskId);
+        const task = this.getFeatureById(featureId);
         if (!task) return;
 
         const cfg = this.deps.getConfig();
@@ -725,7 +725,7 @@ export class HarnessActionsService {
         return inputPath.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
     }
 
-    private seedWorktreeHarnessState(task: Task, worktreePath: string): void {
+    private seedWorktreeHarnessState(task: Feature, worktreePath: string): void {
         try {
             const harnessDir = path.join(worktreePath, BASE);
             fs.mkdirSync(harnessDir, { recursive: true });
@@ -740,7 +740,7 @@ export class HarnessActionsService {
             };
             fs.writeFileSync(configPath, JSON.stringify(configPayload, null, 2), 'utf8');
 
-            const snapshot: Task = {
+            const snapshot: Feature = {
                 ...task,
                 // Keep absolute path so the worktree window can locate the same iteration folder.
                 worktreePath,
@@ -758,7 +758,7 @@ export class HarnessActionsService {
     }
 
     private async ensureIterationCodeBeforeOpen(
-        task: Task,
+        task: Feature,
         iterDir: string
     ): Promise<{ ok: boolean; wasNewlyCreated: boolean }> {
         const cfg = this.deps.getConfig();
@@ -795,10 +795,10 @@ export class HarnessActionsService {
         return { ok: true, wasNewlyCreated: true };
     }
 
-    async startAutoByTaskId(taskId: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async startAutoByFeatureId(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
-        const activeAutoCount = this.deps.getTasks()
+        const activeAutoCount = this.deps.getFeatures()
             .map(item => this.deps.getScheduler(item))
             .filter(scheduler => scheduler.isAutoMode())
             .length;
@@ -813,35 +813,35 @@ export class HarnessActionsService {
         this.deps.saveAndRender();
     }
 
-    pauseAutoByTaskId(taskId: string): void {
-        const task = this.getTaskById(taskId);
+    pauseAutoByFeatureId(featureId: string): void {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
         const scheduler = this.deps.getScheduler(task);
         scheduler.pause();
         this.deps.saveAndRender();
     }
 
-    async nextTaskByTaskId(taskId: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async nextFeatureByFeatureId(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
         const scheduler = this.deps.getScheduler(task);
         await scheduler.manualNext(task);
         this.deps.saveAndRender();
     }
 
-    async retryTaskByTaskId(taskId: string, subId: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async retryFeatureByFeatureId(featureId: string, subId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
         const scheduler = this.deps.getScheduler(task);
-        await scheduler.retryTask(subId, task);
+        await scheduler.retrySubFeature(subId, task);
         this.deps.saveAndRender();
     }
 
-    async setSubTaskStatusByTaskId(taskId: string, subId: string, status: 'todo' | 'doing' | 'done' | 'failed'): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async setSubFeatureStatusByFeatureId(featureId: string, subId: string, status: 'todo' | 'doing' | 'done' | 'failed'): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
         const scheduler = this.deps.getScheduler(task);
-        scheduler.updateSubTaskStatus(subId, status);
+        scheduler.updateSubFeatureStatus(subId, status);
         this.deps.saveAndRender();
 
         if (status === 'done' && task.stage === STAGE.DEVELOPING && this.deps.getConfig().autoContinueAfterManualDone) {
@@ -854,8 +854,8 @@ export class HarnessActionsService {
         vscode.window.showInformationMessage(`已手动修正子任务 ${subId} 状态为 ${status}`);
     }
 
-    async nextStageByTaskId(taskId: string, step: HarnessStep, targetStage?: HarnessStep): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async nextStageByFeatureId(featureId: string, step: HarnessStep, targetStage?: HarnessStep): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
 
         const nextAgentStep: Partial<Record<HarnessStep, HarnessStep>> = {
@@ -877,7 +877,7 @@ export class HarnessActionsService {
 
             // 运行targetStage对应的agent
             try {
-                await this.runAgentByTaskId(taskId, targetStage);
+                await this.runAgentByFeatureId(featureId, targetStage);
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 vscode.window.showErrorMessage(`跳转到 ${targetStage.toUpperCase()} 后自动派发 Agent 失败：${message}`);
@@ -904,14 +904,14 @@ export class HarnessActionsService {
 
         const followupStep = nextAgentStep[step];
         if (followupStep) {
-            await this.runAgentByTaskId(taskId, followupStep);
+            await this.runAgentByFeatureId(featureId, followupStep);
             vscode.window.showInformationMessage(`已推进到下一阶段，并自动打开 ${followupStep.toUpperCase()} Agent`);
         }
     }
 
     async autoAdvanceReadyTasks(): Promise<boolean> {
         let changed = false;
-        for (const task of this.deps.getTasks()) {
+        for (const task of this.deps.getFeatures()) {
             const step = this.stageToStep(task.stage);
             if (!step) {
                 continue;
@@ -950,8 +950,8 @@ export class HarnessActionsService {
         return changed;
     }
 
-    async passByTaskId(taskId: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async passByFeatureId(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
 
         const passed = await this.runDevDriftGateWithRepair(task);
@@ -1034,8 +1034,8 @@ export class HarnessActionsService {
         return { bin: 'sh', args: ['-c', `sleep 3 && rm -rf "${escapedPath}"`] };
     }
 
-    async syncMainCodeByTaskId(taskId: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async syncMainCodeByFeatureId(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
         vscode.window.showInformationMessage(`正在同步主仓库代码到 ${task.name}...`);
         const iterDir = this.deps.getIterationDir(task);
@@ -1054,8 +1054,8 @@ export class HarnessActionsService {
      * opens a terminal whose cwd is THIS task's worktree iteration directory and runs the
      * resolved script there.
      */
-    async runCustomButtonByTaskId(taskId: string, buttonId: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async runCustomButtonByFeatureId(featureId: string, buttonId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
 
         let raw = (this.deps.getConfig().customButtons || []).find(b => b.id === buttonId);
@@ -1219,8 +1219,8 @@ export class HarnessActionsService {
         return `${quoted}${extraArgs}`;
     }
 
-    async completeDevWithPush(taskId: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async completeDevWithPush(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
 
         const iterDir = this.deps.getIterationDir(task);
@@ -1236,11 +1236,11 @@ export class HarnessActionsService {
 
         // Then: Mark as complete development (change to READY_FOR_REVIEW)
         await new Promise(resolve => setTimeout(resolve, 1000));
-        await this.nextStageByTaskId(taskId, 'dev');
+        await this.nextStageByFeatureId(featureId, 'dev');
     }
 
-    async pushAndNextStage(taskId: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async pushAndNextStage(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
 
         const iterDir = this.deps.getIterationDir(task);
@@ -1256,11 +1256,11 @@ export class HarnessActionsService {
 
         // Then: Change to READY_FOR_REVIEW stage
         await new Promise(resolve => setTimeout(resolve, 1000));
-        await this.nextStageByTaskId(taskId, 'dev');
+        await this.nextStageByFeatureId(featureId, 'dev');
     }
 
-    getTaskSpecDeltaStatus(taskId: string): { severity: 'low' | 'medium' | 'high'; gateBlocked: boolean; at: string; summary: string; digestPath: string } | null {
-        const task = this.getTaskById(taskId);
+    getFeatureSpecDeltaStatus(featureId: string): { severity: 'low' | 'medium' | 'high'; gateBlocked: boolean; at: string; summary: string; digestPath: string } | null {
+        const task = this.getFeatureById(featureId);
         if (!task) { return null; }
         const iterDir = this.deps.getIterationDir(task);
         try {
@@ -1272,7 +1272,7 @@ export class HarnessActionsService {
 
     getSpecDeltaOverview(): Array<{ domain: string; total: number; high: number; blocked: number; lastAt: string }> {
         try {
-            const inputs = this.deps.getTasks()
+            const inputs = this.deps.getFeatures()
                 .filter(t => t.stage !== STAGE.DONE)
                 .map(t => ({ task: t, iterDir: this.deps.getIterationDir(t) }));
             return this.getSpecDeltaService().getSpecDeltaOverview(inputs);
@@ -1281,8 +1281,8 @@ export class HarnessActionsService {
         }
     }
 
-    async reviewSpecDeltaByTaskId(taskId: string): Promise<void> {
-        const task = this.getTaskById(taskId);
+    async reviewSpecDeltaByFeatureId(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
         if (!task) return;
 
         const iterDir = this.deps.getIterationDir(task);
@@ -1334,13 +1334,13 @@ export class HarnessActionsService {
     /**
      * Run main-panel domain aggregation preview and store suspected domains for manual adjudication.
      */
-    async reviewSuspectedDomainsByTaskId(taskId: string): Promise<void> {
+    async reviewSuspectedDomainsByFeatureId(featureId: string): Promise<void> {
         if (this.deps.isWorktreeSubview()) {
             vscode.window.showWarningMessage('疑似新领域裁决仅支持主面板执行');
             return;
         }
 
-        const task = this.getTaskById(taskId);
+        const task = this.getFeatureById(featureId);
         if (!task) {
             return;
         }
@@ -1373,13 +1373,13 @@ export class HarnessActionsService {
     /**
      * Commit docs/domains baseline changes on the current main-branch working tree.
      */
-    async commitDomainBaselineByTaskId(taskId: string): Promise<void> {
+    async commitDomainBaselineByFeatureId(featureId: string): Promise<void> {
         if (this.deps.isWorktreeSubview()) {
             vscode.window.showWarningMessage('领域基线提交仅支持主面板执行');
             return;
         }
 
-        const task = this.getTaskById(taskId);
+        const task = this.getFeatureById(featureId);
         if (!task) {
             return;
         }
@@ -1396,13 +1396,13 @@ export class HarnessActionsService {
     /**
      * Apply one manual adjudication decision and write back to registry.
      */
-    async applyDomainAdjudicationByTaskId(taskId: string): Promise<void> {
+    async applyDomainAdjudicationByFeatureId(featureId: string): Promise<void> {
         if (this.deps.isWorktreeSubview()) {
             vscode.window.showWarningMessage('疑似新领域裁决仅支持主面板执行');
             return;
         }
 
-        const task = this.getTaskById(taskId);
+        const task = this.getFeatureById(featureId);
         if (!task) {
             return;
         }
@@ -1617,7 +1617,7 @@ export class HarnessActionsService {
         writeTextAtomic(filePath, `${JSON.stringify({ issues }, null, 2)}\n`);
     }
 
-    private async initializeTaskGit(task: Task): Promise<void> {
+    private async initializeTaskGit(task: Feature): Promise<void> {
         task.stage = STAGE.INITIALIZING;
         this.deps.saveAndRender();
 
@@ -1641,11 +1641,11 @@ export class HarnessActionsService {
         this.showLocalBaseFallbackNoticeIfAny();
     }
 
-    private getTaskById(taskId: string): Task | undefined {
-        return this.deps.getTasks().find((task) => task.id === taskId);
+    private getFeatureById(featureId: string): Feature | undefined {
+        return this.deps.getFeatures().find((task) => task.id === featureId);
     }
 
-    private stageToStep(stage: Task['stage']): Exclude<HarnessStep, 'dev'> | null {
+    private stageToStep(stage: Feature['stage']): Exclude<HarnessStep, 'dev'> | null {
         if (stage === STAGE.WRITING_REQUIREMENT) return 'req';
         if (stage === STAGE.WRITING_DESIGN) return 'des';
         if (stage === STAGE.WRITING_TESTCASE) return 'tcs';
@@ -1653,7 +1653,7 @@ export class HarnessActionsService {
         return null;
     }
 
-    private validateStageArtifact(task: Task, step: Exclude<HarnessStep, 'dev'>): { valid: boolean; errors: string[] } {
+    private validateStageArtifact(task: Feature, step: Exclude<HarnessStep, 'dev'>): { valid: boolean; errors: string[] } {
         this.reconcileStageArtifactPath(task, step);
         const iterDir = this.deps.getIterationDir(task);
         const cfg = this.deps.getConfig();
@@ -1669,7 +1669,7 @@ export class HarnessActionsService {
 
         if (!fs.existsSync(filePath)) {
             if (step === 'tsk') {
-                return { valid: false, errors: [`缺少文件 ${getSpecFileRel(iterDir, cfg, 'tasks.md')}（兼容 ${TASK_PLAN_LEGACY_REL_PATH}）`] };
+                return { valid: false, errors: [`缺少文件 ${getSpecFileRel(iterDir, cfg, 'tasks.md')}（兼容 ${FEATURE_PLAN_LEGACY_REL_PATH}）`] };
             }
             return { valid: false, errors: [`缺少文件 ${getSpecFileRel(iterDir, cfg, fileNameMap[step])}`] };
         }
@@ -1907,7 +1907,7 @@ export class HarnessActionsService {
         return required === true;
     }
 
-    private async tryAutoRepair(task: Task, step: Exclude<HarnessStep, 'dev'>, errors: string[]): Promise<void> {
+    private async tryAutoRepair(task: Feature, step: Exclude<HarnessStep, 'dev'>, errors: string[]): Promise<void> {
         const cfg = this.deps.getConfig();
         if (!this.isTaskAutoRepairEnabled(task, cfg)) {
             return;
@@ -1948,7 +1948,7 @@ export class HarnessActionsService {
 
         try {
             const feedback = this.buildRepairFeedbackContent(step, attempts, errors);
-            await this.runAgentByTaskId(task.id, step, feedback);
+            await this.runAgentByFeatureId(task.id, step, feedback);
             vscode.window.showInformationMessage(
                 `已触发自动回修（第 ${attempts}/${HarnessActionsService.MAX_AUTO_REPAIR_ATTEMPTS} 次）：${task.name} ${step}（${errors.slice(0, 2).join('；')}）`
             );
@@ -1958,7 +1958,7 @@ export class HarnessActionsService {
     }
 
     /** Escalate to a human gate after exhausting auto-repair attempts (no silent stop). */
-    private escalateRepair(task: Task, step: Exclude<HarnessStep, 'dev'>, errors: string[]): void {
+    private escalateRepair(task: Feature, step: Exclude<HarnessStep, 'dev'>, errors: string[]): void {
         const key = `${task.id}:${step}`;
         this.escalatedRepairKeys.add(key);
         const detail = errors.slice(0, 5).map((e) => `• ${e}`).join('\n');
@@ -1974,7 +1974,7 @@ export class HarnessActionsService {
     }
 
     /** Reset repair bookkeeping once a stage validates cleanly (or a human re-triggers it). */
-    private clearRepairState(task: Task, step: Exclude<HarnessStep, 'dev'>): void {
+    private clearRepairState(task: Feature, step: Exclude<HarnessStep, 'dev'>): void {
         const key = `${task.id}:${step}`;
         this.repairAttempts.delete(key);
         this.escalatedRepairKeys.delete(key);
@@ -2000,7 +2000,7 @@ export class HarnessActionsService {
         return `\n\n---\n## 回修指令（最高优先，针对性修复）\n${trimmed}`;
     }
 
-    private buildArtifactSignature(task: Task, step: Exclude<HarnessStep, 'dev'>, errors: string[]): string {
+    private buildArtifactSignature(task: Feature, step: Exclude<HarnessStep, 'dev'>, errors: string[]): string {
         const fileNameMap = {
             req: 'requirements.md',
             des: 'design.md',
@@ -2016,7 +2016,7 @@ export class HarnessActionsService {
     }
 
     private resolveTaskPlanFile(iterDir: string): string {
-        return resolveTaskPlanFileForIteration(iterDir, this.deps.getConfig());
+        return resolveFeaturePlanFileForIteration(iterDir, this.deps.getConfig());
     }
 
     private stageArtifactFileName(step: Exclude<HarnessStep, 'dev'>): string {
@@ -2029,7 +2029,7 @@ export class HarnessActionsService {
         return fileMap[step];
     }
 
-    private reconcileStageArtifactPath(task: Task, step: HarnessStep): boolean {
+    private reconcileStageArtifactPath(task: Feature, step: HarnessStep): boolean {
         if (step === 'dev') {
             return false;
         }
@@ -2121,7 +2121,7 @@ export class HarnessActionsService {
         return typePattern.test(content) && taskPattern.test(content);
     }
 
-    private startArtifactRepairWatch(task: Task, step: HarnessStep): void {
+    private startArtifactRepairWatch(task: Feature, step: HarnessStep): void {
         if (step === 'dev' || step === 'tsk') {
             return;
         }
@@ -2146,7 +2146,7 @@ export class HarnessActionsService {
         return inputPath.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
     }
 
-    private syncTaskDocsToMaster(task: Task, iterDir: string, trigger: 'manualPush' | 'taskDone'): void {
+    private syncTaskDocsToMaster(task: Feature, iterDir: string, trigger: 'manualPush' | 'taskDone'): void {
         try {
             // Iteration-docs-to-root archival is only meaningful in multi-repo mode. In monorepo mode
             // the git merge of the iteration branch already propagates docs into the main repo, so
@@ -2208,7 +2208,7 @@ export class HarnessActionsService {
 
     private updateArtifactIndex(
         masterRoot: string,
-        task: Task,
+        task: Feature,
         trigger: 'manualPush' | 'taskDone',
         paths: { requirementsPath?: string; designPath?: string }
     ): void {
@@ -2274,21 +2274,21 @@ export class HarnessActionsService {
         return path.relative(iterDir, absPath).replace(/\\/g, '/');
     }
 
-    private isTaskAutoAdvanceEnabled(task: Task): boolean {
+    private isTaskAutoAdvanceEnabled(task: Feature): boolean {
         if (typeof task.autoAdvanceEnabled === 'boolean') {
             return task.autoAdvanceEnabled;
         }
         return this.deps.getConfig().autoAdvanceEnabled;
     }
 
-    private isTaskAutoRepairEnabled(task: Task, cfg?: Config): boolean {
+    private isTaskAutoRepairEnabled(task: Feature, cfg?: Config): boolean {
         if (typeof task.autoRepairEnabled === 'boolean') {
             return task.autoRepairEnabled;
         }
         return (cfg || this.deps.getConfig()).autoRepairEnabled;
     }
 
-    private resolveTaskSplitMode(task: Task): 'standard' | 'compact' {
+    private resolveFeatureSplitMode(task: Feature): 'standard' | 'compact' {
         const cfg = this.deps.getConfig();
         if (cfg.compactTaskDecomposition) {
             return 'compact';
@@ -2299,10 +2299,10 @@ export class HarnessActionsService {
         if (task.taskSplitMode) {
             return task.taskSplitMode;
         }
-        return this.inferTaskSplitMode(task.name, task.desc, cfg);
+        return this.inferFeatureSplitMode(task.name, task.desc, cfg);
     }
 
-    private inferTaskSplitMode(name: string, desc: string, cfg: Config): 'standard' | 'compact' {
+    private inferFeatureSplitMode(name: string, desc: string, cfg: Config): 'standard' | 'compact' {
         if (!cfg.autoDetectTaskSplitMode) {
             return 'standard';
         }
@@ -2443,7 +2443,7 @@ export class HarnessActionsService {
      * Reads hooks from config.lifecycleHooks.worktreeOpen and runs them under a progress notification.
      * Single hook failures do not stop subsequent hooks (all are independent).
      */
-    private async runWorktreeOpenHooks(task: Task, iterDir: string): Promise<void> {
+    private async runWorktreeOpenHooks(task: Feature, iterDir: string): Promise<void> {
         const config = this.deps.getConfig();
         const hooks = config.lifecycleHooks?.worktreeOpen || [];
 
