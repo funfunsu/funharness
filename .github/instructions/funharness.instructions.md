@@ -1,12 +1,12 @@
 ---
 description: Fun Harness 编码规范
-applyTo: '**'
+applyTo: 'apps/src/**/*.{ts,tsx,js,jsx}'
 ---
 
 ## 定位
 
 - 本规范用于约束 Fun Harness 插件代码实现细节。
-- 当前先落地已验证的一条规范，其它条目后续补充。
+- 当前先落地已验证的两条规范，其它条目后续补充。
 
 ## 术语
 
@@ -25,6 +25,12 @@ applyTo: '**'
 - SHOULD：对路径解析失败输出可定位日志（原始输入、解码结果、归一化结果）。
 - MAY：在关键门禁前增加路径识别自检，提前发现编码/转义异常。
 - 验收标准：不得因路径编码/转义问题导致门禁误判或重复触发同一修复流程。
+
+2. Webview 脚本校验规范（必选）
+- MUST：凡涉及 Webview 渲染或交互脚本的修改（包括但不限于 `apps/src/webviewTemplates.ts`），提交前必须执行 `node apps/scripts/validate-webview.js`。
+- MUST：仅当脚本输出“Webview script validation passed”且进程退出码为 0 时，才视为通过。
+- SHOULD：将该校验加入本地构建/测试流程，避免发布前遗漏。
+- 验收标准：不得合入任何导致 Webview 内联脚本语法错误或按钮事件失效的变更。
 
 ## 预留条目
 
