@@ -104,6 +104,12 @@ export class AiDispatchService {
     // ── VS Code Chat dispatch ──────────────────────────────────────
 
     private async dispatchVscodeChat(query: string, provider: AiProviderDefinition): Promise<void> {
+        try {
+            await vscode.commands.executeCommand('workbench.action.chat.newChat');
+        } catch {
+            // Older VS Code builds may not expose a dedicated new-chat command.
+        }
+
         const command = provider.chatCommand || 'workbench.action.chat.open';
         await vscode.commands.executeCommand(command, {
             query,

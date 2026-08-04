@@ -18,11 +18,26 @@ export type HarnessMessage =
     | { type: 'page'; page: string }
     | { type: 'refresh' }
     | { type: 'generateCapabilityDelta'; id: string }
-    | { type: 'runDomainBaselineAggregation'; id: string }
-    | { type: 'reviewSuspectedDomains'; id: string }
-    | { type: 'applyDomainAdjudication'; id: string }
-    | { type: 'commitDomainBaseline'; id: string }
-    | { type: 'previewDomainBaselineSummary'; id: string }
+    // ── Domain Knowledge Workspace (Req-1..Req-8) ──────────────────
+    /** API-1: Open the subpanel domain knowledge workspace. Binds Req-1. */
+    | { type: 'openDomainKnowledgeWorkspace'; taskId: string; iterationPath: string }
+    /** API-2: Load subpanel context (registry, baseline snapshot, draft change set). Binds Req-1, Req-2, Req-7. */
+    | { type: 'loadDomainKnowledgeContext'; repoRoot: string; iterationId: string }
+    /** API-3: Update the current iteration domain change set draft. Binds Req-2, Req-6. */
+    | { type: 'updateDomainChangeSet'; changeSet: import('./models').DomainChangeSet }
+    /** API-4: Preview the domain baseline projection (read-only, no file writes). Binds Req-2, Req-4, Req-8. */
+    | { type: 'previewDomainProjection'; changeSet: import('./models').DomainChangeSet; baselineVersion: string }
+    /** API-5: Detect and classify conflicts before commit. Binds Req-4, Req-5, Req-8. */
+    | { type: 'detectDomainConflicts'; changeSet: import('./models').DomainChangeSet; baselineVersion: string }
+    /** API-6: Apply a conflict resolution decision in the subpanel. Binds Req-4, Req-5. */
+    | { type: 'resolveDomainConflict'; conflictId: string; decision: import('./models').ConflictDecision }
+    /** API-7: Atomic commit of the domain change set. Binds Req-3, Req-6, Req-8. */
+    | { type: 'commitDomainKnowledgeChanges'; changeSet: import('./models').DomainChangeSet; baselineVersion: string; expectedRevisions: import('./models').DomainRevisionSet; autoRebase: boolean; formatPolicy: 'deterministic-v1'; resolvedConflicts: import('./models').DomainConflictResolution[] }
+    /** API-11: Refresh baseline and re-project after drift detection. Binds Req-4, Req-5, Req-8. */
+    | { type: 'refreshBaselineAndReproject'; changeSet: import('./models').DomainChangeSet; currentBaselineVersion: string; expectedRevisions: import('./models').DomainRevisionSet }
+    /** API-12: Detect three-way document merge conflicts. Binds Req-4, Req-5, Req-8. */
+    | { type: 'detectDocumentMergeConflicts'; baseDocuments: import('./models').ProjectedDomainDocument[]; currentDocuments: import('./models').ProjectedDomainDocument[]; draftDocuments: import('./models').ProjectedDomainDocument[] }
+    // ──────────────────────────────────────────────────────────────
     | { type: 'openCustomPrompt'; step: HarnessStep }
     | { type: 'openCustomConstitution' }
     | { type: 'saveGit'; fg: string; bg: string; bb: string; dr: boolean; mg?: string; md?: { frontend?: string; backend?: string; docs?: string; scripts?: string }; mode?: 'mono' | 'multi' }

@@ -6,7 +6,10 @@ import {
     DomainRegistryConflict,
     DomainRegistryEntry,
     DomainRegistryLoadResult,
+    DomainRegistrySnapshot,
+    RegistryValidationIssue,
 } from '../models';
+import { assertPathInRepoRoot, normalizeAndValidateRepoRoot } from './workspaceRoot';
 
 const REGISTRY_RELATIVE_PATH = path.join('docs', 'domains', 'registry.yaml');
 
@@ -53,10 +56,40 @@ export interface DomainAdjudicationInput {
  */
 export class DomainRegistryService {
     /**
+     * Normalize a raw domain name to its canonical form using registry vocabulary only.
+     * Returns canonical=null when the raw name cannot be uniquely resolved, triggering a
+     * domain-name conflict in the subpanel. Implements API-9. Binds Req-4, Req-5, Req-7.
+     */
+    normalizeDomainCanonical(
+        rawDomain: string,
+        registry: DomainRegistrySnapshot | DomainRegistry,
+    ): { canonical: string | null; matchedBy: 'canonical' | 'alias' | 'none' } {
+        const normalizedRaw = this.normalizeRegistryKey(rawDomain || '');
+        if (!normalizedRaw) {
+            return { canonical: null, matchedBy: 'none' };
+        }
+        for (const entry of registry.domains) {
+            if (this.normalizeRegistryKey(entry.canonical) === normalizedRaw) {
+                return { canonical: entry.canonical, matchedBy: 'canonical' };
+            }
+        }
+        for (const entry of registry.domains) {
+            if ('aliases' in entry) {
+                for (const alias of (entry as DomainRegistryEntry).aliases) {
+                    if (this.normalizeRegistryKey(alias) === normalizedRaw) {
+                        return { canonical: entry.canonical, matchedBy: 'alias' };
+                    }
+                }
+            }
+        }
+        return { canonical: null, matchedBy: 'none' };
+    }
+
+    /**
      * Load the registry from the current repository root, creating a default file when missing.
      */
     loadRegistry(repoRoot: string): DomainRegistryLoadResult {
-        const normalizedRepoRoot = this.normalizeRepoRoot(repoRoot);
+        const normalizedRepoRoot = normalizeAndValidateRepoRoot(repoRoot);
         const filePath = this.resolveRegistryPath(normalizedRepoRoot);
         let created = false;
 
@@ -81,7 +114,7 @@ export class DomainRegistryService {
      * Persist the provided registry back to the repository-local registry.yaml file.
      */
     saveRegistry(repoRoot: string, registry: DomainRegistry): string {
-        const normalizedRepoRoot = this.normalizeRepoRoot(repoRoot);
+        const normalizedRepoRoot = normalizeAndValidateRepoRoot(repoRoot);
         const filePath = this.resolveRegistryPath(normalizedRepoRoot);
         this.writeRegistryFile(filePath, registry);
         return filePath;
@@ -222,7 +255,9 @@ export class DomainRegistryService {
     }
 
     /**
-     * Validate canonical and alias uniqueness within the registry.
+     * Validate canonical uniqueness, alias uniqueness, and canonical slug format.
+     * Returns DomainRegistryConflict[] for backward compatibility; invalid-slug issues
+     * are also emitted as RegistryValidationIssue via validateRegistryStrict. Binds Req-4, Req-7, INV-9.
      */
     validateRegistry(registry: DomainRegistry): DomainRegistryConflict[] {
         const conflicts: DomainRegistryConflict[] = [];
@@ -231,6 +266,15 @@ export class DomainRegistryService {
 
         registry.domains.forEach((entry, index) => {
             const canonicalKey = this.normalizeRegistryKey(entry.canonical);
+            // Check for invalid slug: must match /^[a-z0-9][a-z0-9-]*$/ (INV-9)
+            if (canonicalKey && !/^[a-z0-9][a-z0-9-]*$/.test(canonicalKey)) {
+                conflicts.push({
+                    code: 'duplicate-canonical', // reuse existing code; invalid-slug uses RegistryValidationIssue
+                    message: `Invalid canonical slug (must match [a-z0-9][a-z0-9-]*): ${entry.canonical}`,
+                    canonical: entry.canonical,
+                    entryIndexes: [index],
+                });
+            }
             if (canonicalKey) {
                 const indexes = canonicalToIndexes.get(canonicalKey) ?? [];
                 indexes.push(index);
@@ -354,10 +398,61 @@ export class DomainRegistryService {
     }
 
     /**
+     * Validate registry and return structured RegistryValidationIssue[] aligned with API-8 contract.
+     * Includes duplicate-canonical, duplicate-alias, and invalid-slug checks. Binds Req-4, Req-7, INV-9.
+     */
+    validateRegistryStrict(registry: DomainRegistry): RegistryValidationIssue[] {
+        const issues: RegistryValidationIssue[] = [];
+        const canonicalToIndexes = new Map<string, number[]>();
+        const aliasToIndexes = new Map<string, number[]>();
+
+        registry.domains.forEach((entry, index) => {
+            const canonicalKey = this.normalizeRegistryKey(entry.canonical);
+            // invalid-slug check (INV-9)
+            if (canonicalKey && !/^[a-z0-9][a-z0-9-]*$/.test(canonicalKey)) {
+                issues.push({
+                    code: 'invalid-slug',
+                    message: `Invalid canonical slug "${entry.canonical}": must match pattern [a-z0-9][a-z0-9-]*`,
+                    canonical: entry.canonical,
+                    entryIndexes: [index],
+                });
+            }
+            if (canonicalKey) {
+                const existing = canonicalToIndexes.get(canonicalKey) ?? [];
+                existing.push(index);
+                canonicalToIndexes.set(canonicalKey, existing);
+            }
+            for (const alias of entry.aliases) {
+                const aliasKey = this.normalizeRegistryKey(alias);
+                if (!aliasKey) { continue; }
+                const existing = aliasToIndexes.get(aliasKey) ?? [];
+                existing.push(index);
+                aliasToIndexes.set(aliasKey, existing);
+            }
+        });
+
+        for (const [canonical, indexes] of canonicalToIndexes.entries()) {
+            if (indexes.length > 1) {
+                issues.push({ code: 'duplicate-canonical', message: `Duplicate canonical: ${canonical}`, canonical, entryIndexes: indexes });
+            }
+        }
+        for (const [alias, indexes] of aliasToIndexes.entries()) {
+            const unique = Array.from(new Set(indexes));
+            if (unique.length > 1) {
+                issues.push({ code: 'duplicate-alias', message: `Alias mapped by multiple domains: ${alias}`, alias, entryIndexes: unique });
+            }
+        }
+        return issues;
+    }
+
+    /**
      * Resolve the repository-local registry path without relying on any global workspace root.
      */
     resolveRegistryPath(repoRoot: string): string {
-        return path.join(this.normalizeRepoRoot(repoRoot), REGISTRY_RELATIVE_PATH);
+        const normalizedRoot = normalizeAndValidateRepoRoot(repoRoot);
+        const registryPath = path.join(normalizedRoot, REGISTRY_RELATIVE_PATH);
+        assertPathInRepoRoot(normalizedRoot, registryPath);
+        return registryPath;
     }
 
     /**
@@ -494,13 +589,10 @@ export class DomainRegistryService {
 
     /**
      * Normalize the provided repository root into an absolute path.
+     * @deprecated Use normalizeAndValidateRepoRoot from workspaceRoot service instead.
      */
     private normalizeRepoRoot(repoRoot: string): string {
-        const value = (repoRoot || '').trim();
-        if (!value) {
-            throw new Error('Repository root is required to resolve docs/domains/registry.yaml');
-        }
-        return path.resolve(value);
+        return normalizeAndValidateRepoRoot(repoRoot);
     }
 
     /**

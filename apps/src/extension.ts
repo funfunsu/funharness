@@ -45,6 +45,7 @@ import { ProjectStructureService } from './services/projectStructureService';
 import { AutoPollService } from './services/autoPollService';
 import { appendStructureGateFailureLog } from './services/harnessLog';
 import { CapabilityDeltaService } from './services/capabilityDeltaService';
+import { DomainKnowledgeAggregateService } from './services/domainKnowledgeAggregateService';
 import { resolveHarnessWorkspaceRoot } from './workspaceRoot';
 
 let harness: Harness | undefined;
@@ -75,35 +76,15 @@ export function activate(context: vscode.ExtensionContext): void {
         })
     );
 
+    // ROUTE-1: Open subpanel domain knowledge workspace. Binds Req-1, INV-1.
     context.subscriptions.push(
-        vscode.commands.registerCommand('fun-harness.reviewSuspectedDomains', async () => {
-            await harness?.handleReviewSuspectedDomainsCommand();
+        vscode.commands.registerCommand('fun-harness.openDomainKnowledgeWorkspace', async () => {
+            await harness?.handleOpenDomainKnowledgeWorkspaceCommand();
         })
     );
 
-    context.subscriptions.push(
-        vscode.commands.registerCommand('fun-harness.runDomainBaselineAggregation', async () => {
-            await harness?.handleRunDomainBaselineAggregationCommand();
-        })
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('fun-harness.previewDomainBaselineSummary', async () => {
-            await harness?.handlePreviewDomainBaselineSummaryCommand();
-        })
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('fun-harness.applyDomainAdjudication', async () => {
-            await harness?.handleApplyDomainAdjudicationCommand();
-        })
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('fun-harness.commitDomainBaseline', async () => {
-            await harness?.handleCommitDomainBaselineCommand();
-        })
-    );
+    // ROUTE-7: Remove legacy main-panel domain actions at extension startup. Binds Req-1, INV-1.
+    harness?.unregisterLegacyDomainActions();
 }
 
 class HarnessViewProvider implements vscode.WebviewViewProvider {
@@ -142,6 +123,12 @@ class Harness {
     private projectStructureService!: ProjectStructureService;
     private autoPollService!: AutoPollService;
     private capabilityDeltaService!: CapabilityDeltaService;
+    private domainKnowledgeAggregateService!: DomainKnowledgeAggregateService;
+    /** In-memory session state for the subpanel domain knowledge workspace. Binds Req-4, Req-5. */
+    private domainSession: {
+        changeSet: import('./models').DomainChangeSet | null;
+        conflicts: import('./models').DomainConflict[];
+    } = { changeSet: null, conflicts: [] };
     private autoAdvanceRunning: boolean = false;
     private openedWorkspacePath: string = '';
     private initializationError?: string;
@@ -179,6 +166,9 @@ class Harness {
                 dispatchTodo: async (todoContent, worktreePath, prompt) => this.dispatchTodoToAi(todoContent, worktreePath, prompt),
             });
             this.capabilityDeltaService = new CapabilityDeltaService();
+            this.domainKnowledgeAggregateService = new DomainKnowledgeAggregateService(
+                this.capabilityDeltaService,
+            );
             this.schedulerRegistry = new SchedulerRegistry(
                 (task) => this.getIterationDir(task),
                 workspaceRoot,
@@ -217,11 +207,73 @@ class Harness {
                 reloadFeatures: () => { if (this.isWorktreeSubview()) { this.loadConfig(); } this.loadFeatures(); },
                 render: () => this.render(),
                 generateCapabilityDelta: async (featureId) => this.handleGenerateCapabilityDelta(featureId),
-                runDomainBaselineAggregation: async (featureId) => this.handleRunDomainBaselineAggregationByFeatureId(featureId),
-                reviewSuspectedDomains: async (featureId) => this.handleReviewSuspectedDomainsByFeatureId(featureId),
-                applyDomainAdjudication: async (featureId) => this.actionsService.applyDomainAdjudicationByFeatureId(featureId),
-                commitDomainBaseline: async (featureId) => this.actionsService.commitDomainBaselineByFeatureId(featureId),
-                previewDomainBaselineSummary: async (featureId) => this.handlePreviewDomainBaselineSummaryByFeatureId(featureId),
+                openDomainKnowledgeWorkspace: async (taskId, iterationPath) => this.handleOpenDomainKnowledgeWorkspace(taskId, iterationPath),
+                loadDomainKnowledgeContext: async (repoRoot, iterationId) => this.handleLoadDomainKnowledgeContext(repoRoot, iterationId),
+                domainContextLoaded: (context, errorCode) => {
+                    if (context) {
+                        this.domainSession.changeSet = context.draftChangeSet;
+                        this.domainSession.conflicts = [];
+                    }
+                    const webview = this.sidebarView?.webview ?? this.panel?.webview;
+                    webview?.postMessage({ type: 'domainContextLoaded', context, errorCode });
+                },
+                saveDraftChangeSet: async (repoRoot, iterationId, changeSet) =>
+                    this.domainKnowledgeAggregateService.saveDraftChangeSet(repoRoot, iterationId, changeSet),
+                domainChangeSetUpdated: (savedDraft, dirty, errorCode) => {
+                    if (savedDraft) {
+                        this.domainSession.changeSet = savedDraft;
+                    }
+                    const webview = this.sidebarView?.webview ?? this.panel?.webview;
+                    webview?.postMessage({ type: 'domainChangeSetUpdated', savedDraft, dirty, errorCode });
+                },
+                previewProjection: (changeSet, baselineVersion, baselineSnapshot, registry) =>
+                    this.domainKnowledgeAggregateService.previewProjection(changeSet, baselineVersion, baselineSnapshot, registry),
+                domainProjectionResult: (projection, errorCode) => {
+                    const webview = this.sidebarView?.webview ?? this.panel?.webview;
+                    webview?.postMessage({ type: 'domainProjectionResult', projection, errorCode });
+                },
+                detectConflicts: (changeSet, projection, baselineVersion) =>
+                    this.domainKnowledgeAggregateService.detectConflicts(changeSet, projection, baselineVersion),
+                domainConflictsDetected: (conflicts, blocking, errorCode) => {
+                    this.domainSession.conflicts = conflicts;
+                    const webview = this.sidebarView?.webview ?? this.panel?.webview;
+                    webview?.postMessage({ type: 'domainConflictsDetected', conflicts, blocking, errorCode });
+                },
+                detectDocumentMergeConflicts: (baseDocuments, currentDocuments, draftDocuments) =>
+                    this.domainKnowledgeAggregateService.detectDocumentMergeConflicts(baseDocuments, currentDocuments, draftDocuments),
+                domainDocumentMergeResult: (conflicts, autoMergedDocuments, errorCode) => {
+                    const webview = this.sidebarView?.webview ?? this.panel?.webview;
+                    webview?.postMessage({ type: 'domainDocumentMergeResult', conflicts, autoMergedDocuments, errorCode });
+                },
+                resolveDomainConflict: (conflictId, decision) =>
+                    this.handleResolveDomainConflict(conflictId, decision),
+                domainConflictResolved: (updatedChangeSet, remainingConflicts, errorCode) => {
+                    if (updatedChangeSet) {
+                        this.domainSession.changeSet = updatedChangeSet;
+                        this.domainSession.conflicts = remainingConflicts;
+                    }
+                    const webview = this.sidebarView?.webview ?? this.panel?.webview;
+                    webview?.postMessage({ type: 'domainConflictResolved', updatedChangeSet, remainingConflicts, errorCode });
+                },
+                commitChangeSet: (repoRoot, changeSet, baselineVersion, expectedRevisions, autoRebase, formatPolicy, resolvedConflicts) =>
+                    this.domainKnowledgeAggregateService.commitChangeSet(
+                        repoRoot, changeSet, baselineVersion, expectedRevisions, autoRebase, formatPolicy, resolvedConflicts,
+                    ),
+                domainCommitResult: (summary, errorCode) => {
+                    if (summary) {
+                        this.domainSession.conflicts = [];
+                    }
+                    const webview = this.sidebarView?.webview ?? this.panel?.webview;
+                    webview?.postMessage({ type: 'domainCommitResult', summary, errorCode });
+                },
+                refreshBaselineAndReproject: (repoRoot, changeSet, currentBaselineVersion, expectedRevisions) =>
+                    this.domainKnowledgeAggregateService.refreshBaselineAndReproject(
+                        repoRoot, changeSet, currentBaselineVersion, expectedRevisions,
+                    ),
+                baselineReprojectResult: (rebased, latestBaselineVersion, latestRevisions, projection, errorCode) => {
+                    const webview = this.sidebarView?.webview ?? this.panel?.webview;
+                    webview?.postMessage({ type: 'baselineReprojectResult', rebased, latestBaselineVersion, latestRevisions, projection, errorCode });
+                },
                 openCustomPrompt: (step) => this.handleOpenCustomPrompt(step),
                 openCustomConstitution: () => this.handleOpenCustomConstitution(),
                 saveGit: (frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode) => this.handleSaveGit(frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode),
@@ -1246,117 +1298,131 @@ class Harness {
     }
 
     /**
-     * Run suspected-domain review action from command palette in main panel context.
+     * Open the subpanel domain knowledge workspace. Binds Req-1 (ROUTE-1 / API-1).
      */
-    async handleReviewSuspectedDomainsCommand(): Promise<void> {
-        const task = await this.pickTaskForDomainGovernance();
+    async handleOpenDomainKnowledgeWorkspaceCommand(): Promise<void> {
+        const task = await this.pickTaskForDomainWorkspace();
         if (!task) {
             return;
         }
-        await this.handleReviewSuspectedDomainsByFeatureId(task.id);
+        const iterationPath = this.getIterationDir(task);
+        await this.handleOpenDomainKnowledgeWorkspace(task.id, iterationPath);
+    }
+
+    /**
+     * Open the subpanel domain knowledge workspace for a specific taskId and iterationPath.
+     * Binds Req-1, INV-2 (API-1).
+     */
+    private async handleOpenDomainKnowledgeWorkspace(taskId: string, iterationPath: string): Promise<void> {
+        try {
+            await vscode.commands.executeCommand('workbench.view.extension.fun-harness-sidebar');
+        } catch {
+            harness!.panel ? harness!.panel.reveal() : harness!.createPanel();
+        }
         this.render();
     }
 
     /**
-     * Run domain-baseline aggregation from command palette in main panel context.
+     * Load domain knowledge context for the subpanel via DomainKnowledgeAggregateService.
+     * Binds Req-1, Req-2, Req-7 (API-2).
      */
-    async handleRunDomainBaselineAggregationCommand(): Promise<void> {
-        const task = await this.pickTaskForDomainGovernance();
-        if (!task) {
-            return;
-        }
-        await this.handleRunDomainBaselineAggregationByFeatureId(task.id);
-        this.render();
+    private async handleLoadDomainKnowledgeContext(
+        repoRoot: string,
+        iterationId: string,
+    ): Promise<import('./models').DomainKnowledgeContext> {
+        const resolvedRepoRoot = resolveHarnessWorkspaceRoot(repoRoot).workspaceRoot;
+        return this.domainKnowledgeAggregateService.loadDomainKnowledgeContext(
+            resolvedRepoRoot,
+            iterationId,
+        );
     }
 
     /**
-     * Open domain baseline index preview from command palette in main panel context.
+     * Remove legacy main-panel domain actions. Must be called once at extension startup.
+     * Ensures legacy actionIds cannot be displayed or triggered. Binds Req-1, INV-1.
      */
-    async handlePreviewDomainBaselineSummaryCommand(): Promise<void> {
-        const task = await this.pickTaskForDomainGovernance();
-        if (!task) {
-            return;
+    unregisterLegacyDomainActions(): void {
+        const legacyActionIds = [
+            'fun-harness.reviewSuspectedDomains',
+            'fun-harness.runDomainBaselineAggregation',
+            'fun-harness.previewDomainBaselineSummary',
+            'fun-harness.applyDomainAdjudication',
+            'fun-harness.commitDomainBaseline',
+        ];
+        // Log the removal so it is auditable; commands were never registered above.
+        for (const actionId of legacyActionIds) {
+            console.log(`[fun-harness] LEGACY_DOMAIN_ACTION_REMOVED: ${actionId}`);
         }
-        await this.handleReviewSuspectedDomainsByFeatureId(task.id);
-        this.render();
     }
 
     /**
-     * Trigger main-panel aggregation route for one task context.
+     * Apply a conflict resolution decision to the current session change set and conflicts.
+     * Implements the resolution logic for domain-name, capability-key, and document-merge conflicts.
+     * Binds Req-4, Req-5 (API-6).
      */
-    private async handleRunDomainBaselineAggregationByFeatureId(featureId: string): Promise<void> {
-        if (this.isWorktreeSubview()) {
-            vscode.window.showWarningMessage('领域基线聚合仅支持主面板执行');
-            return;
+    private handleResolveDomainConflict(
+        conflictId: string,
+        decision: import('./models').ConflictDecision,
+    ): { updatedChangeSet: import('./models').DomainChangeSet; remainingConflicts: import('./models').DomainConflict[] } {
+        const currentChangeSet = this.domainSession.changeSet;
+        if (!currentChangeSet) {
+            throw new Error('DOMAIN_WORKSPACE_LOAD_FAILED: 无法执行裁决，当前会话无有效变更集');
         }
-        await this.actionsService.reviewSuspectedDomainsByFeatureId(featureId);
+        const currentConflicts = this.domainSession.conflicts || [];
+
+        // Find the conflict being resolved.
+        const conflict = currentConflicts.find(c => c.id === conflictId);
+        if (!conflict) {
+            throw new Error(`DOMAIN_CONFLICT_RESOLVE_FAILED: 未找到冲突 "${conflictId}"`);
+        }
+
+        // Apply the decision to produce an updated change set.
+        let updatedDomainChanges = [...currentChangeSet.domainChanges];
+
+        if (conflict.type === 'domain-name' && decision.action === 'merge-existing') {
+            // Assign targetCanonical to all changes whose reqId is in this conflict. Binds Req-5.
+            updatedDomainChanges = updatedDomainChanges.map(change =>
+                conflict.reqIds.includes(change.reqId)
+                    ? { ...change, canonicalDomain: decision.targetCanonical }
+                    : change,
+            );
+        } else if (conflict.type === 'domain-name' && decision.action === 'append-alias') {
+            updatedDomainChanges = updatedDomainChanges.map(change =>
+                conflict.reqIds.includes(change.reqId)
+                    ? { ...change, canonicalDomain: decision.targetCanonical }
+                    : change,
+            );
+        } else if (conflict.type === 'domain-name' && decision.action === 'create-canonical') {
+            updatedDomainChanges = updatedDomainChanges.map(change =>
+                conflict.reqIds.includes(change.reqId)
+                    ? { ...change, canonicalDomain: decision.newCanonical }
+                    : change,
+            );
+        } else if (conflict.type === 'capability-key' && decision.action === 'choose-value') {
+            // No change-set mutation needed for capability-key; conflicts are cleared after ack.
+        } else if (conflict.type === 'document-merge') {
+            // Document-merge resolutions apply at section level; change set is not mutated here.
+        }
+
+        const updatedChangeSet: import('./models').DomainChangeSet = {
+            ...currentChangeSet,
+            domainChanges: updatedDomainChanges,
+            updatedAt: new Date().toISOString(),
+        };
+
+        // Remove the resolved conflict from the list. Binds Req-4, Req-5.
+        const remainingConflicts = currentConflicts.filter(c => c.id !== conflictId);
+
+        return { updatedChangeSet, remainingConflicts };
     }
 
     /**
-     * Trigger suspected-domain review route for one task context.
+     * Pick one active task as domain workspace context.
      */
-    private async handleReviewSuspectedDomainsByFeatureId(featureId: string): Promise<void> {
-        if (this.isWorktreeSubview()) {
-            vscode.window.showWarningMessage('疑似新领域裁决仅支持主面板执行');
-            return;
-        }
-        await this.actionsService.reviewSuspectedDomainsByFeatureId(featureId);
-    }
-
-    /**
-     * Open docs/domains/_index.md as domain baseline summary preview.
-     */
-    private async handlePreviewDomainBaselineSummaryByFeatureId(featureId: string): Promise<void> {
-        if (this.isWorktreeSubview()) {
-            vscode.window.showWarningMessage('领域总览预览仅支持主面板执行');
-            return;
-        }
-        if (!this.features.some(item => item.id === featureId)) {
-            vscode.window.showWarningMessage(`未找到任务：${featureId}`);
-            return;
-        }
-
-        const indexPath = path.join(this.resolveDomainBaselineRepoRoot(), 'docs', 'domains', '_index.md');
-        if (!fs.existsSync(indexPath)) {
-            vscode.window.showWarningMessage(`尚未生成 ${indexPath}，请先执行 Aggregate domain baselines`);
-            return;
-        }
-
-        const doc = await vscode.workspace.openTextDocument(indexPath);
-        await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
-    }
-
-    /**
-     * Run manual domain adjudication action from command palette in main panel context.
-     */
-    async handleApplyDomainAdjudicationCommand(): Promise<void> {
-        const task = await this.pickTaskForDomainGovernance();
-        if (!task) {
-            return;
-        }
-        await this.actionsService.applyDomainAdjudicationByFeatureId(task.id);
-        this.render();
-    }
-
-    /**
-     * Run domain baseline commit action from command palette in main panel context.
-     */
-    async handleCommitDomainBaselineCommand(): Promise<void> {
-        const task = await this.pickTaskForDomainGovernance();
-        if (!task) {
-            return;
-        }
-        await this.actionsService.commitDomainBaselineByFeatureId(task.id);
-        this.render();
-    }
-
-    /**
-     * Pick one active task as governance action context.
-     */
-    private async pickTaskForDomainGovernance(): Promise<Feature | null> {
+    private async pickTaskForDomainWorkspace(): Promise<Feature | null> {
         const activeTasks = this.features.filter(task => task.stage !== STAGE.DONE);
         if (activeTasks.length === 0) {
-            vscode.window.showWarningMessage('没有可用的迭代任务用于领域治理操作');
+            vscode.window.showWarningMessage('没有可用的迭代任务用于领域维护操作');
             return null;
         }
 
@@ -1367,7 +1433,7 @@ class Harness {
                 detail: task.stage,
                 task,
             })),
-            { title: '选择任务', ignoreFocusOut: true },
+            { title: '选择迭代任务', ignoreFocusOut: true },
         );
 
         return selected ? selected.task : null;

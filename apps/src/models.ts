@@ -723,3 +723,216 @@ export interface IterationArchiveDocument {
     tasks: IterationArchiveItem[];
     lastSyncedAt: string;
 }
+
+// ── Domain Knowledge Aggregate Models (Req-1..Req-8) ──────────────
+
+/**
+ * Snapshot of the registry used by the subpanel for resolution vocabulary.
+ * Binds Req-4, Req-7.
+ */
+export interface DomainRegistrySnapshot {
+    domains: DomainRegistryEntry[];
+}
+
+/**
+ * A registry validation issue produced when loading registry.yaml.
+ * Binds Req-4, Req-7.
+ */
+export interface RegistryValidationIssue {
+    code: 'duplicate-canonical' | 'duplicate-alias' | 'invalid-slug';
+    message: string;
+    canonical?: string;
+    alias?: string;
+    entryIndexes: number[];
+}
+
+/**
+ * Tracks file revision anchors used for concurrent-write detection.
+ * Binds Req-4, Req-8.
+ */
+export interface DomainRevisionSet {
+    registryRevision: string;
+    indexRevision: string;
+    /** Map of canonicalDomain → file revision. */
+    domainDocRevisions: Record<string, string>;
+}
+
+/** A single contract change within a domain change entry. Binds Req-2, Req-6. */
+export interface DomainContractChange {
+    id: string;
+    reqId: string;
+    method: string;
+    path: string;
+    requestShape: Record<string, unknown>;
+    responseShape: Record<string, unknown>;
+}
+
+/** A single invariant change within a domain change entry. Binds Req-2, Req-6. */
+export interface DomainInvariantChange {
+    id: string;
+    reqId: string;
+    text: string;
+}
+
+/**
+ * A single domain change item within the iteration change set.
+ * reqId is the capability primary key; must be unique per change set. Binds Req-4, Req-6.
+ */
+export interface DomainChange {
+    canonicalDomain: string | null;
+    rawDomain: string;
+    reqId: string;
+    title: string;
+    userStory: string;
+    changeType: 'add' | 'update' | 'deprecate' | 'remove' | 'move';
+    status: 'active' | 'deprecated' | 'removed';
+    contracts: DomainContractChange[];
+    invariants: DomainInvariantChange[];
+}
+
+/**
+ * The structured iteration change set edited in the subpanel.
+ * basedOnBaselineVersion + sourceRevisionSet are the concurrent-write anchor. Binds Req-2, Req-3, Req-6, Req-8.
+ */
+export interface DomainChangeSet {
+    iterationId: string;
+    basedOnBaselineVersion: string;
+    sourceRevisionSet: DomainRevisionSet;
+    updatedAt: string;
+    domainChanges: DomainChange[];
+}
+
+/** An existing capability record in the baseline snapshot. Binds Req-2, Req-4. */
+export interface DomainCapabilityRecord {
+    reqId: string;
+    title: string;
+    userStory: string;
+    status: 'active' | 'deprecated' | 'removed';
+}
+
+/** An existing contract record in the baseline snapshot. Binds Req-2. */
+export interface DomainContractRecord {
+    id: string;
+    reqId: string;
+    method: string;
+    path: string;
+    requestShape: Record<string, unknown>;
+    responseShape: Record<string, unknown>;
+}
+
+/** An existing invariant record in the baseline snapshot. Binds Req-2. */
+export interface DomainInvariantRecord {
+    id: string;
+    reqId: string;
+    text: string;
+}
+
+/**
+ * Read-only baseline snapshot for a single domain, consumed by the projection engine.
+ * Binds Req-2, Req-4, Req-8.
+ */
+export interface DomainBaselineSnapshot {
+    canonicalDomain: string;
+    version: string;
+    capabilities: DomainCapabilityRecord[];
+    contracts: DomainContractRecord[];
+    invariants: DomainInvariantRecord[];
+}
+
+/**
+ * A projected domain document produced by the projection engine.
+ * Used for preview and as input to three-way merge. Binds Req-2, Req-4, Req-8.
+ */
+export interface ProjectedDomainDocument {
+    canonicalDomain: string;
+    version: string;
+    capabilities: DomainCapabilityRecord[];
+    contracts: DomainContractRecord[];
+    invariants: DomainInvariantRecord[];
+    /** Serialized markdown content for document-level merge checks. */
+    markdownContent: string;
+}
+
+/**
+ * A detected conflict requiring resolution before commit.
+ * severity='blocking' prevents commit; severity='warning' is informational only. Binds Req-4, Req-5.
+ */
+export interface DomainConflict {
+    id: string;
+    type: 'domain-name' | 'baseline-version' | 'capability-key' | 'document-merge';
+    severity: 'blocking' | 'warning';
+    reqIds: string[];
+    message: string;
+    /** For document-merge conflicts: the section identifiers that cannot be auto-merged. */
+    conflictingSections?: string[];
+}
+
+/**
+ * The projection result returned by previewProjection.
+ * projectedDomains must be sorted by canonicalDomain for deterministic output. Binds Req-2, Req-8.
+ */
+export interface DomainProjectionResult {
+    baselineVersion: string;
+    projectedDomains: ProjectedDomainDocument[];
+    conflicts: DomainConflict[];
+    warnings: string[];
+}
+
+/**
+ * User decision for resolving a conflict in the subpanel. Binds Req-5.
+ */
+export type ConflictDecision =
+    | { action: 'merge-existing'; targetCanonical: string }
+    | { action: 'append-alias'; alias: string; targetCanonical: string }
+    | { action: 'create-canonical'; newCanonical: string; displayName: string }
+    | { action: 'choose-value'; field: string; chosenValue: unknown }
+    | { action: 'keep-draft'; sectionId: string }
+    | { action: 'keep-current'; sectionId: string }
+    | { action: 'manual-merge'; sectionId: string; mergedContent: string };
+
+/**
+ * A resolved conflict record included in the commit request. Binds Req-5, Req-6.
+ */
+export interface DomainConflictResolution {
+    conflictId: string;
+    decision: ConflictDecision;
+}
+
+/**
+ * Summary returned after a successful atomic commit. Binds Req-3, Req-8.
+ */
+export interface CommitSummary {
+    baselineVersion: string;
+    rebased: boolean;
+    rebasedFromBaselineVersion?: string;
+    processedDomains: number;
+    processedCapabilities: number;
+    skippedAsNoChange: boolean;
+    /** SHA-256 of the deterministic-v1 serialized output for idempotency verification. */
+    canonicalSerializationHash: string;
+    commitId: string;
+    writtenFiles: string[];
+}
+
+/**
+ * Context payload returned by loadDomainKnowledgeContext.
+ * Carries everything the subpanel needs to drive editing and projection. Binds Req-1, Req-2, Req-7.
+ */
+export interface DomainKnowledgeContext {
+    baselineVersion: string;
+    registry: DomainRegistrySnapshot;
+    baselineSnapshot: DomainBaselineSnapshot[];
+    draftChangeSet: DomainChangeSet;
+}
+
+/**
+ * State used by the baseline sync banner to surface drift and rebase status.
+ * Binds Req-4, Req-8.
+ */
+export interface BaselineSyncState {
+    stale: boolean;
+    rebaseInProgress: boolean;
+    rebased: boolean;
+    latestBaselineVersion: string;
+    latestRevisions: DomainRevisionSet;
+}

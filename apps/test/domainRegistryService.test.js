@@ -170,4 +170,100 @@ describe('DomainRegistryService', () => {
             cleanup(root);
         }
     });
+
+    // ── New tests for normalizeDomainCanonical and validateRegistryStrict (Tasks 1.3) ──
+
+    test('normalizeDomainCanonical returns canonical and matchedBy=canonical for exact match (API-9, Req-7)', () => {
+        const service = new DomainRegistryService();
+        const registry = {
+            domains: [
+                { canonical: 'billing', displayName: 'Billing', aliases: ['payments'], status: 'active' },
+            ],
+        };
+        const result = service.normalizeDomainCanonical('billing', registry);
+        assert.equal(result.canonical, 'billing');
+        assert.equal(result.matchedBy, 'canonical');
+    });
+
+    test('normalizeDomainCanonical returns canonical and matchedBy=alias for alias lookup (API-9, Req-4)', () => {
+        const service = new DomainRegistryService();
+        const registry = {
+            domains: [
+                { canonical: 'billing', displayName: 'Billing', aliases: ['payments', 'invoices'], status: 'active' },
+            ],
+        };
+        const result = service.normalizeDomainCanonical('payments', registry);
+        assert.equal(result.canonical, 'billing');
+        assert.equal(result.matchedBy, 'alias');
+    });
+
+    test('normalizeDomainCanonical returns canonical=null for unknown domain (Req-4, Req-5)', () => {
+        const service = new DomainRegistryService();
+        const registry = {
+            domains: [
+                { canonical: 'billing', displayName: 'Billing', aliases: ['payments'], status: 'active' },
+            ],
+        };
+        const result = service.normalizeDomainCanonical('unknown-domain', registry);
+        assert.equal(result.canonical, null);
+        assert.equal(result.matchedBy, 'none');
+    });
+
+    test('normalizeDomainCanonical is case-insensitive for lookup (API-9)', () => {
+        const service = new DomainRegistryService();
+        const registry = {
+            domains: [
+                { canonical: 'billing', displayName: 'Billing', aliases: ['Payments'], status: 'active' },
+            ],
+        };
+        const result = service.normalizeDomainCanonical('BILLING', registry);
+        assert.equal(result.canonical, 'billing');
+    });
+
+    test('validateRegistryStrict detects invalid-slug canonical (INV-9, API-8)', () => {
+        const service = new DomainRegistryService();
+        const registry = {
+            domains: [
+                { canonical: 'Invalid Slug', displayName: 'Bad', aliases: [], status: 'active' },
+            ],
+        };
+        const issues = service.validateRegistryStrict(registry);
+        assert.ok(issues.some(i => i.code === 'invalid-slug'));
+    });
+
+    test('validateRegistryStrict detects duplicate-canonical (API-8)', () => {
+        const service = new DomainRegistryService();
+        const registry = {
+            domains: [
+                { canonical: 'billing', displayName: 'A', aliases: [], status: 'active' },
+                { canonical: 'billing', displayName: 'B', aliases: [], status: 'active' },
+            ],
+        };
+        const issues = service.validateRegistryStrict(registry);
+        assert.ok(issues.some(i => i.code === 'duplicate-canonical'));
+    });
+
+    test('validateRegistryStrict detects duplicate-alias across domains (API-8)', () => {
+        const service = new DomainRegistryService();
+        const registry = {
+            domains: [
+                { canonical: 'billing', displayName: 'Billing', aliases: ['shared'], status: 'active' },
+                { canonical: 'platform', displayName: 'Platform', aliases: ['shared'], status: 'active' },
+            ],
+        };
+        const issues = service.validateRegistryStrict(registry);
+        assert.ok(issues.some(i => i.code === 'duplicate-alias'));
+    });
+
+    test('validateRegistryStrict returns empty array for valid registry (API-8)', () => {
+        const service = new DomainRegistryService();
+        const registry = {
+            domains: [
+                { canonical: 'billing', displayName: 'Billing', aliases: ['payments'], status: 'active' },
+                { canonical: 'platform', displayName: 'Platform', aliases: ['infra'], status: 'active' },
+            ],
+        };
+        const issues = service.validateRegistryStrict(registry);
+        assert.equal(issues.length, 0);
+    });
 });

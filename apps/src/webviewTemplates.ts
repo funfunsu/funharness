@@ -287,6 +287,13 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="specReview('${ctx.task.id}')">🧭 Spec 评审</button>`,
     },
     {
+        key: 'domain-maintenance',
+        placement: 'primary',
+        panels: ['worktree'],
+        stages: [STAGE.DEVELOPING],
+        render: (ctx) => `<button class="action-btn action-btn--success" onclick="openDomainKnowledgeWorkspace('${ctx.task.id}')">🏛 领域沉淀维护</button>`,
+    },
+    {
         key: 'sync-code',
         placement: 'side',
         panels: ['main', 'worktree'],
@@ -1197,6 +1204,10 @@ function setFeatureAutomation(id,aa,ar){v.postMessage({type:'setFeatureAutomatio
 function setFeatureAiProvider(id,ap){v.postMessage({type:'setFeatureAiProvider',id,ap})}
 function pushDev(id){v.postMessage({type:'pushAndNextStage',id})}
 function specReview(id){v.postMessage({type:'specDeltaReview',id})}
+function openDomainKnowledgeWorkspace(id){
+    // Send taskId; iterationPath will be resolved server-side from taskId
+    v.postMessage({type:'openDomainKnowledgeWorkspace',taskId:id,iterationPath:''})
+}
 
 document.addEventListener('DOMContentLoaded',()=>{
     const governanceButtons=document.querySelectorAll('[data-domain-action]');
@@ -1741,4 +1752,302 @@ ${context ? `<div class="meta">${context}</div>` : ''}
 </div>
 </body>
 </html>`;
+}
+
+// ── Domain Knowledge Workspace UI (Req-1..Req-4) ──────────────────
+
+import {
+    BaselineSyncState,
+    CommitSummary,
+    DomainChangeSet,
+    DomainConflict,
+    DomainProjectionResult,
+    DomainRegistryEntry,
+} from './models';
+
+/**
+ * UI-2: Render the DomainChangeEditor panel HTML.
+ * Displays all change entries in the current iteration change set with inline editing support.
+ * Binds Req-2, Req-6.
+ */
+export function buildDomainChangeEditorHtml(
+    changeSet: DomainChangeSet,
+    registryDomains: DomainRegistryEntry[],
+    readOnly: boolean,
+): string {
+    const domainOptions = registryDomains
+        .filter(d => d.status === 'active')
+        .map(d => `<option value="${escapeHtml(d.canonical)}">${escapeHtml(d.displayName || d.canonical)}</option>`)
+        .join('');
+    const changeTypeOptions = ['add', 'update', 'deprecate', 'remove', 'move']
+        .map(ct => `<option value="${escapeHtml(ct)}">${escapeHtml(ct)}</option>`)
+        .join('');
+
+    const changeRows = (changeSet.domainChanges || []).map((change, idx) => {
+        const reqId = escapeHtml(change.reqId || '');
+        const title = escapeHtml(change.title || '');
+        const rawDomain = escapeHtml(change.rawDomain || '');
+        const changeType = escapeHtml(change.changeType || 'add');
+        const status = escapeHtml(change.status || 'active');
+        if (readOnly) {
+            return `<tr>
+  <td>${reqId}</td>
+  <td>${rawDomain}</td>
+  <td>${title}</td>
+  <td>${changeType}</td>
+  <td>${status}</td>
+</tr>`;
+        }
+        return `<tr data-idx="${idx}">
+  <td><input class="dc-input" type="text" value="${reqId}" placeholder="Req-*" onchange="onChangeSetFieldChange(${idx},'reqId',this.value)"></td>
+  <td><select class="dc-select" onchange="onChangeSetFieldChange(${idx},'rawDomain',this.value)">
+    <option value="${rawDomain}">${rawDomain || '-- 选择领域 --'}</option>${domainOptions}
+  </select></td>
+  <td><input class="dc-input" type="text" value="${title}" placeholder="能力标题" onchange="onChangeSetFieldChange(${idx},'title',this.value)"></td>
+  <td><select class="dc-select" onchange="onChangeSetFieldChange(${idx},'changeType',this.value)">
+    ${changeTypeOptions.replace(`value="${changeType}"`, `value="${changeType}" selected`)}
+  </select></td>
+  <td>${status}</td>
+</tr>`;
+    }).join('');
+
+    const addRowBtn = readOnly ? '' : `<button class="action-btn action-btn--primary" onclick="addDomainChange()">新增变更</button>`;
+    const previewBtn = `<button class="action-btn action-btn--neutral" onclick="triggerPreviewProjection()">预览投影</button>`;
+
+    return `<div class="domain-change-editor">
+<div class="domain-editor-header">
+  <span class="domain-editor-title">📝 领域变更编辑</span>
+  <span class="domain-editor-meta">迭代: ${escapeHtml(changeSet.iterationId)} · 基线: ${escapeHtml(changeSet.basedOnBaselineVersion)}</span>
+</div>
+<table class="domain-change-table">
+  <thead><tr><th>Req-ID</th><th>领域</th><th>能力标题</th><th>变更类型</th><th>状态</th></tr></thead>
+  <tbody>${changeRows || '<tr><td colspan="5" class="dc-empty">暂无变更，点击"新增变更"开始</td></tr>'}</tbody>
+</table>
+<div class="domain-editor-actions">
+  ${addRowBtn}
+  ${previewBtn}
+</div>
+</div>`;
+}
+
+/**
+ * UI-3: Render the DomainProjectionPreview panel HTML.
+ * Displays the current baseline projection result with warnings and conflict indicators.
+ * Read-only; must not trigger any file writes. Binds Req-2, Req-4.
+ */
+export function buildDomainProjectionPreviewHtml(
+    projection: DomainProjectionResult | null,
+    conflicts: DomainConflict[],
+    warnings: string[],
+): string {
+    if (!projection) {
+        return `<div class="domain-projection-preview">
+<div class="domain-preview-empty">尚未生成投影，请点击"预览投影"。</div>
+</div>`;
+    }
+
+    const blockingConflicts = conflicts.filter(c => c.severity === 'blocking');
+    const conflictHtml = conflicts.length > 0
+        ? `<div class="domain-conflicts${blockingConflicts.length > 0 ? ' domain-conflicts--blocking' : ''}">
+  <div class="domain-conflicts-title">${blockingConflicts.length > 0 ? '⛔ 存在阻断冲突' : '⚠ 存在警告冲突'}</div>
+  ${conflicts.map(c => `<div class="domain-conflict-item ${c.severity === 'blocking' ? 'conflict-blocking' : 'conflict-warn'}">
+    [${escapeHtml(c.type)}] ${escapeHtml(c.message)}
+  </div>`).join('')}
+</div>` : '';
+
+    const warningHtml = warnings.length > 0
+        ? `<div class="domain-warnings">${warnings.map(w => `<div class="domain-warning-item">⚡ ${escapeHtml(w)}</div>`).join('')}</div>`
+        : '';
+
+    const domainSections = (projection.projectedDomains || []).map(doc => {
+        const capRows = (doc.capabilities || [])
+            .map(cap => `<tr><td>${escapeHtml(cap.reqId)}</td><td>${escapeHtml(cap.title)}</td><td>${escapeHtml(cap.status)}</td></tr>`)
+            .join('');
+        const contractRows = (doc.contracts || [])
+            .map(c => `<tr><td>${escapeHtml(c.id)}</td><td>${escapeHtml(c.method)}</td><td>${escapeHtml(c.path)}</td><td>${escapeHtml(c.reqId)}</td></tr>`)
+            .join('');
+        const invariantRows = (doc.invariants || [])
+            .map(inv => `<li>[${escapeHtml(inv.id)}] (${escapeHtml(inv.reqId)}) ${escapeHtml(inv.text)}</li>`)
+            .join('');
+        return `<details class="domain-doc-section" open>
+  <summary>${escapeHtml(doc.canonicalDomain)}</summary>
+  <div class="domain-doc-body">
+    ${capRows ? `<table class="domain-mini-table"><thead><tr><th>Req-ID</th><th>能力标题</th><th>状态</th></tr></thead><tbody>${capRows}</tbody></table>` : '<p class="dc-empty">无能力项</p>'}
+    ${contractRows ? `<table class="domain-mini-table"><thead><tr><th>契约 ID</th><th>Method</th><th>Path</th><th>Req-ID</th></tr></thead><tbody>${contractRows}</tbody></table>` : ''}
+    ${invariantRows ? `<ul class="domain-invariant-list">${invariantRows}</ul>` : ''}
+  </div>
+</details>`;
+    }).join('');
+
+    return `<div class="domain-projection-preview">
+<div class="domain-preview-header">
+  <span class="domain-preview-title">🔍 基线投影预览</span>
+  <span class="domain-preview-meta">基线版本: ${escapeHtml(projection.baselineVersion)}</span>
+</div>
+${conflictHtml}
+${warningHtml}
+<div class="domain-docs">${domainSections || '<div class="dc-empty">投影结果为空</div>'}</div>
+</div>`;
+}
+
+/**
+ * UI-4: Render the DomainConflictPanel HTML.
+ * Blocking conflicts must remain explicitly visible until fully resolved.
+ * Supports domain-name (merge-existing, append-alias, create-canonical),
+ * capability-key (choose-value), and document-merge (keep-draft, keep-current, manual-merge).
+ * Binds Req-4, Req-5.
+ */
+export function buildDomainConflictPanelHtml(
+    conflicts: DomainConflict[],
+    blocking: boolean,
+    registryDomains: DomainRegistryEntry[],
+): string {
+    if (conflicts.length === 0) {
+        return `<div class="domain-conflict-panel domain-conflict-panel--empty">
+<div class="conflict-empty-msg">✅ 无冲突，可执行提交。</div>
+</div>`;
+    }
+
+    const conflictItems = conflicts.map(conflict => {
+        const isBlocking = conflict.severity === 'blocking';
+        const typeBadge = isBlocking
+            ? `<span class="conflict-badge conflict-badge--blocking">⛔ 阻断</span>`
+            : `<span class="conflict-badge conflict-badge--warn">⚠ 警告</span>`;
+
+        const decisionHtml = buildConflictDecisionHtml(conflict, registryDomains);
+
+        return `<div class="conflict-item conflict-item--${isBlocking ? 'blocking' : 'warn'}" data-conflict-id="${escapeHtml(conflict.id)}">
+  <div class="conflict-header">
+    ${typeBadge}
+    <span class="conflict-type">[${escapeHtml(conflict.type)}]</span>
+    <span class="conflict-msg">${escapeHtml(conflict.message)}</span>
+  </div>
+  ${conflict.conflictingSections && conflict.conflictingSections.length > 0
+    ? `<div class="conflict-sections">冲突分段：${conflict.conflictingSections.map(s => `<code>${escapeHtml(s)}</code>`).join(', ')}</div>`
+    : ''}
+  <div class="conflict-decision">
+    ${decisionHtml}
+  </div>
+</div>`;
+    }).join('');
+
+    const panelClass = blocking ? 'domain-conflict-panel--blocking' : 'domain-conflict-panel--warn';
+    const panelTitle = blocking ? '⛔ 存在阻断冲突，提交已锁定' : '⚠ 存在警告冲突';
+
+    return `<div class="domain-conflict-panel ${panelClass}">
+<div class="conflict-panel-title">${panelTitle}</div>
+${conflictItems}
+</div>`;
+}
+
+/**
+ * Build the decision controls for one conflict based on its type.
+ * Binds Req-5.
+ */
+function buildConflictDecisionHtml(conflict: DomainConflict, registryDomains: DomainRegistryEntry[]): string {
+    const cid = escapeHtml(conflict.id);
+
+    if (conflict.type === 'domain-name') {
+        const canonicalOptions = registryDomains
+            .filter(d => d.status === 'active')
+            .map(d => `<option value="${escapeHtml(d.canonical)}">${escapeHtml(d.displayName || d.canonical)}</option>`)
+            .join('');
+        return `<div class="conflict-decision-row">
+  <select id="dc-target-${cid}" class="dc-select">${canonicalOptions}</select>
+  <button class="action-btn action-btn--neutral" onclick="resolveConflict('${cid}','merge-existing',document.getElementById('dc-target-${cid}').value)">合并到已有 canonical</button>
+  <button class="action-btn action-btn--neutral" onclick="resolveConflict('${cid}','append-alias',document.getElementById('dc-target-${cid}').value)">追加别名</button>
+  <input id="dc-new-${cid}" class="dc-input" type="text" placeholder="新 canonical slug">
+  <input id="dc-dn-${cid}" class="dc-input" type="text" placeholder="displayName">
+  <button class="action-btn action-btn--primary" onclick="resolveConflict('${cid}','create-canonical',null,document.getElementById('dc-new-${cid}').value,document.getElementById('dc-dn-${cid}').value)">创建受控新领域</button>
+</div>`;
+    }
+
+    if (conflict.type === 'capability-key') {
+        return `<div class="conflict-decision-row">
+  <button class="action-btn action-btn--neutral" onclick="resolveConflict('${cid}','choose-value',null,null,null,'reqId')">确认能力主键</button>
+</div>`;
+    }
+
+    if (conflict.type === 'baseline-version') {
+        return `<div class="conflict-decision-row">
+  <span class="conflict-hint">请先点击"同步基线并重投影"以解决版本漂移，无法手动裁决。</span>
+</div>`;
+    }
+
+    if (conflict.type === 'document-merge') {
+        const sections = (conflict.conflictingSections || []);
+        const sectionDecisions = sections.map(sectionId => {
+            const sid = escapeHtml(sectionId);
+            return `<div class="section-decision">
+  <code>${sid}</code>
+  <button class="action-btn action-btn--neutral" onclick="resolveConflictSection('${cid}','${sid}','keep-draft')">保留草稿</button>
+  <button class="action-btn action-btn--neutral" onclick="resolveConflictSection('${cid}','${sid}','keep-current')">保留当前</button>
+  <button class="action-btn action-btn--primary" onclick="resolveConflictSection('${cid}','${sid}','manual-merge')">手工合并</button>
+</div>`;
+        }).join('');
+        return `<div class="conflict-decision-row">${sectionDecisions || '<span class="conflict-hint">逐段裁决文档冲突。</span>'}</div>`;
+    }
+
+    return '';
+}
+
+/**
+ * UI-5: Render the DomainCommitBar HTML.
+ * Fixed at the bottom of the subpanel; commit is blocked when blocking conflicts exist.
+ * Button labels must be Chinese: 写入沉淀 / 无变更 / 最近摘要. Binds Req-3, Req-8.
+ */
+export function buildDomainCommitBarHtml(
+    canCommit: boolean,
+    loading: boolean,
+    summary: CommitSummary | null,
+): string {
+    const commitBtn = canCommit && !loading
+        ? `<button class="action-btn action-btn--success" onclick="triggerCommitDomainKnowledge()">写入沉淀</button>`
+        : `<button class="action-btn action-btn--success" disabled title="${loading ? '提交中…' : '存在未解决的阻断冲突，无法提交'}">写入沉淀</button>`;
+
+    const noChangeBtn = `<button class="action-btn action-btn--neutral" onclick="triggerCommitDomainKnowledge()" title="本次没有实际领域变更，系统将返回无变更结果">无变更</button>`;
+
+    const summaryBtn = summary
+        ? `<button class="action-btn action-btn--neutral" onclick="showDomainCommitSummary()" title="处理领域: ${summary.processedDomains} 个，能力: ${summary.processedCapabilities} 个">最近摘要</button>`
+        : '';
+
+    const loadingIndicator = loading
+        ? `<span class="commit-loading">提交中…</span>`
+        : '';
+
+    return `<div class="domain-commit-bar">
+${loadingIndicator}
+${commitBtn}
+${noChangeBtn}
+${summaryBtn}
+</div>`;
+}
+
+/**
+ * UI-6: Render the BaselineSyncBanner HTML.
+ * Shows baseline staleness state and triggers refreshBaselineAndReproject.
+ * Button label must be Chinese: 同步基线并重投影. Binds Req-4, Req-8.
+ */
+export function buildBaselineSyncBannerHtml(syncState: BaselineSyncState): string {
+    if (!syncState.stale && !syncState.rebaseInProgress) {
+        return '';
+    }
+
+    const statusMsg = syncState.rebaseInProgress
+        ? `<span class="sync-status sync-status--active">正在自动 rebase 并重投影…</span>`
+        : `<span class="sync-status sync-status--stale">基线已漂移，需要重新同步后才能提交</span>`;
+
+    const syncBtn = syncState.rebaseInProgress
+        ? `<button class="action-btn action-btn--neutral" disabled>同步基线并重投影</button>`
+        : `<button class="action-btn action-btn--warning" onclick="triggerRefreshBaselineAndReproject()">同步基线并重投影</button>`;
+
+    const latestVersionNote = syncState.latestBaselineVersion
+        ? `<span class="sync-version">最新基线: ${escapeHtml(syncState.latestBaselineVersion)}</span>`
+        : '';
+
+    return `<div class="baseline-sync-banner${syncState.rebaseInProgress ? ' baseline-sync-banner--active' : ''}">
+${statusMsg}
+${latestVersionNote}
+${syncBtn}
+</div>`;
 }

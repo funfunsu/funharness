@@ -4,6 +4,7 @@ import { WorkspaceTodoStoreService, WorkspaceTodoItem } from './services/workspa
 import { appendStructureGateFailureLog, appendTodoLog } from './services/harnessLog';
 import { GranularityRuleConflictError, SampleProfileUnavailableError, StructureGateFailedError } from './services/projectStructureService';
 import { PromptContractIncompleteError } from './services/promptService';
+import { DomainKnowledgeContext } from './models';
 
 interface HarnessMessageControllerDeps {
     isWorktreeSubview: () => boolean;
@@ -11,11 +12,42 @@ interface HarnessMessageControllerDeps {
     reloadFeatures: () => void;
     render: () => void;
     generateCapabilityDelta: (featureId: string) => Promise<void>;
-    runDomainBaselineAggregation: (featureId: string) => Promise<void>;
-    reviewSuspectedDomains: (featureId: string) => Promise<void>;
-    applyDomainAdjudication: (featureId: string) => Promise<void>;
-    commitDomainBaseline: (featureId: string) => Promise<void>;
-    previewDomainBaselineSummary: (featureId: string) => Promise<void>;
+    // ── Domain Knowledge Workspace (Req-1..Req-8) ──────────────────
+    /** API-1: Open the subpanel domain knowledge workspace. Binds Req-1. */
+    openDomainKnowledgeWorkspace: (taskId: string, iterationPath: string) => Promise<void>;
+    /** API-2: Load subpanel context; returns the loaded DomainKnowledgeContext. Binds Req-1, Req-2, Req-7. */
+    loadDomainKnowledgeContext: (repoRoot: string, iterationId: string) => Promise<DomainKnowledgeContext>;
+    /** Callback to post the loaded context (or an error code) back to the webview. Binds Req-1, Req-2. */
+    domainContextLoaded?: (context: DomainKnowledgeContext | null, errorCode?: string) => void;
+    /** API-3: Save draft change set; returns saved draft + dirty flag. Binds Req-2, Req-6. */
+    saveDraftChangeSet: (repoRoot: string, iterationId: string, changeSet: import('./models').DomainChangeSet) => Promise<{ savedDraft: import('./models').DomainChangeSet; dirty: boolean }>;
+    /** Callback to post the updated change set back to the webview. Binds Req-2, Req-6. */
+    domainChangeSetUpdated?: (savedDraft: import('./models').DomainChangeSet | null, dirty: boolean, errorCode?: string) => void;
+    /** API-4: Preview baseline projection (read-only). Binds Req-2, Req-4, Req-8. */
+    previewProjection: (changeSet: import('./models').DomainChangeSet, baselineVersion: string, baselineSnapshot: import('./models').DomainBaselineSnapshot[], registry: import('./models').DomainRegistrySnapshot) => import('./models').DomainProjectionResult;
+    /** Callback to post the projection result back to the webview. Binds Req-2, Req-4. */
+    domainProjectionResult?: (projection: import('./models').DomainProjectionResult | null, errorCode?: string) => void;
+    /** API-5: Detect conflicts (domain-name / baseline-version / capability-key). Binds Req-4, Req-5, Req-8. */
+    detectConflicts: (changeSet: import('./models').DomainChangeSet, projection: import('./models').DomainProjectionResult, baselineVersion: string) => { conflicts: import('./models').DomainConflict[]; blocking: boolean };
+    /** Callback to post conflict detection result back to the webview. Binds Req-4, Req-5. */
+    domainConflictsDetected?: (conflicts: import('./models').DomainConflict[], blocking: boolean, errorCode?: string) => void;
+    /** API-12: Three-way document merge conflict detection. Binds Req-4, Req-5, Req-8. */
+    detectDocumentMergeConflicts: (baseDocuments: import('./models').ProjectedDomainDocument[], currentDocuments: import('./models').ProjectedDomainDocument[], draftDocuments: import('./models').ProjectedDomainDocument[]) => { conflicts: import('./models').DomainConflict[]; autoMergedDocuments: import('./models').ProjectedDomainDocument[] };
+    /** Callback to post document merge result back to the webview. Binds Req-4, Req-5. */
+    domainDocumentMergeResult?: (conflicts: import('./models').DomainConflict[], autoMergedDocuments: import('./models').ProjectedDomainDocument[], errorCode?: string) => void;
+    /** API-6: Apply a conflict resolution decision and return the updated change set. Binds Req-4, Req-5. */
+    resolveDomainConflict: (conflictId: string, decision: import('./models').ConflictDecision) => { updatedChangeSet: import('./models').DomainChangeSet; remainingConflicts: import('./models').DomainConflict[] };
+    /** Callback to post the resolution result back to the webview. Binds Req-4, Req-5. */
+    domainConflictResolved?: (updatedChangeSet: import('./models').DomainChangeSet | null, remainingConflicts: import('./models').DomainConflict[], errorCode?: string) => void;
+    /** API-7: Atomic commit of domain change set with pre-commit gate. Binds Req-3, Req-6, Req-8. */
+    commitChangeSet: (repoRoot: string, changeSet: import('./models').DomainChangeSet, baselineVersion: string, expectedRevisions: import('./models').DomainRevisionSet, autoRebase: boolean, formatPolicy: 'deterministic-v1', resolvedConflicts: import('./models').DomainConflictResolution[]) => import('./models').CommitSummary;
+    /** Callback to post the commit summary back to the webview. Binds Req-3. */
+    domainCommitResult?: (summary: import('./models').CommitSummary | null, errorCode?: string) => void;
+    /** API-11: Refresh baseline and re-project after drift detection. Binds Req-4, Req-5, Req-8. */
+    refreshBaselineAndReproject: (repoRoot: string, changeSet: import('./models').DomainChangeSet, currentBaselineVersion: string, expectedRevisions: import('./models').DomainRevisionSet) => { rebased: boolean; latestBaselineVersion: string; latestRevisions: import('./models').DomainRevisionSet; projection: import('./models').DomainProjectionResult };
+    /** Callback to post the rebase+reproject result back to the webview. Binds Req-4, Req-8. */
+    baselineReprojectResult?: (rebased: boolean, latestBaselineVersion: string, latestRevisions: import('./models').DomainRevisionSet, projection: import('./models').DomainProjectionResult | null, errorCode?: string) => void;
+    // ──────────────────────────────────────────────────────────────
     openCustomPrompt: (step: 'req' | 'des' | 'tcs' | 'tsk' | 'dev') => Promise<void>;
     openCustomConstitution: () => Promise<void>;
     saveGit:(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi') => Promise<void>;
@@ -212,6 +244,16 @@ export class HarnessMessageController {
         switch (msg.type) {
             case 'refresh':
             case 'generateCapabilityDelta':
+            // Domain Knowledge Workspace messages are always allowed in subpanel. Binds Req-1.
+            case 'openDomainKnowledgeWorkspace':
+            case 'loadDomainKnowledgeContext':
+            case 'updateDomainChangeSet':
+            case 'previewDomainProjection':
+            case 'detectDomainConflicts':
+            case 'resolveDomainConflict':
+            case 'commitDomainKnowledgeChanges':
+            case 'refreshBaselineAndReproject':
+            case 'detectDocumentMergeConflicts':
             case 'logWebviewEvent':
             case 'requestEditFeatureDesc':
             case 'updateFeatureDesc':
@@ -319,21 +361,167 @@ export class HarnessMessageController {
             case 'generateCapabilityDelta':
                 await this.deps.generateCapabilityDelta(msg.id);
                 return;
-            case 'runDomainBaselineAggregation':
-                await this.deps.runDomainBaselineAggregation(msg.id);
+            // ── Domain Knowledge Workspace routes (Req-1..Req-8) ────────────
+            case 'openDomainKnowledgeWorkspace':
+                /** API-1: Open subpanel domain workspace. Binds Req-1, INV-1, INV-2. */
+                await this.deps.openDomainKnowledgeWorkspace(msg.taskId, msg.iterationPath);
                 return;
-            case 'reviewSuspectedDomains':
-                await this.deps.reviewSuspectedDomains(msg.id);
+            case 'loadDomainKnowledgeContext':
+                /** API-2: Load registry, baseline snapshot and draft change set. Binds Req-1, Req-2, Req-7. */
+                try {
+                    const domainContext = await this.deps.loadDomainKnowledgeContext(msg.repoRoot, msg.iterationId);
+                    this.deps.domainContextLoaded?.(domainContext);
+                } catch (err) {
+                    const errorCode = err instanceof Error ? err.message : 'DOMAIN_WORKSPACE_LOAD_FAILED';
+                    this.deps.domainContextLoaded?.(null, errorCode);
+                    vscode.window.showErrorMessage(errorCode);
+                }
                 return;
-            case 'applyDomainAdjudication':
-                await this.deps.applyDomainAdjudication(msg.id);
+            case 'updateDomainChangeSet':
+                /** API-3: Validate and save draft change set. ROUTE-3. Binds Req-2, Req-6, INV-9. */
+                try {
+                    const { savedDraft, dirty } = await this.deps.saveDraftChangeSet(
+                        msg.changeSet.iterationId,
+                        msg.changeSet.iterationId,
+                        msg.changeSet,
+                    );
+                    this.deps.domainChangeSetUpdated?.(savedDraft, dirty);
+                } catch (err) {
+                    const errorCode = err instanceof Error ? err.message : 'DOMAIN_INPUT_INVALID';
+                    this.deps.domainChangeSetUpdated?.(null, false, errorCode);
+                    vscode.window.showWarningMessage(errorCode);
+                }
                 return;
-            case 'commitDomainBaseline':
-                await this.deps.commitDomainBaseline(msg.id);
+            case 'previewDomainProjection':
+                /** API-4: Compute deterministic baseline projection (read-only). ROUTE-4. Binds Req-2, Req-4, Req-8. */
+                try {
+                    const projection = this.deps.previewProjection(
+                        msg.changeSet,
+                        msg.baselineVersion,
+                        [],
+                        { domains: [] },
+                    );
+                    this.deps.domainProjectionResult?.(projection);
+                } catch (err) {
+                    const errorCode = err instanceof Error ? err.message : 'DOMAIN_PROJECTION_FAILED';
+                    this.deps.domainProjectionResult?.(null, errorCode);
+                    vscode.window.showWarningMessage(errorCode);
+                }
                 return;
-            case 'previewDomainBaselineSummary':
-                await this.deps.previewDomainBaselineSummary(msg.id);
+            case 'detectDomainConflicts':
+                /** API-5: Detect domain-name, baseline-version, capability-key conflicts. Binds Req-4, Req-5, Req-8. */
+                try {
+                    const previewResult = this.deps.previewProjection(
+                        msg.changeSet,
+                        msg.baselineVersion,
+                        [],
+                        { domains: [] },
+                    );
+                    const { conflicts, blocking } = this.deps.detectConflicts(
+                        msg.changeSet,
+                        previewResult,
+                        msg.baselineVersion,
+                    );
+                    this.deps.domainConflictsDetected?.(conflicts, blocking);
+                } catch (err) {
+                    const errorCode = err instanceof Error ? err.message : 'DOMAIN_CONFLICT_DETECTION_FAILED';
+                    this.deps.domainConflictsDetected?.([], false, errorCode);
+                    vscode.window.showWarningMessage(errorCode);
+                }
                 return;
+            case 'resolveDomainConflict':
+                /** API-6: Apply conflict resolution decision. ROUTE-5. Binds Req-4, Req-5. */
+                try {
+                    const { updatedChangeSet, remainingConflicts } = this.deps.resolveDomainConflict(
+                        msg.conflictId,
+                        msg.decision,
+                    );
+                    this.deps.domainConflictResolved?.(updatedChangeSet, remainingConflicts);
+                } catch (err) {
+                    const errorCode = err instanceof Error ? err.message : 'DOMAIN_CONFLICT_RESOLVE_FAILED';
+                    this.deps.domainConflictResolved?.(null, [], errorCode);
+                    vscode.window.showWarningMessage(errorCode);
+                }
+                return;
+            case 'commitDomainKnowledgeChanges':
+                /** ROUTE-6/API-7: Commit gate orchestration. Binds Req-3, Req-4, Req-6, Req-8.
+                 * Order: refreshBaselineAndReproject → conflict detection → atomic commitChangeSet.
+                 * If autoRebase and baseline drifted, re-project before conflict check.
+                 * Blocking conflicts block commit without any file writes (INV-5).
+                 */
+                try {
+                    const { changeSet: cs, baselineVersion: bv, expectedRevisions: er, autoRebase: ar, formatPolicy: fp, resolvedConflicts: rc } = msg;
+                    let effectiveBaseline = bv;
+                    let effectiveRevisions = er;
+
+                    // Step 1: Refresh baseline if requested. Binds Req-4, Req-8 (ROUTE-8).
+                    if (ar) {
+                        try {
+                            const rebaseResult = this.deps.refreshBaselineAndReproject(
+                                cs.iterationId, cs, bv, er,
+                            );
+                            effectiveBaseline = rebaseResult.latestBaselineVersion;
+                            effectiveRevisions = rebaseResult.latestRevisions;
+                        } catch {
+                            // Baseline refresh failure is non-fatal if autoRebase is optional.
+                        }
+                    }
+
+                    // Step 2: Detect blocking conflicts (INV-5).
+                    const projection = this.deps.previewProjection(cs, effectiveBaseline, [], { domains: [] });
+                    const { blocking } = this.deps.detectConflicts(cs, projection, effectiveBaseline);
+                    if (blocking) {
+                        throw new Error('DOMAIN_COMMIT_BLOCKED: 存在未解决的阻断冲突，无法提交');
+                    }
+
+                    // Step 3: Atomic commit. Binds Req-3, INV-4.
+                    const summary = this.deps.commitChangeSet(
+                        cs.iterationId, cs, effectiveBaseline, effectiveRevisions, ar, fp, rc,
+                    );
+                    this.deps.domainCommitResult?.(summary);
+                } catch (err) {
+                    const errorCode = err instanceof Error ? err.message : 'DOMAIN_COMMIT_FAILED';
+                    this.deps.domainCommitResult?.(null, errorCode);
+                    vscode.window.showErrorMessage(errorCode);
+                }
+                return;
+            case 'refreshBaselineAndReproject':
+                /** ROUTE-8/API-11: Refresh baseline snapshot and re-project. Binds Req-4, Req-5, Req-8. */
+                try {
+                    const result = this.deps.refreshBaselineAndReproject(
+                        msg.changeSet.iterationId,
+                        msg.changeSet,
+                        msg.currentBaselineVersion,
+                        msg.expectedRevisions,
+                    );
+                    this.deps.baselineReprojectResult?.(
+                        result.rebased,
+                        result.latestBaselineVersion,
+                        result.latestRevisions,
+                        result.projection,
+                    );
+                } catch (err) {
+                    const errorCode = err instanceof Error ? err.message : 'DOMAIN_REBASE_FAILED';
+                    this.deps.baselineReprojectResult?.(false, '', { registryRevision: '', indexRevision: '', domainDocRevisions: {} }, null, errorCode);
+                    vscode.window.showWarningMessage(errorCode);
+                }
+                return;
+            case 'detectDocumentMergeConflicts':
+                /** API-12: Three-way document merge conflict detection. Binds Req-4, Req-5, Req-8. */
+                try {
+                    const { conflicts: mergeConflicts, autoMergedDocuments } = this.deps.detectDocumentMergeConflicts(
+                        msg.baseDocuments,
+                        msg.currentDocuments,
+                        msg.draftDocuments,
+                    );
+                    this.deps.domainDocumentMergeResult?.(mergeConflicts, autoMergedDocuments);
+                } catch (err) {
+                    const errorCode = err instanceof Error ? err.message : 'DOMAIN_MERGE_CONFLICT_DETECTION_FAILED';
+                    this.deps.domainDocumentMergeResult?.([], [], errorCode);
+                    vscode.window.showWarningMessage(errorCode);
+                }
+                return;
+            // ────────────────────────────────────────────────────────────────
             case 'openCustomPrompt':
                 await this.deps.openCustomPrompt(msg.step);
                 return;
