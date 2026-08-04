@@ -61,6 +61,7 @@ export type HarnessMessage =
     | { type: 'commitDomainBaseline'; id: string }
     | { type: 'previewDomainBaselineSummary'; id: string }
     | { type: 'openCustomPrompt'; step: HarnessStep }
+    | { type: 'openReviewCustomPrompt'; stage: ReviewStage }
     | { type: 'openStageReview'; stage: ReviewStage }
     | { type: 'saveStagePrompt'; stage: ReviewStage; promptBody: string }
     | { type: 'runStageReview'; stage: ReviewStage; context: StageContext }

@@ -241,6 +241,7 @@ class Harness {
                 commitDomainBaseline: async (featureId) => this.actionsService.commitDomainBaselineByFeatureId(featureId),
                 previewDomainBaselineSummary: async (featureId) => this.handlePreviewDomainBaselineSummaryByFeatureId(featureId),
                 openCustomPrompt: (step) => this.handleOpenCustomPrompt(step),
+                openReviewCustomPrompt: async (stage) => { await this.handleOpenReviewCustomPrompt(stage); },
                 openStageReview: async (stage) => { await this.handleOpenStageReview(stage); },
                 saveStagePrompt: async (stage, promptBody) => { this.reviewPromptConfigService.saveStagePrompt(stage, promptBody); },
                 runStageReview: async (stage, context) => { await this.handleRunStageReview(stage, context); },
@@ -722,6 +723,25 @@ class Harness {
         }
     }
 
+    /**
+     * 打开指定阶段的评审自定义 Prompt 文件（文件式，同其他阶段 custom prompt 约定）。
+     * 文件位于主 specs 目录，命名格式：review_{stage}_custom_prompt.md。
+     */
+    private async handleOpenReviewCustomPrompt(stage: import('./harnessMessages').ReviewStage): Promise<void> {
+        const promptPath = this.promptService.getReviewCustomPromptPath(stage);
+        try {
+            fs.mkdirSync(path.dirname(promptPath), { recursive: true });
+            if (!fs.existsSync(promptPath)) {
+                fs.writeFileSync(promptPath, '', 'utf8');
+            }
+            const document = await vscode.workspace.openTextDocument(promptPath);
+            await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`打开评审 custom prompt 失败：${message}`);
+        }
+    }
+
     private async handleOpenCustomConstitution(): Promise<void> {
         const masterRoot = this.getMasterRoot();
         const constitutionPath = path.join(getPrimaryTrackedSpecsDir(masterRoot), 'constitution.md');
@@ -760,16 +780,42 @@ class Harness {
 
     /**
      * 执行阶段评审 (API-4, Req-2, Req-3, Req-4).
-     * Posts running status immediately, then updates on completion.
+     * Posts running status immediately for legacy webview handlers; also shows
+     * result via VS Code notification when evaluation completes.
      */
     private async handleRunStageReview(stage: import('./harnessMessages').ReviewStage, context: import('./harnessMessages').StageContext): Promise<void> {
         const webview = this.sidebarView?.webview ?? this.panel?.webview;
+        const stageLabels: Record<import('./harnessMessages').ReviewStage, string> = {
+            requirements: '需求',
+            design: '设计',
+            testcase: '测试用例',
+        };
+        const label = stageLabels[stage] ?? stage;
         try {
             const result = await this.reviewExecutionService.runStageReview(stage, context);
             webview?.postMessage({ type: 'stageReviewStatus', stage, ...result });
+            // Show result via notification once the async review resolves.
+            const poll = setInterval(() => {
+                const latest = this.reviewExecutionService.getLatestReviewStatus(stage);
+                if (latest.status === 'completed') {
+                    clearInterval(poll);
+                    vscode.window.showInformationMessage(
+                        `⚖️ ${label}评审完成`,
+                        { detail: latest.summary || '（无摘要）', modal: false } as vscode.MessageOptions,
+                    );
+                    webview?.postMessage({ type: 'stageReviewStatus', stage, ...latest });
+                } else if (latest.status === 'failed') {
+                    clearInterval(poll);
+                    vscode.window.showErrorMessage(`⚖️ ${label}评审失败：${latest.errorReason || '未知错误'}`);
+                    webview?.postMessage({ type: 'stageReviewStatus', stage, ...latest });
+                }
+            }, 800);
+            // Safety stop after 60 s to avoid polling forever.
+            setTimeout(() => clearInterval(poll), 60_000);
         } catch (error) {
             const errorReason = error instanceof Error ? error.message : String(error);
             webview?.postMessage({ type: 'stageReviewStatus', stage, reviewId: '', status: 'failed', errorReason });
+            vscode.window.showErrorMessage(`⚖️ ${label}评审失败：${errorReason}`);
         }
     }
 

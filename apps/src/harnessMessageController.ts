@@ -17,6 +17,7 @@ interface HarnessMessageControllerDeps {
     commitDomainBaseline: (featureId: string) => Promise<void>;
     previewDomainBaselineSummary: (featureId: string) => Promise<void>;
     openCustomPrompt: (step: 'req' | 'des' | 'tcs' | 'tsk' | 'dev') => Promise<void>;
+    openReviewCustomPrompt?: (stage: ReviewStage) => Promise<void>;
     openStageReview?: (stage: ReviewStage) => Promise<void>;
     saveStagePrompt?: (stage: ReviewStage, promptBody: string) => Promise<void>;
     runStageReview?: (stage: ReviewStage, context: Extract<HarnessMessage, { type: 'runStageReview' }>['context']) => Promise<void>;
@@ -242,6 +243,7 @@ export class HarnessMessageController {
             case 'openMasterWorkspace':
             case 'toggleAutoPoll':
             case 'openCustomPrompt':
+            case 'openReviewCustomPrompt':
             case 'openStageReview':
             case 'saveStagePrompt':
             case 'runStageReview':
@@ -362,6 +364,12 @@ export class HarnessMessageController {
                 return;
             case 'openCustomPrompt':
                 await this.deps.openCustomPrompt(msg.step);
+                return;
+            case 'openReviewCustomPrompt':
+                if (!this.ensureReviewStage(msg.stage)) {
+                    return;
+                }
+                await this.deps.openReviewCustomPrompt?.(msg.stage);
                 return;
             case 'openStageReview':
                 if (!this.ensureReviewStage(msg.stage)) {
