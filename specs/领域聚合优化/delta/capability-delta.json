@@ -1,0 +1,309 @@
+{
+  "iteration": "领域聚合优化",
+  "generatedAt": "2020-08-08T17:58:17.000Z",
+  "contentHash": "31028acd04763fc321ae29a4e4c129bdae3bbbd8",
+  "domains": [
+    {
+      "canonical": "domain-knowledge",
+      "rawDomain": "domain-knowledge",
+      "isSuspectedNew": false,
+      "capabilities": [
+        {
+          "reqId": "Req-1",
+          "title": "子面板成为领域维护唯一入口",
+          "userStory": "作为迭代执行者，我希望只在子面板内完成领域增量维护、基线预览、冲突处理和提交，以便于不再在子面板与主面板之间来回切换",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-2",
+          "title": "子面板实时生成领域基线投影",
+          "userStory": "作为迭代执行者，我希望在编辑当前迭代领域变更时立即看到它对领域基线的影响，以便于在提交前就确认最终沉淀结果",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-3",
+          "title": "领域提交必须原子化落盘",
+          "userStory": "作为主干维护者，我希望子面板提交时同时完成迭代增量与领域基线更新且失败时不留下半成品，以便于沉淀结果始终一致可追溯",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-4",
+          "title": "冲突必须在子面板内提前检测并分类",
+          "userStory": "作为领域治理者，我希望在提交前就知道本次改动会触发哪类冲突，以便于尽早处理而不是等到主面板聚合阶段才暴露问题",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-5",
+          "title": "冲突裁决必须内嵌在子面板内完成",
+          "userStory": "作为领域维护者，我希望命名冲突和并发冲突都能在当前子面板中处理，以便于不再依赖额外治理面板",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-6",
+          "title": "领域沉淀必须保持可追溯与可测试",
+          "userStory": "作为审阅者，我希望每次领域沉淀都能追溯回本次迭代的具体需求和结构化变更，以便于验证结果真实且可独立测试",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-7",
+          "title": "仓库边界与外部输入必须受控",
+          "userStory": "作为平台维护者，我希望子面板即使承担完整领域维护职责也仍然严格受当前仓库边界与输入校验约束，以便于不会引入越界写入或不安全输入",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-8",
+          "title": "重跑与重复提交必须保持幂等",
+          "userStory": "作为子面板操作者，我希望重复打开重复预览和重复提交同一批领域变更时不会生成冲突 ID 或重复沉淀，以便于流程可重试且结果稳定",
+          "status": "active"
+        }
+      ],
+      "contracts": [
+        {
+          "id": "API-1",
+          "reqId": "Req-1",
+          "method": "COMMAND",
+          "path": "Extension.openDomainKnowledgeWorkspace",
+          "requestShape": {
+            "taskId": "string",
+            "iterationPath": "string"
+          },
+          "responseShape": {
+            "opened": "boolean",
+            "contextVersion": "string"
+          }
+        },
+        {
+          "id": "API-10",
+          "reqId": "Req-1",
+          "method": "COMMAND",
+          "path": "Extension.unregisterLegacyDomainActions",
+          "requestShape": {},
+          "responseShape": {
+            "removedActionIds": "string[]"
+          }
+        },
+        {
+          "id": "API-2",
+          "reqId": "Req-1",
+          "method": "MESSAGE",
+          "path": "HarnessMessageController.loadDomainKnowledgeContext",
+          "requestShape": {
+            "repoRoot": "string",
+            "iterationId": "string"
+          },
+          "responseShape": {
+            "baselineVersion": "string",
+            "registry": "DomainRegistrySnapshot",
+            "baselineSnapshot": "DomainBaselineSnapshot[]",
+            "draftChangeSet": "DomainChangeSet"
+          }
+        },
+        {
+          "id": "API-6",
+          "reqId": "Req-4",
+          "method": "MESSAGE",
+          "path": "HarnessMessageController.resolveDomainConflict",
+          "requestShape": {
+            "conflictId": "string",
+            "decision": "ConflictDecision"
+          },
+          "responseShape": {
+            "updatedChangeSet": "DomainChangeSet",
+            "remainingConflicts": "DomainConflict[]"
+          }
+        },
+        {
+          "id": "API-3",
+          "reqId": "Req-2",
+          "method": "MESSAGE",
+          "path": "HarnessMessageController.updateDomainChangeSet",
+          "requestShape": {
+            "changeSet": "DomainChangeSet"
+          },
+          "responseShape": {
+            "savedDraft": "DomainChangeSet",
+            "dirty": "boolean"
+          }
+        },
+        {
+          "id": "API-7",
+          "reqId": "Req-3",
+          "method": "SERVICE",
+          "path": "DomainKnowledgeAggregateService.commitChangeSet",
+          "requestShape": {
+            "changeSet": "DomainChangeSet",
+            "baselineVersion": "string",
+            "expectedRevisions": "DomainRevisionSet",
+            "autoRebase": "boolean",
+            "formatPolicy": "deterministic-v1",
+            "resolvedConflicts": "DomainConflictResolution[]"
+          },
+          "responseShape": {
+            "summary": "CommitSummary"
+          }
+        },
+        {
+          "id": "API-5",
+          "reqId": "Req-4",
+          "method": "SERVICE",
+          "path": "DomainKnowledgeAggregateService.detectConflicts",
+          "requestShape": {
+            "changeSet": "DomainChangeSet",
+            "projection": "DomainProjectionResult",
+            "baselineVersion": "string"
+          },
+          "responseShape": {
+            "conflicts": "DomainConflict[]",
+            "blocking": "boolean"
+          }
+        },
+        {
+          "id": "API-12",
+          "reqId": "Req-4",
+          "method": "SERVICE",
+          "path": "DomainKnowledgeAggregateService.detectDocumentMergeConflicts",
+          "requestShape": {
+            "baseDocuments": "ProjectedDomainDocument[]",
+            "currentDocuments": "ProjectedDomainDocument[]",
+            "draftDocuments": "ProjectedDomainDocument[]"
+          },
+          "responseShape": {
+            "conflicts": "DomainConflict[]",
+            "autoMergedDocuments": "ProjectedDomainDocument[]"
+          }
+        },
+        {
+          "id": "API-4",
+          "reqId": "Req-2",
+          "method": "SERVICE",
+          "path": "DomainKnowledgeAggregateService.previewProjection",
+          "requestShape": {
+            "changeSet": "DomainChangeSet",
+            "baselineVersion": "string",
+            "baselineSnapshot": "DomainBaselineSnapshot[]",
+            "registry": "DomainRegistrySnapshot"
+          },
+          "responseShape": {
+            "projection": "DomainProjectionResult"
+          }
+        },
+        {
+          "id": "API-11",
+          "reqId": "Req-4",
+          "method": "SERVICE",
+          "path": "DomainKnowledgeAggregateService.refreshBaselineAndReproject",
+          "requestShape": {
+            "changeSet": "DomainChangeSet",
+            "currentBaselineVersion": "string",
+            "expectedRevisions": "DomainRevisionSet"
+          },
+          "responseShape": {
+            "rebased": "boolean",
+            "latestBaselineVersion": "string",
+            "latestRevisions": "DomainRevisionSet",
+            "projection": "DomainProjectionResult"
+          }
+        },
+        {
+          "id": "API-8",
+          "reqId": "Req-4",
+          "method": "SERVICE",
+          "path": "DomainRegistryService.loadRegistry",
+          "requestShape": {
+            "repoRoot": "string"
+          },
+          "responseShape": {
+            "registry": "DomainRegistrySnapshot",
+            "validationErrors": "RegistryValidationIssue[]"
+          }
+        },
+        {
+          "id": "API-9",
+          "reqId": "Req-4",
+          "method": "SERVICE",
+          "path": "DomainRegistryService.normalizeDomain",
+          "requestShape": {
+            "rawDomain": "string",
+            "registry": "DomainRegistrySnapshot"
+          },
+          "responseShape": {
+            "canonical": "string|null",
+            "matchedBy": "canonical|alias|none"
+          }
+        }
+      ],
+      "invariants": [
+        {
+          "id": "INV-1",
+          "reqId": "Req-1",
+          "text": "原主面板中的领域裁决领域基线聚合领域预览和领域提交入口必须全部移除且不可触发"
+        },
+        {
+          "id": "INV-10",
+          "reqId": "Req-7",
+          "text": "所有读写路径必须位于当前仓库根目录内越界路径必须阻断"
+        },
+        {
+          "id": "INV-11",
+          "reqId": "Req-8",
+          "text": "等价重复提交不得产生重复写入或重复提交摘要"
+        },
+        {
+          "id": "INV-12",
+          "reqId": "Req-8",
+          "text": "若 sourceRevisionSet 与当前仓库 revision 不一致系统必须先执行自动 rebase 和重投影或阻断提交"
+        },
+        {
+          "id": "INV-13",
+          "reqId": "Req-5",
+          "text": "document-merge 冲突未解决前任何领域文档目标文件都不得进入写入阶段"
+        },
+        {
+          "id": "INV-14",
+          "reqId": "Req-8",
+          "text": "机器重排必须采用 deterministic-v1 规范且等价语义内容必须产出一致 canonicalSerializationHash"
+        },
+        {
+          "id": "INV-2",
+          "reqId": "Req-1",
+          "text": "子面板必须独立完成编辑预览裁决和提交不得要求用户回到主面板"
+        },
+        {
+          "id": "INV-3",
+          "reqId": "Req-2",
+          "text": "相同 DomainChangeSet baselineVersion registry 输入下的投影结果必须完全确定"
+        },
+        {
+          "id": "INV-4",
+          "reqId": "Req-3",
+          "text": "提交必须同时写入迭代领域变更产物和领域基线产物任一失败则整体回滚"
+        },
+        {
+          "id": "INV-5",
+          "reqId": "Req-4",
+          "text": "存在未解决 blocking 冲突时 commitChangeSet 必须失败且不得写入任何产物"
+        },
+        {
+          "id": "INV-6",
+          "reqId": "Req-5",
+          "text": "无法唯一映射到 canonical domain 的原始领域名必须产生 domain-name 冲突而不是直接入库"
+        },
+        {
+          "id": "INV-7",
+          "reqId": "Req-6",
+          "text": "同一 Req-* 在同一提交中最多对应一个能力主键若出现矛盾字段必须产生 capability-key 冲突"
+        },
+        {
+          "id": "INV-8",
+          "reqId": "Req-6",
+          "text": "每条能力契约和不变量都必须绑定可追溯的 Req-* 来源"
+        },
+        {
+          "id": "INV-9",
+          "reqId": "Req-7",
+          "text": "所有外部输入在进入 DomainChangeSet 之前必须完成格式校验不合法值不得进入落盘路径"
+        }
+      ]
+    }
+  ]
+}
