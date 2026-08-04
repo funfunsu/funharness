@@ -289,7 +289,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
     {
         key: 'domain-maintenance',
         placement: 'primary',
-        panels: ['worktree'],
+        panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
         render: (ctx) => `<button class="action-btn action-btn--success" onclick="openDomainKnowledgeWorkspace('${ctx.task.id}')">🏛 领域沉淀维护</button>`,
     },
@@ -330,6 +330,18 @@ function collectTaskActions(ctx: FeatureActionContext): { primaryActions: string
     const primaryActions: string[] = [];
     const sideActions: string[] = [];
 
+    // Debug: log the collection context and configuration
+    if (ctx.task.id && ctx.task.id.includes('task_')) {
+        const actionDebugLog = {
+            taskId: ctx.task.id,
+            panelMode: ctx.panelMode,
+            taskStage: ctx.task.stage,
+            isWorktreeSubview: ctx.isWorktreeSubview,
+            configCount: FEATURE_ACTION_CONFIGS.length,
+        };
+        console.debug('[collectTaskActions]', actionDebugLog);
+    }
+
     for (const action of FEATURE_ACTION_CONFIGS) {
         if (!action.panels.includes(ctx.panelMode)) {
             continue;
@@ -349,6 +361,15 @@ function collectTaskActions(ctx: FeatureActionContext): { primaryActions: string
         } else {
             sideActions.push(rendered);
         }
+    }
+
+    // Debug: log results
+    if (ctx.task.id && ctx.task.id.includes('task_')) {
+        console.debug('[collectTaskActions.result]', {
+            primaryCount: primaryActions.length,
+            sideCount: sideActions.length,
+            primaryKeys: primaryActions.length > 0 ? 'generated' : 'none',
+        });
     }
 
     return { primaryActions, sideActions };
@@ -703,8 +724,9 @@ ${visibleTaskViews.map(view => {
 
     const actionHtml = `
 <div class="action-stack">
-  ${primaryActions.length > 0 ? `<div class="action-label">主流程操作</div><div class="action-group">${primaryActions.join('')}</div>` : ''}
+  ${primaryActions.length > 0 ? `<div class="action-label">主流程操作</div><div class="action-group">${primaryActions.join('')}${t.stage === STAGE.DEVELOPING ? `<!-- STAGE=DEVELOPING, primaryCount=${primaryActions.length} -->` : ''}</div>` : ''}
   ${sideActions.length > 0 ? `<div class="action-label">旁路操作</div><div class="action-group">${sideActions.join('')}</div>` : ''}
+  ${t.stage === STAGE.DEVELOPING && primaryActions.length === 0 ? `<div style="color:#ff9500;font-size:11px;padding:4px;background:#2b2308;border:1px solid #7a5d00;border-radius:4px;margin-top:4px">⚠DEBUG: DEVELOPING 阶段但无主流程按钮 (panelMode=${panelMode})</div>` : ''}
 </div>`;
 
     return `
