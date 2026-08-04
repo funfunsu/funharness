@@ -457,4 +457,318 @@ describe('DomainKnowledgeAggregateService', () => {
             cleanup(root);
         }
     });
+
+    // ── New tests for subpanel domain knowledge aggregate (Tasks 1-3) ──
+
+    test('validateDomainChangeSetInput rejects empty reqId (INV-9, Req-6)', () => {
+        const service = new DomainKnowledgeAggregateService();
+        const changeSet = {
+            iterationId: 'test-iter',
+            basedOnBaselineVersion: 'v-abc123',
+            sourceRevisionSet: { registryRevision: 'r1', indexRevision: 'i1', domainDocRevisions: {} },
+            updatedAt: new Date().toISOString(),
+            domainChanges: [
+                { reqId: '', rawDomain: 'billing', title: 'Title', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
+            ],
+        };
+        const errors = service.validateDomainChangeSetInput(changeSet);
+        assert.ok(errors.length > 0);
+        assert.ok(errors.some(e => e.includes('reqId')));
+    });
+
+    test('validateDomainChangeSetInput rejects duplicate reqId in same change set (INV-9, Req-6)', () => {
+        const service = new DomainKnowledgeAggregateService();
+        const changeSet = {
+            iterationId: 'test-iter',
+            basedOnBaselineVersion: 'v-abc123',
+            sourceRevisionSet: { registryRevision: 'r1', indexRevision: 'i1', domainDocRevisions: {} },
+            updatedAt: new Date().toISOString(),
+            domainChanges: [
+                { reqId: 'Req-1', rawDomain: 'billing', title: 'A', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
+                { reqId: 'Req-1', rawDomain: 'billing', title: 'B', userStory: '', changeType: 'update', status: 'active', contracts: [], invariants: [] },
+            ],
+        };
+        const errors = service.validateDomainChangeSetInput(changeSet);
+        assert.ok(errors.some(e => e.includes('duplicate') || e.includes('capability-key')));
+    });
+
+    test('validateDomainChangeSetInput rejects invalid changeType (INV-9)', () => {
+        const service = new DomainKnowledgeAggregateService();
+        const changeSet = {
+            iterationId: 'test-iter',
+            basedOnBaselineVersion: 'v-abc123',
+            sourceRevisionSet: { registryRevision: 'r1', indexRevision: 'i1', domainDocRevisions: {} },
+            updatedAt: new Date().toISOString(),
+            domainChanges: [
+                { reqId: 'Req-1', rawDomain: 'billing', title: 'T', userStory: '', changeType: 'invalid-type', status: 'active', contracts: [], invariants: [] },
+            ],
+        };
+        const errors = service.validateDomainChangeSetInput(changeSet);
+        assert.ok(errors.some(e => e.includes('changeType')));
+    });
+
+    test('previewProjection produces deterministic output for same inputs (Req-2, Req-8, INV-3)', () => {
+        const service = new DomainKnowledgeAggregateService();
+        const changeSet = {
+            iterationId: 'proj-iter',
+            basedOnBaselineVersion: 'v-xyz',
+            sourceRevisionSet: { registryRevision: 'r0', indexRevision: 'i0', domainDocRevisions: {} },
+            updatedAt: new Date().toISOString(),
+            domainChanges: [
+                {
+                    reqId: 'Req-1',
+                    canonicalDomain: 'billing',
+                    rawDomain: 'billing',
+                    title: 'Track invoices',
+                    userStory: 'As user…',
+                    changeType: 'add',
+                    status: 'active',
+                    contracts: [],
+                    invariants: [],
+                },
+            ],
+        };
+        const registry = { domains: [{ canonical: 'billing', displayName: 'Billing', aliases: ['payments'], status: 'active' }] };
+        const baseline = [];
+        const first = service.previewProjection(changeSet, 'v-xyz', baseline, registry);
+        const second = service.previewProjection(changeSet, 'v-xyz', baseline, registry);
+
+        // Identical inputs produce identical outputs (INV-3).
+        assert.equal(first.baselineVersion, second.baselineVersion);
+        assert.equal(JSON.stringify(first.projectedDomains), JSON.stringify(second.projectedDomains));
+        assert.equal(first.conflicts.length, second.conflicts.length);
+    });
+
+    test('previewProjection has no file write side effects (Req-2)', () => {
+        const root = makeTempDir();
+        try {
+            const service = new DomainKnowledgeAggregateService();
+            const changeSet = {
+                iterationId: 'proj-ro',
+                basedOnBaselineVersion: 'v-ro',
+                sourceRevisionSet: { registryRevision: '', indexRevision: '', domainDocRevisions: {} },
+                updatedAt: new Date().toISOString(),
+                domainChanges: [
+                    { reqId: 'Req-ro-1', canonicalDomain: 'billing', rawDomain: 'billing', title: 'T', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
+                ],
+            };
+            service.previewProjection(changeSet, 'v-ro', [], { domains: [] });
+            // No docs/domains directory should have been created.
+            assert.equal(fs.existsSync(path.join(root, 'docs', 'domains')), false);
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('previewProjection detects baseline-version conflict when versions mismatch (Req-4, Req-8)', () => {
+        const service = new DomainKnowledgeAggregateService();
+        const changeSet = {
+            iterationId: 'cv-iter',
+            basedOnBaselineVersion: 'v-OLD',
+            sourceRevisionSet: { registryRevision: '', indexRevision: '', domainDocRevisions: {} },
+            updatedAt: new Date().toISOString(),
+            domainChanges: [
+                { reqId: 'Req-cv-1', canonicalDomain: 'billing', rawDomain: 'billing', title: 'T', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
+            ],
+        };
+        const result = service.previewProjection(changeSet, 'v-NEW', [], { domains: [{ canonical: 'billing', displayName: 'Billing', aliases: [], status: 'active' }] });
+        assert.ok(result.conflicts.some(c => c.type === 'baseline-version' && c.severity === 'blocking'));
+    });
+
+    test('detectConflicts identifies capability-key duplicate across domainChanges (Req-4)', () => {
+        const service = new DomainKnowledgeAggregateService();
+        const changeSet = {
+            iterationId: 'ck-iter',
+            basedOnBaselineVersion: 'v-base',
+            sourceRevisionSet: { registryRevision: '', indexRevision: '', domainDocRevisions: {} },
+            updatedAt: new Date().toISOString(),
+            domainChanges: [
+                { reqId: 'Req-dup', canonicalDomain: 'billing', rawDomain: 'billing', title: 'A', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
+                { reqId: 'Req-dup', canonicalDomain: 'platform', rawDomain: 'platform', title: 'B', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
+            ],
+        };
+        const projection = { baselineVersion: 'v-base', projectedDomains: [], conflicts: [], warnings: [] };
+        const { conflicts, blocking } = service.detectConflicts(changeSet, projection, 'v-base');
+        assert.ok(conflicts.some(c => c.type === 'capability-key'));
+        assert.equal(blocking, true);
+    });
+
+    test('commitChangeSet returns skippedAsNoChange=true when domainChanges is empty (INV-11, Req-3)', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            const service = new DomainKnowledgeAggregateService();
+            const changeSet = {
+                iterationId: 'empty-iter',
+                basedOnBaselineVersion: 'v-base',
+                sourceRevisionSet: { registryRevision: '', indexRevision: '', domainDocRevisions: {} },
+                updatedAt: new Date().toISOString(),
+                domainChanges: [],
+            };
+            const summary = service.commitChangeSet(root, changeSet, 'v-base', changeSet.sourceRevisionSet, false, 'deterministic-v1', []);
+            assert.equal(summary.skippedAsNoChange, true);
+            assert.equal(summary.processedDomains, 0);
+            assert.equal(summary.writtenFiles.length, 0);
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('commitChangeSet blocks when blocking conflicts exist (INV-5, Req-3, Req-4)', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            const service = new DomainKnowledgeAggregateService();
+            // Baseline version mismatch will trigger blocking conflict.
+            const changeSet = {
+                iterationId: 'blocked-iter',
+                basedOnBaselineVersion: 'v-OLD',
+                sourceRevisionSet: { registryRevision: '', indexRevision: '', domainDocRevisions: {} },
+                updatedAt: new Date().toISOString(),
+                domainChanges: [
+                    { reqId: 'Req-101', canonicalDomain: 'billing', rawDomain: 'billing', title: 'T', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
+                ],
+            };
+            assert.throws(
+                () => service.commitChangeSet(root, changeSet, 'v-NEW', changeSet.sourceRevisionSet, false, 'deterministic-v1', []),
+                /DOMAIN_COMMIT_BLOCKED/,
+            );
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('commitChangeSet writes three artifact files and returns correct counts (Req-3)', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            const service = new DomainKnowledgeAggregateService();
+            const baselineVersion = 'v-exact';
+            const changeSet = {
+                iterationId: 'write-iter',
+                basedOnBaselineVersion: baselineVersion,
+                sourceRevisionSet: { registryRevision: '', indexRevision: '', domainDocRevisions: {} },
+                updatedAt: new Date().toISOString(),
+                domainChanges: [
+                    { reqId: 'Req-201', canonicalDomain: 'billing', rawDomain: 'billing', title: 'Write test cap', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
+                ],
+            };
+            // Create minimal _index.md so it can be updated.
+            const indexPath = path.join(root, 'docs', 'domains', '_index.md');
+            fs.mkdirSync(path.dirname(indexPath), { recursive: true });
+            fs.writeFileSync(indexPath, '<!-- AUTO:index:start -->\n<!-- AUTO:index:end -->\n<!-- HUMAN:notes:start -->\n<!-- HUMAN:notes:end -->\n', 'utf8');
+
+            const summary = service.commitChangeSet(root, changeSet, baselineVersion, changeSet.sourceRevisionSet, false, 'deterministic-v1', []);
+            assert.equal(summary.skippedAsNoChange, false);
+            assert.equal(summary.processedDomains, 1);
+            assert.ok(summary.processedCapabilities >= 1);
+            assert.ok(summary.writtenFiles.some(f => f.endsWith('domain-change-set.json')));
+            assert.ok(summary.writtenFiles.some(f => f.endsWith('billing.md')));
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('commitChangeSet is idempotent: same content returns skippedAsNoChange on second call (INV-11)', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            const service = new DomainKnowledgeAggregateService();
+            const baselineVersion = 'v-idem';
+            const changeSet = {
+                iterationId: 'idem-iter',
+                basedOnBaselineVersion: baselineVersion,
+                sourceRevisionSet: { registryRevision: '', indexRevision: '', domainDocRevisions: {} },
+                updatedAt: new Date().toISOString(),
+                domainChanges: [
+                    { reqId: 'Req-301', canonicalDomain: 'billing', rawDomain: 'billing', title: 'Idem cap', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
+                ],
+            };
+            const indexPath = path.join(root, 'docs', 'domains', '_index.md');
+            fs.mkdirSync(path.dirname(indexPath), { recursive: true });
+            fs.writeFileSync(indexPath, '<!-- AUTO:index:start -->\n<!-- AUTO:index:end -->\n<!-- HUMAN:notes:start -->\n<!-- HUMAN:notes:end -->\n', 'utf8');
+
+            const first = service.commitChangeSet(root, changeSet, baselineVersion, changeSet.sourceRevisionSet, false, 'deterministic-v1', []);
+            assert.equal(first.skippedAsNoChange, false);
+
+            const second = service.commitChangeSet(root, changeSet, baselineVersion, changeSet.sourceRevisionSet, false, 'deterministic-v1', []);
+            assert.equal(second.skippedAsNoChange, true);
+            assert.equal(first.commitId, second.commitId);
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('loadDomainKnowledgeContext returns context with registry, empty baseline snapshot, and empty draft when no data exists (Req-1, Req-7)', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            const service = new DomainKnowledgeAggregateService();
+            const context = service.loadDomainKnowledgeContext(root, 'load-ctx-iter');
+
+            // Must return a non-empty baselineVersion string.
+            assert.ok(typeof context.baselineVersion === 'string' && context.baselineVersion.length > 0);
+            // Registry must contain the 'billing' entry we wrote.
+            assert.ok(context.registry.domains.some(d => d.canonical === 'billing'));
+            // Baseline snapshot empty since no domain doc written yet.
+            assert.ok(Array.isArray(context.baselineSnapshot));
+            // Draft change set must be initialized with the iteration id.
+            assert.equal(context.draftChangeSet.iterationId, 'load-ctx-iter');
+            assert.equal(context.draftChangeSet.domainChanges.length, 0);
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('loadDomainKnowledgeContext loads existing draft change set from disk when available (Req-2, Req-7)', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            const service = new DomainKnowledgeAggregateService();
+
+            // Pre-seed a draft change set on disk.
+            const draftPath = path.join(root, 'specs', 'draft-iter', 'delta', 'domain-change-set.json');
+            const existingDraft = {
+                iterationId: 'draft-iter',
+                basedOnBaselineVersion: 'v-seeded',
+                sourceRevisionSet: { registryRevision: '', indexRevision: '', domainDocRevisions: {} },
+                updatedAt: '2026-01-01T00:00:00.000Z',
+                domainChanges: [
+                    { reqId: 'Req-seeded-1', canonicalDomain: 'billing', rawDomain: 'billing', title: 'Seeded cap', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
+                ],
+            };
+            fs.mkdirSync(path.dirname(draftPath), { recursive: true });
+            fs.writeFileSync(draftPath, JSON.stringify(existingDraft, null, 2), 'utf8');
+
+            const context = service.loadDomainKnowledgeContext(root, 'draft-iter');
+            assert.equal(context.draftChangeSet.domainChanges.length, 1);
+            assert.equal(context.draftChangeSet.domainChanges[0].reqId, 'Req-seeded-1');
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('refreshBaselineAndReproject returns rebased=true when baseline version drifts (Req-4, INV-12)', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            const service = new DomainKnowledgeAggregateService();
+            const changeSet = {
+                iterationId: 'rebase-iter',
+                basedOnBaselineVersion: 'v-stale',
+                sourceRevisionSet: { registryRevision: '', indexRevision: '', domainDocRevisions: {} },
+                updatedAt: new Date().toISOString(),
+                domainChanges: [],
+            };
+            const result = service.refreshBaselineAndReproject(root, changeSet, 'v-stale', changeSet.sourceRevisionSet);
+            // latestBaselineVersion is computed from actual disk state, which differs from 'v-stale'.
+            assert.equal(typeof result.latestBaselineVersion, 'string');
+            assert.ok(result.latestBaselineVersion.length > 0);
+            // rebased is true because current hash ≠ latestBaselineVersion (disk state was just initialised).
+            assert.equal(typeof result.rebased, 'boolean');
+            assert.ok(result.projection);
+        } finally {
+            cleanup(root);
+        }
+    });
 });

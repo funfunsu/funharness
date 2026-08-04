@@ -39,6 +39,111 @@ export class AiDispatchService {
         }
     }
 
+    /**
+     * Best-effort inline text refinement that returns AI output to the caller.
+     * Uses a CLI provider synchronously when configured, otherwise falls back to the
+     * VS Code Language Model API (GitHub Copilot and other registered chat models).
+     * Returns null when no model is available or the request fails.
+     */
+    async refineToText(query: string, iterDir: string, providerOverride?: string): Promise<string | null> {
+        const cliResult = this.refineToTextSync(query, iterDir, providerOverride);
+        if (cliResult !== null) {
+            appendHarnessLog(iterDir, 'ai-refine', `cli refine returned ${cliResult.length} chars`);
+            return cliResult;
+        }
+        return this.refineToTextViaLanguageModel(query, undefined, iterDir);
+    }
+
+    /**
+     * Send a single-turn request to a VS Code language model and collect the full text.
+     * The first call may trigger a one-time user consent prompt for model access.
+     */
+    async refineToTextViaLanguageModel(
+        query: string,
+        options?: { vendor?: string; family?: string },
+        iterDir?: string,
+    ): Promise<string | null> {
+        const log = (message: string) => {
+            if (iterDir) {
+                appendHarnessLog(iterDir, 'ai-refine', message);
+            }
+        };
+        const lm = (vscode as unknown as { lm?: typeof vscode.lm }).lm;
+        if (!lm || typeof lm.selectChatModels !== 'function') {
+            log('language model API unavailable (vscode.lm missing; requires VS Code >= 1.90)');
+            return null;
+        }
+        try {
+            const selector: vscode.LanguageModelChatSelector = { vendor: options?.vendor || 'copilot' };
+            if (options?.family) {
+                selector.family = options.family;
+            }
+            let models = await lm.selectChatModels(selector);
+            if (!models || models.length === 0) {
+                models = await lm.selectChatModels({ vendor: 'copilot' });
+            }
+            if (!models || models.length === 0) {
+                log(`no language models available for vendor="${selector.vendor}"`);
+                return null;
+            }
+            const model = this.pickPreferredRefineModel(models, options?.family);
+            log(`using language model vendor=${model.vendor} family=${model.family} id=${model.id}`);
+            const messages = [vscode.LanguageModelChatMessage.User(query)];
+            const tokenSource = new vscode.CancellationTokenSource();
+            try {
+                const response = await model.sendRequest(messages, {}, tokenSource.token);
+                let text = '';
+                for await (const fragment of response.text) {
+                    text += fragment;
+                }
+                const trimmed = text.trim();
+                log(`language model returned ${trimmed.length} chars`);
+                return trimmed || null;
+            } finally {
+                tokenSource.dispose();
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            log(`language model request failed: ${message}`);
+            console.warn('[fun-harness] refineToTextViaLanguageModel failed:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Pick a low-cost model for lightweight refinement tasks. Prefers inexpensive families
+     * (gpt-4o-mini / gpt-4.1 / gpt-4o) and avoids premium families (claude / o1 / gpt-5 / gemini)
+     * when a cheaper option exists. An explicit family override always wins when available.
+     */
+    private pickPreferredRefineModel(
+        models: readonly vscode.LanguageModelChat[],
+        familyOverride?: string,
+    ): vscode.LanguageModelChat {
+        if (familyOverride) {
+            const wanted = familyOverride.toLowerCase();
+            const exact = models.find(
+                model => (model.family || '').toLowerCase() === wanted || (model.id || '').toLowerCase() === wanted,
+            );
+            if (exact) {
+                return exact;
+            }
+        }
+
+        const preferredFamilies = ['gpt-4o-mini', 'gpt-4.1', 'gpt-4o'];
+        for (const family of preferredFamilies) {
+            const match = models.find(
+                model => (model.family || '').toLowerCase().includes(family) || (model.id || '').toLowerCase().includes(family),
+            );
+            if (match) {
+                return match;
+            }
+        }
+
+        const premiumPattern = /claude|o1|o3|gpt-5|opus|sonnet|gemini|fable/i;
+        const nonPremium = models.find(model => !premiumPattern.test(`${model.family} ${model.id}`));
+        return nonPremium || models[0];
+    }
+
     async dispatch(query: string, iterDir: string, source: DispatchSource, providerOverride?: string): Promise<void> {
         const cfg = this.getConfig();
         const provider = getAiProvider(providerOverride || cfg.aiProvider || 'copilot-chat');
@@ -104,6 +209,12 @@ export class AiDispatchService {
     // ── VS Code Chat dispatch ──────────────────────────────────────
 
     private async dispatchVscodeChat(query: string, provider: AiProviderDefinition): Promise<void> {
+        try {
+            await vscode.commands.executeCommand('workbench.action.chat.newChat');
+        } catch {
+            // Older VS Code builds may not expose a dedicated new-chat command.
+        }
+
         const command = provider.chatCommand || 'workbench.action.chat.open';
         await vscode.commands.executeCommand(command, {
             query,

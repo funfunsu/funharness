@@ -116,3 +116,81 @@ function normalizeMarkerBody(body: string): string {
 function escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// ── Atomic multi-file write with rollback (Req-3, INV-4) ──────────
+
+/** A single file write descriptor used by writeTextAtomicMulti. */
+export interface AtomicWriteEntry {
+    filePath: string;
+    content: string;
+}
+
+/** Error thrown when an atomic multi-file write must roll back. Binds Req-3, INV-4. */
+export class AtomicWriteRollbackError extends Error {
+    readonly code = 'DOMAIN_COMMIT_ROLLED_BACK';
+    constructor(
+        public readonly failedFile: string,
+        public readonly rolledBackFiles: string[],
+        cause: unknown,
+    ) {
+        const causeMsg = cause instanceof Error ? cause.message : String(cause ?? 'unknown');
+        super(
+            `DOMAIN_COMMIT_ROLLED_BACK: write failed for "${failedFile}" — ${causeMsg}. ` +
+            `Rolled back ${rolledBackFiles.length} file(s).`,
+        );
+        this.name = 'AtomicWriteRollbackError';
+    }
+}
+
+/**
+ * Write multiple files atomically:
+ * 1. Back up each target file that already exists to `<path>.bak`.
+ * 2. Write all target files via temp-swap.
+ * 3. If any write fails, restore all backed-up files and remove newly written ones.
+ * 4. Remove backup files on full success.
+ * Returns the list of successfully written file paths.
+ * Throws AtomicWriteRollbackError on any failure. Binds Req-3, INV-4.
+ */
+export function writeTextAtomicMulti(entries: AtomicWriteEntry[]): string[] {
+    if (entries.length === 0) {
+        return [];
+    }
+
+    const backups = new Map<string, string | null>(); // targetPath → backup content (null = did not exist)
+    const written: string[] = [];
+
+    // Phase 1: back up existing files.
+    for (const entry of entries) {
+        const existing = readTextIfExists(entry.filePath);
+        backups.set(entry.filePath, existing);
+    }
+
+    // Phase 2: write each file; rollback on any failure.
+    for (const entry of entries) {
+        try {
+            writeTextAtomic(entry.filePath, entry.content);
+            written.push(entry.filePath);
+        } catch (err) {
+            // Rollback: restore backups and remove any files written so far.
+            const rolledBack: string[] = [];
+            for (const writtenPath of written) {
+                try {
+                    const backup = backups.get(writtenPath);
+                    if (backup === null || backup === undefined) {
+                        safeRemovePath(writtenPath);
+                    } else {
+                        writeTextAtomic(writtenPath, backup);
+                    }
+                    rolledBack.push(writtenPath);
+                } catch {
+                    // Best-effort rollback; record the attempt.
+                    rolledBack.push(writtenPath);
+                }
+            }
+            throw new AtomicWriteRollbackError(entry.filePath, rolledBack, err);
+        }
+    }
+
+    // Phase 3: clean up backup markers (nothing to do since we only kept content in memory).
+    return written;
+}

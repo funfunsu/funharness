@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { BASE, Config, PROMPT_CONFIGS, PROMPTS_DIR, deriveMasterRoot, getDocsRootDirName, getPrimaryTrackedSpecsDir, getSpecDocsDir, getTrackedSpecsDirCandidates } from '../models';
 import { resolveConstitution, summarizeConstitution } from '../constitution';
-import { ReviewPromptSource, ReviewStage, StageContext, StageReviewPromptResult } from '../harnessMessages';
+import { ReviewStage, StageContext, StageReviewPromptResult } from '../harnessMessages';
 import type { ReviewPromptConfigService } from './reviewPromptConfigService';
 
 export interface RenderedPrompt {
@@ -215,15 +215,50 @@ export class PromptService {
 
     /**
      * Build optional AI refinement prompt for domain capability summaries.
+     * Instance variant resolves a user-customizable template file (project override
+     * under specs dirs, else bundled system-prompts default) before interpolation.
      */
     buildDomainSummaryPrompt(input: DomainSummaryPromptInput): string {
-        return PromptService.buildDomainSummaryPrompt(input);
+        const template = this.resolveDomainCapabilityPromptTemplate();
+        return PromptService.composeDomainCapabilityPrompt(template, input);
     }
 
     /**
      * Build optional AI refinement prompt for domain capability summaries.
+     * Static variant uses the embedded default template (no file customization).
      */
     static buildDomainSummaryPrompt(input: DomainSummaryPromptInput): string {
+        return PromptService.composeDomainCapabilityPrompt(PromptService.DEFAULT_DOMAIN_CAPABILITY_PROMPT, input);
+    }
+
+    /**
+     * Resolve the domain-capability refinement prompt template, preferring a
+     * user-customizable override, then the bundled default file, then the embedded constant.
+     */
+    private resolveDomainCapabilityPromptTemplate(): string {
+        for (const dir of this.getCandidatePromptDirs()) {
+            const override = path.join(dir, PromptService.DOMAIN_CAPABILITY_PROMPT_FILE);
+            if (fs.existsSync(override)) {
+                const content = fs.readFileSync(override, 'utf8');
+                if (content.trim()) {
+                    return content;
+                }
+            }
+        }
+        const bundled = path.join(this.extensionPath, this.systemPromptDir, PromptService.DOMAIN_CAPABILITY_PROMPT_FILE);
+        if (fs.existsSync(bundled)) {
+            const content = fs.readFileSync(bundled, 'utf8');
+            if (content.trim()) {
+                return content;
+            }
+        }
+        return PromptService.DEFAULT_DOMAIN_CAPABILITY_PROMPT;
+    }
+
+    /**
+     * Interpolate template placeholders and append the structured payload for AI refinement.
+     */
+    private static composeDomainCapabilityPrompt(template: string, input: DomainSummaryPromptInput): string {
         const canonical = (input.canonical || '').trim();
         const displayName = (input.displayName || canonical).trim();
         const capabilities = (input.capabilities || [])
@@ -247,19 +282,49 @@ export class PromptService {
             capabilities,
             registryCanonicals,
         };
+        const payloadJson = JSON.stringify(payload, null, 2);
 
-        return [
-            '你是领域能力摘要润色助手。',
-            `领域：${displayName}${canonical ? `（${canonical}）` : ''}`,
-            '你只能润色已存在 capabilities 的 title 文案，不得新增/删除 capability，不得改 reqId，不得改 status。',
-            '你不得创建新领域名，canonical 必须保留在 registryCanonicals 中。',
-            '若输入存在不清晰描述，可保持原文，不得臆造事实。',
-            '仅返回 JSON，不要返回 Markdown，不要解释。',
-            '返回格式：{"capabilities":[{"reqId":"Req-...","title":"..."}]}',
-            '',
-            JSON.stringify(payload, null, 2),
-        ].join('\n');
+        const hasPayloadPlaceholder = /{{\s*payloadJson\s*}}/.test(template);
+        let rendered = template
+            .replace(/{{\s*displayName\s*}}/g, displayName)
+            .replace(/{{\s*canonical\s*}}/g, canonical)
+            .replace(/{{\s*registryCanonicals\s*}}/g, registryCanonicals.join(', ') || '(none)')
+            .replace(/{{\s*payloadJson\s*}}/g, payloadJson);
+
+        if (!hasPayloadPlaceholder) {
+            rendered = `${rendered.trimEnd()}\n\n${payloadJson}`;
+        }
+        return rendered.trimEnd();
     }
+
+    /** File name for the user-customizable domain-capability refinement prompt. */
+    private static readonly DOMAIN_CAPABILITY_PROMPT_FILE = 'domain_capability_system_prompt.md';
+
+    /** Embedded fallback template kept in sync with system-prompts/domain_capability_system_prompt.md. */
+    private static readonly DEFAULT_DOMAIN_CAPABILITY_PROMPT = [
+        '你是「领域能力概括助手」。当前领域：{{displayName}}（{{canonical}}）。',
+        '',
+        '## 目标',
+        '把每条需求（capability 候选）概括为一个稳定、可复用的领域能力名称（title）。',
+        '好的能力名描述的是"系统长期具备的一种能力"，而不是一次性的实施动作。',
+        '',
+        '## 概括原则',
+        '1. 用"能力"视角命名：突出该领域持续提供的价值。',
+        '2. 识别并弱化一次性/实施类任务（数据迁移、建表、初始化脚本、一次性回填等）：能归并则复用同一 title；否则加"（实施）"前缀。',
+        '3. 合并同类项：表达同一能力的多条需求赋予相同 title。',
+        '4. 贴切、简洁、不臆造。',
+        '',
+        '## 硬约束',
+        '- 只允许修改 capabilities 的 title；不得新增/删除 capability，不得改 reqId，不得改 status。',
+        '- 不得创建新领域名；canonical 必须保留在 registryCanonicals（{{registryCanonicals}}）之内。',
+        '- 仅返回 JSON，不要返回 Markdown，不要解释。',
+        '',
+        '## 返回格式',
+        '{"capabilities":[{"reqId":"Req-...","title":"..."}]}',
+        '',
+        '## 输入',
+        '{{payloadJson}}',
+    ].join('\n');
 
     /** 项目级可选覆盖目录：优先写入可被 git 跟踪的 specs 目录。 */
     getProjectPromptsDir(): string {
@@ -517,14 +582,14 @@ export class PromptService {
         const hasJsonCustom = typeof jsonCustomPrompt === 'string' && jsonCustomPrompt.trim().length > 0;
 
         if (fileCustomPrompt) {
-            const source: ReviewPromptSource = 'custom';
+            const source = 'custom' as const;
             const promptBody = fileCustomPrompt;
             const composedPrompt = this.buildReviewComposedPrompt(context, promptBody);
             return { source, promptBody, composedPrompt };
         }
 
         if (hasJsonCustom) {
-            const source: ReviewPromptSource = 'custom';
+            const source = 'custom' as const;
             const promptBody = jsonCustomPrompt!;
             const composedPrompt = this.buildReviewComposedPrompt(context, promptBody);
             return { source, promptBody, composedPrompt };

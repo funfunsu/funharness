@@ -216,4 +216,86 @@ describe('CapabilityDeltaService', () => {
             cleanup(root);
         }
     });
+
+    test('generateForIteration normalizes dictionary requirement titles into capability wording', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            const iterDir = path.join(root, 'specs', 'dictionary-governance');
+            fs.mkdirSync(iterDir, { recursive: true });
+
+            const requirementsContent = [
+                '# Requirements',
+                '```yaml',
+                'artifactType: requirements',
+                'requirements:',
+                '  - id: Req-1',
+                '    domain: billing',
+                '    title: 迁移 business_dictionary 数据到统一字典表',
+                '    userStory: 作为数据库维护员，我希望将旧表数据迁移到统一字典表',
+                '```',
+                '',
+            ].join('\n');
+
+            const designContent = [
+                '# Design',
+                '```yaml',
+                'artifactType: design',
+                'apiContracts: []',
+                'invariants: []',
+                '```',
+                '',
+            ].join('\n');
+
+            fs.writeFileSync(path.join(iterDir, 'requirements.md'), requirementsContent, 'utf8');
+            fs.writeFileSync(path.join(iterDir, 'design.md'), designContent, 'utf8');
+
+            const service = new CapabilityDeltaService();
+            const result = service.generateForIteration(root, iterDir);
+            assert.equal(result.validation.valid, true);
+            assert.equal(result.delta.domains[0].capabilities[0].title, '字典数据迁移与兼容能力');
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    // ── New tests for MergeConflictService (Task 2.3) via domainKnowledgeAggregateService ──
+
+    test('detectDocumentMergeConflicts auto-merges when only draft changed (Req-4, Req-8)', () => {
+        const { DomainKnowledgeAggregateService } = require('../out/services/domainKnowledgeAggregateService');
+        const service = new DomainKnowledgeAggregateService();
+
+        const baseDoc = { canonicalDomain: 'billing', version: 'v0', capabilities: [{ reqId: 'Req-1', title: 'A', userStory: '', status: 'active' }], contracts: [], invariants: [], markdownContent: '' };
+        const currentDoc = { ...baseDoc }; // current unchanged
+        const draftDoc = { ...baseDoc, capabilities: [{ reqId: 'Req-1', title: 'A-updated', userStory: '', status: 'active' }] }; // draft changed
+
+        const { conflicts, autoMergedDocuments } = service.detectDocumentMergeConflicts([baseDoc], [currentDoc], [draftDoc]);
+        assert.equal(conflicts.length, 0);
+        assert.equal(autoMergedDocuments[0].capabilities[0].title, 'A-updated');
+    });
+
+    test('detectDocumentMergeConflicts produces document-merge blocking conflict when both changed differently (Req-4, Req-5)', () => {
+        const { DomainKnowledgeAggregateService } = require('../out/services/domainKnowledgeAggregateService');
+        const service = new DomainKnowledgeAggregateService();
+
+        const baseDoc = { canonicalDomain: 'billing', version: 'v0', capabilities: [{ reqId: 'Req-1', title: 'Original', userStory: '', status: 'active' }], contracts: [], invariants: [], markdownContent: '' };
+        const currentDoc = { ...baseDoc, capabilities: [{ reqId: 'Req-1', title: 'Current changed', userStory: '', status: 'active' }] };
+        const draftDoc = { ...baseDoc, capabilities: [{ reqId: 'Req-1', title: 'Draft changed', userStory: '', status: 'active' }] };
+
+        const { conflicts } = service.detectDocumentMergeConflicts([baseDoc], [currentDoc], [draftDoc]);
+        assert.ok(conflicts.some(c => c.type === 'document-merge' && c.severity === 'blocking'));
+    });
+
+    test('detectDocumentMergeConflicts auto-merges when both changed to same value (Req-4, Req-8)', () => {
+        const { DomainKnowledgeAggregateService } = require('../out/services/domainKnowledgeAggregateService');
+        const service = new DomainKnowledgeAggregateService();
+
+        const baseDoc = { canonicalDomain: 'billing', version: 'v0', capabilities: [{ reqId: 'Req-1', title: 'Original', userStory: '', status: 'active' }], contracts: [], invariants: [], markdownContent: '' };
+        const updatedCap = { reqId: 'Req-1', title: 'Same update', userStory: '', status: 'active' };
+        const currentDoc = { ...baseDoc, capabilities: [updatedCap] };
+        const draftDoc = { ...baseDoc, capabilities: [updatedCap] };
+
+        const { conflicts } = service.detectDocumentMergeConflicts([baseDoc], [currentDoc], [draftDoc]);
+        assert.equal(conflicts.length, 0);
+    });
 });

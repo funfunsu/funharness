@@ -12,6 +12,7 @@ import {
     InvariantDeltaItem,
 } from '../models';
 import { DomainRegistryService, DomainFallbackSignals } from './domainRegistryService';
+import type { DomainSummaryPromptInput } from './promptService';
 
 interface RequirementRecord {
     id: string;
@@ -106,10 +107,11 @@ export class CapabilityDeltaService {
                 registryResult.registry,
                 requirement,
             );
+            const normalizedCapabilityTitle = this.deriveCapabilityTitle(requirement.title, requirement.userStory);
 
             bucket.capabilities.set(requirement.id, {
                 reqId: requirement.id,
-                title: requirement.title,
+                title: normalizedCapabilityTitle,
                 userStory: requirement.userStory,
                 status: requirement.status,
             });
@@ -182,6 +184,143 @@ export class CapabilityDeltaService {
             deltaPath,
             validation,
         };
+    }
+
+    /**
+     * Apply optional AI title refinement to a generated delta and recompute its content hash.
+     * Deterministic-safe: structure keys (reqId/status/contracts/invariants) are untouched; only
+     * capability titles may be replaced. Any AI failure or empty response leaves the delta unchanged.
+     */
+    async refineDeltaTitles(
+        delta: CapabilityDelta,
+        registryCanonicals: string[],
+        buildPrompt: (input: DomainSummaryPromptInput) => string,
+        runAi: (prompt: string) => Promise<string | null> | string | null,
+    ): Promise<CapabilityDelta> {
+        if (!delta || !Array.isArray(delta.domains) || delta.domains.length === 0) {
+            return delta;
+        }
+
+        let mutated = false;
+        const refinedDomains: CapabilityDelta['domains'] = [];
+        for (const domain of delta.domains) {
+            const capabilities = Array.isArray(domain.capabilities) ? domain.capabilities : [];
+            if (capabilities.length === 0) {
+                refinedDomains.push(domain);
+                continue;
+            }
+            const input: DomainSummaryPromptInput = {
+                canonical: (domain.canonical || '').trim(),
+                displayName: (domain.canonical || domain.rawDomain || '').trim(),
+                capabilities: capabilities.map(item => ({
+                    reqId: item.reqId,
+                    title: item.title,
+                    status: item.status,
+                })),
+                registryCanonicals,
+            };
+
+            let responseText = '';
+            try {
+                const prompt = buildPrompt(input);
+                responseText = ((await runAi(prompt)) || '').trim();
+            } catch {
+                refinedDomains.push(domain);
+                continue;
+            }
+            if (!responseText) {
+                refinedDomains.push(domain);
+                continue;
+            }
+
+            const refinedTitles = this.parseRefinedCapabilityTitles(responseText, capabilities);
+            if (refinedTitles.size === 0) {
+                refinedDomains.push(domain);
+                continue;
+            }
+
+            const nextCapabilities = capabilities.map(item => {
+                const nextTitle = refinedTitles.get(item.reqId);
+                if (!nextTitle || nextTitle === item.title) {
+                    return item;
+                }
+                mutated = true;
+                return { ...item, title: nextTitle };
+            });
+
+            refinedDomains.push({ ...domain, capabilities: nextCapabilities });
+        }
+
+        if (!mutated) {
+            return delta;
+        }
+
+        const refined: CapabilityDelta = { ...delta, contentHash: '', domains: refinedDomains };
+        const validation = this.validateDelta(refined);
+        return { ...refined, contentHash: validation.contentHash };
+    }
+
+    /**
+     * Persist a capability delta to disk using the canonical serialization format.
+     */
+    persistDelta(deltaPath: string, delta: CapabilityDelta): void {
+        fs.mkdirSync(path.dirname(deltaPath), { recursive: true });
+        fs.writeFileSync(deltaPath, `${JSON.stringify(delta, null, 2)}\n`, 'utf8');
+    }
+
+    /**
+     * Parse AI response JSON and keep only title updates for known reqIds.
+     */
+    private parseRefinedCapabilityTitles(
+        responseText: string,
+        sourceCapabilities: CapabilityDeltaItem[],
+    ): Map<string, string> {
+        const result = new Map<string, string>();
+        const knownReqIds = new Set(sourceCapabilities.map(item => item.reqId));
+        const rawJson = this.extractJsonObject(responseText);
+        if (!rawJson) {
+            return result;
+        }
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(rawJson);
+        } catch {
+            return result;
+        }
+        const capabilities = (parsed as { capabilities?: unknown })?.capabilities;
+        if (!Array.isArray(capabilities)) {
+            return result;
+        }
+        for (const item of capabilities) {
+            if (!item || typeof item !== 'object') {
+                continue;
+            }
+            const reqId = String((item as { reqId?: unknown }).reqId || '').trim();
+            const title = String((item as { title?: unknown }).title || '').trim();
+            if (!reqId || !title || !knownReqIds.has(reqId)) {
+                continue;
+            }
+            result.set(reqId, title);
+        }
+        return result;
+    }
+
+    /**
+     * Extract the first JSON object from plain text or fenced markdown response.
+     */
+    private extractJsonObject(text: string): string | null {
+        const trimmed = (text || '').trim();
+        if (!trimmed) {
+            return null;
+        }
+        const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        const candidate = fenceMatch ? fenceMatch[1].trim() : trimmed;
+        const start = candidate.indexOf('{');
+        const end = candidate.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            return null;
+        }
+        return candidate.slice(start, end + 1);
     }
 
     /**
@@ -768,6 +907,47 @@ export class CapabilityDeltaService {
             return 'deprecated';
         }
         return 'active';
+    }
+
+    /**
+     * Convert requirement-level phrasing into stable domain-capability wording.
+     * Keeps deterministic output while avoiding temporary implementation phrasing.
+     */
+    private deriveCapabilityTitle(title: string, userStory: string): string {
+        const rawTitle = (title || '').trim();
+        const text = `${rawTitle} ${(userStory || '').trim()}`;
+        if (!rawTitle) {
+            return '';
+        }
+
+        // Dictionary-domain focused normalization rules (deterministic, no AI).
+        if (/字典/.test(text)) {
+            if (/迁移/.test(text)) {
+                return '字典数据迁移与兼容能力';
+            }
+            if (/同步|一致性|校验|验证/.test(text)) {
+                return '字典数据一致性校验能力';
+            }
+            if (/查询|管理|接口|API/.test(text)) {
+                return '字典查询与管理能力';
+            }
+            if (/扩展|扩展性|可扩展/.test(text)) {
+                return '字典类型扩展能力';
+            }
+            if (/统一|结构|模型|表结构/.test(text)) {
+                return '统一字典模型能力';
+            }
+        }
+
+        // Generic normalization for non-dictionary domains.
+        if (/迁移/.test(text)) {
+            return '数据迁移与兼容能力';
+        }
+        if (/同步|一致性|校验|验证/.test(text)) {
+            return '数据一致性保障能力';
+        }
+
+        return rawTitle;
     }
 
     /**
