@@ -354,6 +354,64 @@ function collectTaskActions(ctx: FeatureActionContext): { primaryActions: string
     return { primaryActions, sideActions };
 }
 
+/** Map internal task stage to review stage contract used by review messages (Req-1). */
+function getReviewStageByTaskStage(stage: Feature['stage']): 'requirements' | 'design' | 'testcase' | null {
+    if (stage === STAGE.WRITING_REQUIREMENT) {
+        return 'requirements';
+    }
+    if (stage === STAGE.WRITING_DESIGN) {
+        return 'design';
+    }
+    if (stage === STAGE.WRITING_TESTCASE) {
+        return 'testcase';
+    }
+    return null;
+}
+
+/** Human-readable labels for review stages shown in the webview panel. */
+function getReviewStageLabel(stage: 'requirements' | 'design' | 'testcase'): string {
+    if (stage === 'requirements') {
+        return '需求';
+    }
+    if (stage === 'design') {
+        return '设计';
+    }
+    return '测试用例';
+}
+
+/** Render the optional review entry + status panel + custom prompt editor for key stages (Req-1, Req-3, Req-4). */
+function buildStageReviewSectionHtml(task: Feature): string {
+    const reviewStage = getReviewStageByTaskStage(task.stage);
+    if (!reviewStage) {
+        return '';
+    }
+    const stageLabel = getReviewStageLabel(reviewStage);
+    const taskId = escapeHtml(task.id);
+    const taskName = escapeHtml(task.name || '');
+    const desc = escapeHtml(task.desc || '');
+    const key = `${taskId}-${reviewStage}`;
+    return `<div class="review-panel" data-task-id="${taskId}" data-task-name="${taskName}" data-task-desc="${desc}" data-review-stage="${reviewStage}">
+<div class="review-panel-head">
+<div class="review-panel-title">⚖️ ${stageLabel}评审（可选）</div>
+<div class="review-panel-actions">
+<button class="action-btn action-btn--neutral review-panel-btn" onclick="triggerStageReview('${taskId}','${reviewStage}')">发起评审</button>
+<button class="action-btn action-btn--neutral review-panel-btn" onclick="refreshStageReviewStatus('${taskId}','${reviewStage}')">刷新状态</button>
+<button class="action-btn action-btn--neutral review-panel-btn" onclick="toggleStagePromptEditor('${taskId}','${reviewStage}')">自定义 Prompt</button>
+</div>
+</div>
+<div class="review-status-line">状态：<span id="review-status-${key}" class="review-status-badge review-status-idle">idle</span></div>
+<div id="review-summary-${key}" class="review-summary" style="display:none"></div>
+<div id="review-error-${key}" class="review-error" style="display:none"></div>
+<div id="review-note-${key}" class="review-note">未点击评审时不会阻断主流程推进。</div>
+<div id="review-editor-${key}" class="review-editor" style="display:none">
+<textarea id="review-prompt-${key}" rows="4" placeholder="按阶段填写自定义评审 Prompt；保存后该阶段评审优先使用自定义模板"></textarea>
+<div class="review-editor-actions">
+<button class="action-btn action-btn--primary review-panel-btn" onclick="saveStageReviewPrompt('${taskId}','${reviewStage}')">保存自定义 Prompt</button>
+</div>
+</div>
+</div>`;
+}
+
 export function buildMainPageHtml(
     taskViews: MainFeatureViewModel[],
     dashboard: Record<string, never>,
@@ -420,6 +478,23 @@ body{background:#111;color:#eee;padding:14px;font-family:-apple-system;padding-b
 .action-btn--warning:hover{background:#ffb143}
 .action-btn--danger{background:#ff3b30;color:#fff}
 .action-btn--danger:hover{background:#ff5550}
+.review-panel{margin-top:10px;padding:10px;border-radius:10px;background:#1a1a1d;border:1px solid #2f2f35}
+.review-panel-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.review-panel-title{font-size:12px;font-weight:600;color:#e8e8ed}
+.review-panel-actions{display:flex;gap:6px;flex-wrap:wrap}
+.review-panel-btn{min-width:auto;flex:none;padding:6px 10px}
+.review-status-line{margin-top:8px;font-size:12px;color:#c9c9ce}
+.review-status-badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
+.review-status-idle{background:#3a3a3f;color:#d7d7dc}
+.review-status-running{background:#2b4c6f;color:#b4dcff}
+.review-status-completed{background:#1e4a31;color:#95f0be}
+.review-status-failed{background:#5a2222;color:#ffb4b4}
+.review-summary{margin-top:6px;padding:8px;border-radius:8px;background:#1f3a2b;color:#c4f0d8;font-size:12px;line-height:1.45;white-space:pre-wrap}
+.review-error{margin-top:6px;padding:8px;border-radius:8px;background:#4b1f1f;color:#ffbcbc;font-size:12px;line-height:1.45;white-space:pre-wrap}
+.review-note{margin-top:6px;font-size:11px;color:#9d9da6}
+.review-editor{margin-top:8px}
+.review-editor textarea{margin-bottom:6px;min-height:90px;resize:vertical}
+.review-editor-actions{display:flex;justify-content:flex-end}
 .fixed-bottom{position:sticky;bottom:0;background:#111;padding-top:8px;padding-bottom:4px;margin-top:10px}
 .input-card{background:#1c1c1e;border-radius:12px;padding:12px}
 input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:#2c2c2e;color:#fff;margin-bottom:8px}
@@ -663,6 +738,7 @@ ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.lat
 <div class="task-status">待办:${stats.todo} 执行中:${stats.doing} 完成:${stats.done}${stats.failed > 0 ? ` 失败:${stats.failed}` : ''}</div>
 <div class="task-progress"><div class="progress-bar" style="width:${view.pct}%"></div></div>
 <div style="font-size:12px">进度：${view.pct}%</div>` : ''}
+${buildStageReviewSectionHtml(t)}
 ${isWorktreeSubview ? `<div class="config-actions" style="margin-top:6px">
 <button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
 <button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
@@ -739,10 +815,269 @@ const v=acquireVsCodeApi();
 const isWorktreeSubview=${isWorktreeSubview ? 'true' : 'false'};
 const DOMAIN_GOVERNANCE_TASK_ID='${escapeHtml(governanceTaskId)}';
 const TODO_STATE_KEY='workspaceTodoState.v1';
+const REVIEW_STATE_KEY='stageReviewState.v1';
 const TODO_SOURCE_PANEL=${isWorktreeSubview ? "'worktree'" : "'master'"};
 const TODO_INITIAL_TODOS=[];
 let todoState=loadTodoState();
+let reviewState=loadReviewState();
 let domainActionLoading='';
+const reviewPollTimers={};
+
+/** Build default UI state for stage-review widgets. */
+function createDefaultReviewState(){
+    return { byKey:{} };
+}
+
+/** Restore persisted stage-review UI state from VS Code webview state storage. */
+function loadReviewState(){
+    const state=v.getState()||{};
+    const cached=state[REVIEW_STATE_KEY];
+    if(!cached||typeof cached!=='object'||!cached.byKey||typeof cached.byKey!=='object'){
+        return createDefaultReviewState();
+    }
+    return { byKey:cached.byKey };
+}
+
+/** Persist stage-review UI state for refresh-safe continuity. */
+function saveReviewState(){
+    const state=v.getState()||{};
+    state[REVIEW_STATE_KEY]=reviewState;
+    v.setState(state);
+}
+
+/** Build stable state key for one task-stage review panel. */
+function getReviewStateKey(taskId,stage){
+    return String(taskId||'')+'::'+String(stage||'');
+}
+
+/** Ensure one review-state entry exists and return it. */
+function ensureReviewEntry(taskId,stage){
+    const key=getReviewStateKey(taskId,stage);
+    if(!reviewState.byKey[key]){
+        reviewState.byKey[key]={
+            status:'idle',
+            summary:'',
+            errorReason:'',
+            editorOpen:false,
+            customPrompt:'',
+            reviewEnabled:true,
+            defaultExecuted:false,
+            lastPromptSavedAt:'',
+        };
+    }
+    return reviewState.byKey[key];
+}
+
+/** Escape dynamic text before writing into review panel HTML slots. */
+function escapeReviewHtml(value){
+    return String(value??'')
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;')
+        .replace(/\"/g,'&quot;')
+        .replace(/'/g,'&#39;');
+}
+
+/** Start polling latest status while a stage review is running. */
+function startStageReviewPolling(taskId,stage){
+    const timerKey=getReviewStateKey(taskId,stage);
+    stopStageReviewPolling(taskId,stage);
+    let attempts=0;
+    reviewPollTimers[timerKey]=setInterval(function(){
+        attempts+=1;
+        v.postMessage({type:'getLatestReviewStatus',stage});
+        if(attempts>=20){
+            stopStageReviewPolling(taskId,stage);
+        }
+    },1500);
+}
+
+/** Stop polling for one task-stage key. */
+function stopStageReviewPolling(taskId,stage){
+    const timerKey=getReviewStateKey(taskId,stage);
+    const timer=reviewPollTimers[timerKey];
+    if(timer){
+        clearInterval(timer);
+        delete reviewPollTimers[timerKey];
+    }
+}
+
+/** Stop polling for all panels bound to a stage when terminal status arrives. */
+function stopStageReviewPollingByStage(stage){
+    Object.keys(reviewPollTimers).forEach(function(timerKey){
+        if(timerKey.endsWith('::'+stage)){
+            clearInterval(reviewPollTimers[timerKey]);
+            delete reviewPollTimers[timerKey];
+        }
+    });
+}
+
+/** Resolve key-stage review context from one rendered task panel. */
+function getReviewPanelContext(taskId,stage){
+    const selector='.review-panel[data-task-id="'+String(taskId||'')+'"][data-review-stage="'+String(stage||'')+'"]';
+    const panel=document.querySelector(selector);
+    if(!panel){
+        return { taskId:String(taskId||''), stage:String(stage||''), taskName:'', taskDesc:'', taskStage:'' };
+    }
+    return {
+        taskId:String(taskId||''),
+        stage:String(stage||''),
+        taskName:String(panel.getAttribute('data-task-name')||''),
+        taskDesc:String(panel.getAttribute('data-task-desc')||''),
+        taskStage:String(stage||''),
+    };
+}
+
+/** Render all visible stage-review panels from local state cache. */
+function renderStageReviewPanels(){
+    const panels=document.querySelectorAll('.review-panel[data-task-id][data-review-stage]');
+    panels.forEach(function(panel){
+        const taskId=String(panel.getAttribute('data-task-id')||'');
+        const stage=String(panel.getAttribute('data-review-stage')||'');
+        const key=getReviewStateKey(taskId,stage);
+        const entry=ensureReviewEntry(taskId,stage);
+
+        const statusEl=document.getElementById('review-status-'+taskId+'-'+stage);
+        const summaryEl=document.getElementById('review-summary-'+taskId+'-'+stage);
+        const errorEl=document.getElementById('review-error-'+taskId+'-'+stage);
+        const noteEl=document.getElementById('review-note-'+taskId+'-'+stage);
+        const editorEl=document.getElementById('review-editor-'+taskId+'-'+stage);
+        const promptEl=document.getElementById('review-prompt-'+taskId+'-'+stage);
+
+        if(statusEl){
+            statusEl.className='review-status-badge review-status-'+entry.status;
+            statusEl.textContent=entry.status;
+        }
+        if(summaryEl){
+            const summary=String(entry.summary||'').trim();
+            summaryEl.style.display=summary?'block':'none';
+            summaryEl.innerHTML=summary?('摘要：'+escapeReviewHtml(summary)):' ';
+        }
+        if(errorEl){
+            const reason=String(entry.errorReason||'').trim();
+            errorEl.style.display=reason?'block':'none';
+            errorEl.innerHTML=reason?('失败原因：'+escapeReviewHtml(reason)):' ';
+        }
+        if(noteEl){
+            let note='未点击评审时不会阻断主流程推进。';
+            if(entry.lastPromptSavedAt){
+                note='自定义 Prompt 已保存（'+entry.lastPromptSavedAt+'），该阶段后续评审将优先使用自定义模板。';
+            }
+            noteEl.textContent=note;
+        }
+        if(editorEl){
+            editorEl.style.display=entry.editorOpen?'block':'none';
+        }
+        if(promptEl&&String(promptEl.value||'')!==String(entry.customPrompt||'')){
+            promptEl.value=String(entry.customPrompt||'');
+        }
+
+        reviewState.byKey[key]=entry;
+    });
+    saveReviewState();
+}
+
+/** Request stage-review open + latest-status and make panel visible by contract defaults. */
+function initializeStageReviewPanels(){
+    const panels=document.querySelectorAll('.review-panel[data-task-id][data-review-stage]');
+    const asked={};
+    panels.forEach(function(panel){
+        const taskId=String(panel.getAttribute('data-task-id')||'');
+        const stage=String(panel.getAttribute('data-review-stage')||'');
+        ensureReviewEntry(taskId,stage);
+        if(!asked[stage]){
+            v.postMessage({type:'openStageReview',stage});
+            v.postMessage({type:'getLatestReviewStatus',stage});
+            asked[stage]=true;
+        }
+    });
+    renderStageReviewPanels();
+}
+
+/** Toggle stage-specific custom prompt editor visibility. */
+function toggleStagePromptEditor(taskId,stage){
+    const entry=ensureReviewEntry(taskId,stage);
+    entry.editorOpen=!entry.editorOpen;
+    saveReviewState();
+    renderStageReviewPanels();
+}
+
+/** Save stage custom prompt through message contract API-3. */
+function saveStageReviewPrompt(taskId,stage){
+    const promptEl=document.getElementById('review-prompt-'+String(taskId||'')+'-'+String(stage||''));
+    const promptBody=promptEl?String(promptEl.value||''):'';
+    const entry=ensureReviewEntry(taskId,stage);
+    entry.customPrompt=promptBody;
+    entry.lastPromptSavedAt=new Date().toISOString().slice(0,19).replace('T',' ');
+    saveReviewState();
+    renderStageReviewPanels();
+    v.postMessage({type:'saveStagePrompt',stage,promptBody});
+}
+
+/** Trigger review execution and start polling latest status updates. */
+function triggerStageReview(taskId,stage){
+    const entry=ensureReviewEntry(taskId,stage);
+    entry.status='running';
+    entry.summary='';
+    entry.errorReason='';
+    saveReviewState();
+    renderStageReviewPanels();
+    const context=getReviewPanelContext(taskId,stage);
+    v.postMessage({type:'runStageReview',stage,context});
+    startStageReviewPolling(taskId,stage);
+}
+
+/** Ask extension host for the latest status snapshot of one stage. */
+function refreshStageReviewStatus(taskId,stage){
+    ensureReviewEntry(taskId,stage);
+    saveReviewState();
+    v.postMessage({type:'getLatestReviewStatus',stage});
+}
+
+/** Handle open-stage response and refresh per-stage panels with contract defaults. */
+function handleStageReviewOpenedEvent(message){
+    const stage=String(message&&message.stage?message.stage:'');
+    if(!stage){
+        return;
+    }
+    const panels=document.querySelectorAll('.review-panel[data-review-stage="'+stage+'"]');
+    panels.forEach(function(panel){
+        const taskId=String(panel.getAttribute('data-task-id')||'');
+        const entry=ensureReviewEntry(taskId,stage);
+        entry.reviewEnabled=Boolean(message.reviewEnabled);
+        entry.defaultExecuted=Boolean(message.defaultExecuted);
+        if(entry.defaultExecuted===false&&entry.status!=='running'&&entry.status!=='completed'&&entry.status!=='failed'){
+            entry.status='idle';
+        }
+    });
+    saveReviewState();
+    renderStageReviewPanels();
+}
+
+/** Handle latest stage-review status push event and stop polling when terminal state arrives. */
+function handleStageReviewStatusEvent(message){
+    const stage=String(message&&message.stage?message.stage:'');
+    const status=String(message&&message.status?message.status:'idle');
+    if(!stage){
+        return;
+    }
+    const safeStatus=(status==='running'||status==='completed'||status==='failed'||status==='idle')?status:'idle';
+    const summary=message&&message.summary?String(message.summary):'';
+    const errorReason=message&&message.errorReason?String(message.errorReason):'';
+    const panels=document.querySelectorAll('.review-panel[data-review-stage="'+stage+'"]');
+    panels.forEach(function(panel){
+        const taskId=String(panel.getAttribute('data-task-id')||'');
+        const entry=ensureReviewEntry(taskId,stage);
+        entry.status=safeStatus;
+        entry.summary=summary;
+        entry.errorReason=errorReason;
+    });
+    if(safeStatus!=='running'){
+        stopStageReviewPollingByStage(stage);
+    }
+    saveReviewState();
+    renderStageReviewPanels();
+}
 
 /** Render loading/disabled status for top-level domain-governance actions. */
 function setDomainActionLoading(action){
@@ -1082,6 +1417,10 @@ window.addEventListener('message',(event)=>{
         handleTodoChangedEvent(message);
     }else if(message.type==='todo.error'){
         handleTodoErrorEvent(message);
+    }else if(message.type==='stageReviewOpened'){
+        handleStageReviewOpenedEvent(message);
+    }else if(message.type==='stageReviewStatus'){
+        handleStageReviewStatusEvent(message);
     }
 });
 
@@ -1218,10 +1557,17 @@ document.addEventListener('DOMContentLoaded',()=>{
         renderTodoPanel();
         v.postMessage({type:'todo.list'});
     }
+    initializeStageReviewPanels();
     const taskItems=document.querySelectorAll('.task-item[data-task-id]');
     taskItems.forEach((item)=>{
         const id=item.getAttribute('data-task-id');
         if(id){logWebviewEvent(id,'taskDescEditor.boot','dom-ready');}
+    });
+});
+window.addEventListener('beforeunload',()=>{
+    Object.keys(reviewPollTimers).forEach((timerKey)=>{
+        clearInterval(reviewPollTimers[timerKey]);
+        delete reviewPollTimers[timerKey];
     });
 });
 window.addEventListener('error',(event)=>{

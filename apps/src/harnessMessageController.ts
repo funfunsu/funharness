@@ -1,4 +1,4 @@
-import { HarnessMessage } from './harnessMessages';
+import { HarnessMessage, ReviewStage } from './harnessMessages';
 import * as vscode from 'vscode';
 import { WorkspaceTodoStoreService, WorkspaceTodoItem } from './services/workspaceTodoStoreService';
 import { appendStructureGateFailureLog, appendTodoLog } from './services/harnessLog';
@@ -49,6 +49,10 @@ interface HarnessMessageControllerDeps {
     baselineReprojectResult?: (rebased: boolean, latestBaselineVersion: string, latestRevisions: import('./models').DomainRevisionSet, projection: import('./models').DomainProjectionResult | null, errorCode?: string) => void;
     // ──────────────────────────────────────────────────────────────
     openCustomPrompt: (step: 'req' | 'des' | 'tcs' | 'tsk' | 'dev') => Promise<void>;
+    openStageReview?: (stage: ReviewStage) => Promise<void>;
+    saveStagePrompt?: (stage: ReviewStage, promptBody: string) => Promise<void>;
+    runStageReview?: (stage: ReviewStage, context: Extract<HarnessMessage, { type: 'runStageReview' }>['context']) => Promise<void>;
+    getLatestReviewStatus?: (stage: ReviewStage) => Promise<void>;
     openCustomConstitution: () => Promise<void>;
     saveGit:(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi') => Promise<void>;
     saveAdvancedConfig: (msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>) => void;
@@ -280,6 +284,10 @@ export class HarnessMessageController {
             case 'openMasterWorkspace':
             case 'toggleAutoPoll':
             case 'openCustomPrompt':
+            case 'openStageReview':
+            case 'saveStagePrompt':
+            case 'runStageReview':
+            case 'getLatestReviewStatus':
             case 'openCustomConstitution':
             case 'todo.create':
             case 'todo.update':
@@ -342,6 +350,24 @@ export class HarnessMessageController {
             return `PROMPT_CONTRACT_INCOMPLETE: ${message}`;
         }
         return `PROJECT_STRUCTURE_EXTRACTION_ERROR: ${message}`;
+    }
+
+    /**
+     * Determine whether the incoming review request targets a supported key stage.
+     */
+    private isReviewStage(stage: string): stage is ReviewStage {
+        return stage === 'requirements' || stage === 'design' || stage === 'testcase';
+    }
+
+    /**
+     * Validate review-stage requests and map unsupported stages to a warning instead of throwing.
+     */
+    private ensureReviewStage(stage: string): stage is ReviewStage {
+        if (this.isReviewStage(stage)) {
+            return true;
+        }
+        vscode.window.showWarningMessage('REVIEW-VAL-001: 评审仅支持 requirements、design、testcase 三个阶段');
+        return false;
     }
 
     async handle(msg: HarnessMessage): Promise<void> {
@@ -524,6 +550,30 @@ export class HarnessMessageController {
             // ────────────────────────────────────────────────────────────────
             case 'openCustomPrompt':
                 await this.deps.openCustomPrompt(msg.step);
+                return;
+            case 'openStageReview':
+                if (!this.ensureReviewStage(msg.stage)) {
+                    return;
+                }
+                await this.deps.openStageReview?.(msg.stage);
+                return;
+            case 'saveStagePrompt':
+                if (!this.ensureReviewStage(msg.stage)) {
+                    return;
+                }
+                await this.deps.saveStagePrompt?.(msg.stage, msg.promptBody);
+                return;
+            case 'runStageReview':
+                if (!this.ensureReviewStage(msg.stage)) {
+                    return;
+                }
+                await this.deps.runStageReview?.(msg.stage, msg.context);
+                return;
+            case 'getLatestReviewStatus':
+                if (!this.ensureReviewStage(msg.stage)) {
+                    return;
+                }
+                await this.deps.getLatestReviewStatus?.(msg.stage);
                 return;
             case 'openCustomConstitution':
                 await this.deps.openCustomConstitution();

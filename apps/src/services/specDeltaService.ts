@@ -537,7 +537,7 @@ export class SpecDeltaService {
         const files = new Set<string>();
         for (const repo of repos) {
             // Use untracked=all so untracked directories are expanded into concrete files.
-            const output = this.runGit(repo.dir, ['status', '--porcelain=v1', '--untracked-files=all']);
+            const output = this.runGit(repo.dir, ['-c', 'core.quotepath=false', 'status', '--porcelain=v1', '--untracked-files=all']);
             if (!output.trim()) {
                 continue;
             }
@@ -547,7 +547,11 @@ export class SpecDeltaService {
                 if (!raw) {
                     continue;
                 }
-                const target = raw.includes(' -> ') ? raw.split(' -> ')[1].trim() : raw;
+                const targetRaw = raw.includes(' -> ') ? raw.split(' -> ')[1].trim() : raw;
+                const target = this.decodeGitPorcelainPath(targetRaw);
+                if (!target) {
+                    continue;
+                }
                 const normalizedTarget = (repo.prefix + target).replace(/\\/g, '/');
                 const absoluteTarget = path.join(repo.dir, target.replace(/\//g, path.sep));
                 if (this.isDirectoryPath(normalizedTarget, absoluteTarget)) {
@@ -563,6 +567,29 @@ export class SpecDeltaService {
             }
         }
         return Array.from(files.values());
+    }
+
+    /** Decode git porcelain path fragments (quoted and octal-escaped) into usable paths. */
+    private decodeGitPorcelainPath(rawPath: string): string {
+        let value = rawPath.trim();
+        if (!value) {
+            return '';
+        }
+
+        if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
+            value = value.slice(1, -1);
+        }
+
+        // Git may emit C-style octal escapes (e.g. \350\257\204...) for non-ASCII paths.
+        value = value.replace(/\\([0-7]{3})/g, (_match, oct) => String.fromCharCode(parseInt(oct, 8)));
+        value = value
+            .replace(/\\\\/g, '\\')
+            .replace(/\\"/g, '"')
+            .replace(/\\t/g, '\t')
+            .replace(/\\n/g, '\n')
+            .replace(/\\r/g, '\r');
+
+        return value;
     }
 
     /** Detect whether a git status target refers to a directory placeholder rather than a file. */

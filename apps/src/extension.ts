@@ -35,6 +35,8 @@ import { startMasterArtifactWatcher } from './masterArtifactWatcher';
 import { buildErrorPageHtml, buildMainPageHtml, buildSettingsPageHtml, MainFeatureViewModel } from './webviewTemplates';
 import { HarnessConfigMeta, FeatureStoreService } from './services/featureStoreService';
 import { PromptService } from './services/promptService';
+import { ReviewPromptConfigService } from './services/reviewPromptConfigService';
+import { ReviewExecutionService, ReviewAiProvider } from './services/reviewExecutionService';
 import { GitService } from './services/gitService';
 import { AiDispatchService } from './services/aiDispatchService';
 import { HarnessMessage } from './harnessMessages';
@@ -116,6 +118,8 @@ class Harness {
     private featureStore!: FeatureStoreService;
     private configMeta: HarnessConfigMeta = { origin: 'unknown', readOnly: false };
     private promptService!: PromptService;
+    private reviewPromptConfigService!: ReviewPromptConfigService;
+    private reviewExecutionService!: ReviewExecutionService;
     private gitService: GitService = new GitService(this.config);
     private messageController!: HarnessMessageController;
     private actionsService!: HarnessActionsService;
@@ -156,6 +160,20 @@ class Harness {
             this.gitService.setWorkspaceRoot(workspaceRoot);
             this.featureStore = new FeatureStoreService(workspaceRoot);
             this.promptService = new PromptService(workspaceRoot, extensionPath);
+            this.reviewPromptConfigService = new ReviewPromptConfigService(workspaceRoot);
+            const reviewAiProvider: ReviewAiProvider = {
+                chat: async (composedPrompt: string): Promise<string> => {
+                    const cfg = this.config;
+                    const provider = getAiProvider(cfg.aiProvider || 'copilot-chat');
+                    if (provider.kind === 'cli') {
+                        const result = this.aiDispatchService.refineToTextSync(composedPrompt, workspaceRoot);
+                        return result ?? '（CLI 评审未返回内容）';
+                    }
+                    await this.aiDispatchService.dispatch(composedPrompt, workspaceRoot, 'stage-agent');
+                    return '评审已发起，请查看 AI 对话面板获取结果';
+                },
+            };
+            this.reviewExecutionService = new ReviewExecutionService(this.promptService, this.reviewPromptConfigService, reviewAiProvider);
             this.projectStructureService = new ProjectStructureService(workspaceRoot, extensionPath);
             this.aiDispatchService = new AiDispatchService(() => this.config);
             this.autoPollService = new AutoPollService({
@@ -275,6 +293,10 @@ class Harness {
                     webview?.postMessage({ type: 'baselineReprojectResult', rebased, latestBaselineVersion, latestRevisions, projection, errorCode });
                 },
                 openCustomPrompt: (step) => this.handleOpenCustomPrompt(step),
+                openStageReview: async (stage) => { await this.handleOpenStageReview(stage); },
+                saveStagePrompt: async (stage, promptBody) => { this.reviewPromptConfigService.saveStagePrompt(stage, promptBody); },
+                runStageReview: async (stage, context) => { await this.handleRunStageReview(stage, context); },
+                getLatestReviewStatus: async (stage) => { await this.handleGetLatestReviewStatus(stage); },
                 openCustomConstitution: () => this.handleOpenCustomConstitution(),
                 saveGit: (frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode) => this.handleSaveGit(frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode),
                 saveAdvancedConfig: (msg) => this.handleSaveAdvancedConfig(msg),
@@ -776,6 +798,41 @@ class Harness {
             const message = error instanceof Error ? error.message : String(error);
             vscode.window.showErrorMessage(`打开 custom constitution 失败：${message}`);
         }
+    }
+
+    /**
+     * 打开阶段评审入口 (API-1, Req-1).
+     * Returns reviewEnabled/defaultExecuted flags via webview message.
+     */
+    private async handleOpenStageReview(stage: import('./harnessMessages').ReviewStage): Promise<void> {
+        const result: import('./harnessMessages').StageReviewOpenResult = { reviewEnabled: true, defaultExecuted: false };
+        const webview = this.sidebarView?.webview ?? this.panel?.webview;
+        webview?.postMessage({ type: 'stageReviewOpened', stage, ...result });
+    }
+
+    /**
+     * 执行阶段评审 (API-4, Req-2, Req-3, Req-4).
+     * Posts running status immediately, then updates on completion.
+     */
+    private async handleRunStageReview(stage: import('./harnessMessages').ReviewStage, context: import('./harnessMessages').StageContext): Promise<void> {
+        const webview = this.sidebarView?.webview ?? this.panel?.webview;
+        try {
+            const result = await this.reviewExecutionService.runStageReview(stage, context);
+            webview?.postMessage({ type: 'stageReviewStatus', stage, ...result });
+        } catch (error) {
+            const errorReason = error instanceof Error ? error.message : String(error);
+            webview?.postMessage({ type: 'stageReviewStatus', stage, reviewId: '', status: 'failed', errorReason });
+        }
+    }
+
+    /**
+     * 查询阶段最新评审状态 (API-5, Req-4).
+     * Status is informational only — no workflow gate semantics (INV-10).
+     */
+    private async handleGetLatestReviewStatus(stage: import('./harnessMessages').ReviewStage): Promise<void> {
+        const result = this.reviewExecutionService.getLatestReviewStatus(stage);
+        const webview = this.sidebarView?.webview ?? this.panel?.webview;
+        webview?.postMessage({ type: 'stageReviewStatus', stage, ...result });
     }
 
     private async handleSaveGit(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi'): Promise<void> {
