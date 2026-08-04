@@ -25,25 +25,6 @@ function buildDeltaBadgeHtml(taskId: string, status: MainFeatureViewModel['specD
 }
 
 /** Collapsible cross-task Spec Delta domain overview panel (main panel only). */
-function buildSpecDeltaOverviewHtml(overview: Array<{ domain: string; total: number; high: number; blocked: number; lastAt: string }>): string {
-    if (overview.length === 0) { return ''; }
-    const rows = overview.map(item => {
-        const rowCls = item.blocked > 0 ? 'blocked' : item.high > 0 ? 'warn' : '';
-        const date = item.lastAt ? item.lastAt.slice(0, 10) : '-';
-        return `<tr class="${rowCls}"><td>${escapeHtml(item.domain)}</td><td>${item.total}</td><td>${item.high}</td><td>${item.blocked}</td><td>${date}</td></tr>`;
-    }).join('');
-    const highCount = overview.reduce((s, v) => s + v.high, 0);
-    const blockedCount = overview.reduce((s, v) => s + v.blocked, 0);
-    const summaryLabel = blockedCount > 0 ? `<span style="color:#ff9a9a;margin-left:8px">${blockedCount} 阻断</span>` : highCount > 0 ? `<span style="color:#ffd37a;margin-left:8px">${highCount} 高风险</span>` : `<span style="color:#7ee2a8;margin-left:8px">✓ 无阻断</span>`;
-    return `<details class="overview-card">
-<summary style="cursor:pointer;list-style:none;display:flex;align-items:center"><span class="overview-title">📊 Spec Delta 领域总览</span>${summaryLabel}<span style="margin-left:auto;font-size:11px;color:#8f8f94">${overview.length} 个领域</span></summary>
-<table class="overview-table" style="margin-top:8px">
-<thead><tr><th>领域</th><th>总变更</th><th>高风险</th><th>阻断</th><th>最后更新</th></tr></thead>
-<tbody>${rows}</tbody>
-</table>
-</details>`;
-}
-
 /** Worktree-subview card for the exclusive remote-task auto-poller. */
 function buildAutoPollPanelHtml(status: AutoPollStatus): string {
     const intervalLabel = `${status.intervalSec}s`;
@@ -287,13 +268,6 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="specReview('${ctx.task.id}')">🧭 Spec 评审</button>`,
     },
     {
-        key: 'domain-maintenance',
-        placement: 'primary',
-        panels: ['main', 'worktree'],
-        stages: [STAGE.DEVELOPING],
-        render: (ctx) => `<button class="action-btn action-btn--success" onclick="openDomainKnowledgeWorkspace('${ctx.task.id}')">🏛 领域沉淀维护</button>`,
-    },
-    {
         key: 'sync-code',
         placement: 'side',
         panels: ['main', 'worktree'],
@@ -436,13 +410,12 @@ function buildStageReviewSectionHtml(task: Feature): string {
 export function buildMainPageHtml(
     taskViews: MainFeatureViewModel[],
     dashboard: Record<string, never>,
-    config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; autoPollEnabled: boolean; autoPoll?: AutoPollStatus; specDeltaOverview?: Array<{ domain: string; total: number; high: number; blocked: number; lastAt: string }> }
+    config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; autoPollEnabled: boolean; autoPoll?: AutoPollStatus }
 ): string {
     const customButtons = config.customButtons || [];
     // 'main' buttons render in a dedicated main-panel area belonging to no iteration;
     // everything else (incl. legacy buttons without a placement) stays on task cards.
-    const iterationButtons = customButtons.filter(b => b.placement !== 'main');
-    const mainButtons = customButtons.filter(b => b.placement === 'main');
+    const iterationButtons = customButtons;
     const isWorktreeSubview = config.isWorktreeSubview === true;
     const visibleTaskViews = isWorktreeSubview
         ? taskViews.slice(0, 1)
@@ -461,7 +434,8 @@ body{background:#111;color:#eee;padding:14px;font-family:-apple-system;padding-b
 .nav-btn.active{background:#007aff}
 .header{display:flex;justify-content:space-between;align-items:center}
 .header-actions{display:flex;gap:8px;align-items:center}
-.refresh{background:#007aff;color:white;border:none;padding:6px 10px;border-radius:8px;font-size:12px}
+.refresh{background:transparent;color:#8f8f94;border:none;padding:4px 8px;border-radius:8px;font-size:16px;line-height:1;cursor:pointer}
+.refresh:hover{background:#26262b;color:#eee}
 .toolbar-btn{background:#2c2c2e;color:#eee;border:none;padding:6px 10px;border-radius:8px;font-size:12px}
 .task-item{background:#222;border-radius:10px;padding:12px;margin-bottom:10px}
 .task-name{font-weight:600;margin-bottom:6px}
@@ -542,10 +516,7 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .stage-more-actions button{flex:1;padding:8px;border-radius:8px;border:none;font-size:11px;min-width:120px}
 .task-hidden{display:none}
 .mode-banner{margin:10px 0 12px;padding:8px 10px;background:#1d2e3b;border:1px solid #2f556f;border-radius:8px;color:#9ecff0;font-size:12px}
-.main-actions-card{margin:0 0 12px;padding:10px 12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
-.main-actions-title{font-weight:600;font-size:13px;margin-bottom:8px}
-.main-actions{display:flex;gap:6px;flex-wrap:wrap}
-.main-actions button{flex:1;padding:8px;border-radius:8px;border:none;font-size:11px;min-width:80px}
+
 .autopoll-card{margin:0 0 12px;padding:10px 12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
 .autopoll-card.on{border-color:#1f6b3a;background:#13251a}
 .autopoll-title{font-weight:600;font-size:13px;margin-bottom:6px}
@@ -589,12 +560,43 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .overview-table tr.blocked td{color:#ff9a9a}
 .overview-table tr.warn td{color:#ffd37a}
 .dk-gov-card{margin:0 0 12px;padding:12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
+.dk-gov-card--focus{border-color:#34c759;box-shadow:0 0 0 2px rgba(52,199,89,.25)}
 .dk-gov-title-wrap{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
 .dk-gov-title{font-weight:600;font-size:13px;color:#f2f2f4}
 .dk-gov-subtitle{font-size:11px;color:#8f8f94;line-height:1.45}
 .dk-gov-actions{display:flex;gap:8px;flex-wrap:wrap}
 .dk-spin{animation:dk-spin 1s linear infinite}
 @keyframes dk-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+.domain-workspace-card{margin:0 0 12px;padding:12px;background:#15161a;border:1px solid #2f3a44;border-radius:10px}
+.domain-workspace-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.domain-workspace-title{font-weight:700;font-size:13px;color:#d8eaff}
+.dw-commit-row{margin-top:10px}
+.dw-commit-row:empty{margin-top:0}
+.dw-commit-row .action-btn{width:100%;justify-content:center}
+.domain-workspace-meta{font-size:11px;color:#93a6b8}
+.domain-workspace-status{font-size:12px;color:#d7d7dc;background:#1f232a;border:1px solid #353b45;border-radius:8px;padding:8px;white-space:pre-wrap}
+.domain-workspace-table{width:100%;border-collapse:collapse;margin-top:8px;font-size:11px}
+.domain-workspace-table th{color:#8f8f94;text-align:left;padding:4px 6px;border-bottom:1px solid #2f3640}
+.domain-workspace-table td{color:#ddd;padding:4px 6px;border-bottom:1px solid #242a33;vertical-align:top}
+.domain-workspace-empty{font-size:11px;color:#8f8f94;padding:8px;border:1px dashed #39414d;border-radius:8px;margin-top:8px}
+.dw-conflict{margin-top:10px;border:1px solid #5a3b3b;background:#241a1a;border-radius:8px;padding:8px}
+.dw-conflict--warn{border-color:#5a533b;background:#242116}
+.dw-conflict-msg{font-size:12px;color:#f0c9c9;margin-bottom:6px}
+.dw-conflict--warn .dw-conflict-msg{color:#e6dca8}
+.dw-conflict-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px}
+.dw-input{background:#12151a;border:1px solid #39414d;border-radius:6px;color:#e6e6e6;padding:4px 6px;font-size:11px}
+.dw-select{background:#12151a;border:1px solid #39414d;border-radius:6px;color:#e6e6e6;padding:4px 6px;font-size:11px}
+.dw-hint{font-size:10px;color:#8f8f94;margin-top:2px}
+.domain-workspace-commit-bar{margin-top:12px;padding-top:10px;border-top:1px solid #2f3640;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.dw-commit-note{font-size:11px}
+.dw-commit-note--ok{color:#8fd19e}
+.dw-commit-note--block{color:#f0a9a9}
+.dw-commit-summary{margin-top:8px;font-size:11px;color:#a9d0f0;background:#141b24;border:1px solid #2b4256;border-radius:8px;padding:8px;white-space:pre-wrap}
+.dw-details{margin-top:8px}
+.dw-summary{cursor:pointer;font-size:11px;color:#8fb6d8;padding:4px 0;user-select:none}
+.dw-summary:hover{color:#bcd7ef}
+.dw-file-list{margin:6px 0 0;padding-left:18px;font-size:11px;color:#9fc6e8;line-height:1.5}
+.dw-file-list li{word-break:break-all}
 </style>
 </head>
 <body>
@@ -605,42 +607,12 @@ ${!isWorktreeSubview ? `<div class="nav">
 </div>` : ''}
 
 <div class="header">
-<h4>${isWorktreeSubview ? '🎯 当前迭代任务' : '📌 迭代任务'}</h4>
+<h4>${isWorktreeSubview ? `🎯 ${escapeHtml(visibleTaskViews[0]?.task.name || '当前迭代任务')}` : '📌 迭代任务'}</h4>
 <div class="header-actions">
-<button class="refresh" onclick="refresh()">🔄 刷新</button>
+${isWorktreeSubview ? '<button class="refresh" title="回到主工作区" onclick="openMasterWorkspace()">↩</button>' : ''}
+<button class="refresh" title="刷新" onclick="refresh()">🔄</button>
 </div>
 </div>
-
-${isWorktreeSubview ? '<div class="mode-banner">子面板仅保留当前迭代任务操作，不提供高级设置与创建迭代功能。<button class="toolbar-btn" style="margin-left:8px" onclick="openMasterWorkspace()">↩ 回到主工作区</button></div>' : ''}
-
-${!isWorktreeSubview ? `<div class="dk-gov-card">
-<div class="dk-gov-title-wrap">
-<div class="dk-gov-title">🧭 领域基线治理</div>
-<div class="dk-gov-subtitle">聚合领域基线、处理疑似新领域并预览总览（仅主面板可用）</div>
-</div>
-<div class="dk-gov-actions">
-<button class="action-btn action-btn--primary" data-domain-action="runDomainBaselineAggregation" onclick="runDomainBaselineAggregation()" ${governanceTaskId ? '' : 'disabled'}>领域基线聚合</button>
-<button class="action-btn action-btn--danger" data-domain-action="applyDomainAdjudication" onclick="applyDomainAdjudication()" ${governanceTaskId ? '' : 'disabled'}>疑似领域裁决</button>
-<button class="action-btn action-btn--success" data-domain-action="commitDomainBaseline" onclick="commitDomainBaseline()" ${governanceTaskId ? '' : 'disabled'}>提交</button>
-<button class="action-btn action-btn--ghost" data-domain-action="previewDomainBaselineSummary" onclick="previewDomainBaselineSummary()" ${governanceTaskId ? '' : 'disabled'}>预览</button>
-</div>
-${config.specDeltaOverview && config.specDeltaOverview.length > 0 ? buildSpecDeltaOverviewHtml(config.specDeltaOverview) : ''}
-</div>` : ''}
-
-${isWorktreeSubview ? `<div class="dk-gov-card">
-<div class="dk-gov-title-wrap">
-<div class="dk-gov-title">🧩 领域能力抽取</div>
-<div class="dk-gov-subtitle">worktree 侧只做确定性抽取（零 AI）：生成领域能力增量文件（capability-delta.json），供主面板聚合使用</div>
-</div>
-<div class="dk-gov-actions">
-<button class="action-btn action-btn--primary" data-domain-action="generateCapabilityDelta" onclick="generateCapabilityDelta()" ${governanceTaskId ? '' : 'disabled'}>生成领域能力增量</button>
-</div>
-</div>` : ''}
-
-${!isWorktreeSubview && mainButtons.length > 0 ? `<div class="main-actions-card">
-<div class="main-actions-title">🛠 自定义操作（主面板）</div>
-<div class="main-actions">${mainButtons.map(b => `<button class="action-btn action-btn--neutral" onclick="runMainCustomButton('${b.id}')">${escapeHtml(b.name)}</button>`).join('')}</div>
-</div>` : ''}
 
 ${isWorktreeSubview && config.autoPollEnabled && config.autoPoll ? buildAutoPollPanelHtml(config.autoPoll) : ''}
 
@@ -731,10 +703,10 @@ ${visibleTaskViews.map(view => {
 
     return `
 <div class="task-item" data-task-id="${t.id}" data-abnormal="${isAbnormal ? '1' : '0'}">
-<div style="display:flex;justify-content:space-between;align-items:center">
+${!isWorktreeSubview ? `<div style="display:flex;justify-content:space-between;align-items:center">
 <div class="task-name">${t.name}</div>
-${!isWorktreeSubview && t.worktreePath ? `<button class="action-btn action-btn--neutral" style="flex:none;padding:4px 10px;font-size:11px;min-width:auto" onclick="openFolderLocation('${t.id}','worktree')">📁 Worktree</button>` : ''}
-</div>
+${t.worktreePath ? `<button class="action-btn action-btn--neutral" style="flex:none;padding:4px 10px;font-size:11px;min-width:auto" onclick="openFolderLocation('${t.id}','worktree')">📁 Worktree</button>` : ''}
+</div>` : ''}
 <div class="task-desc-wrap" id="task-desc-wrap-${t.id}">
 <div class="task-desc-view" id="task-desc-view-${t.id}">
 <div class="task-desc" id="task-desc-${t.id}">${escapeHtml(t.desc || '')}</div>
@@ -819,6 +791,22 @@ ${actionHtml}
 </div>`;
 }).join('')}
 
+${isWorktreeSubview ? `<div class="domain-workspace-card" id="domain-workspace-panel" data-task-id="${escapeHtml(governanceTaskId)}" style="display:none">
+<div class="domain-workspace-head">
+<div class="domain-workspace-title">🏛 领域沉淀维护</div>
+<button class="refresh" title="刷新上下文" onclick="reloadDomainWorkspaceContext()">🔄</button>
+</div>
+<div class="dk-gov-actions">
+<button class="action-btn action-btn--primary" data-domain-action="generateCapabilityDelta" onclick="generateCapabilityDelta()" ${governanceTaskId ? '' : 'disabled'}>更新领域能力</button>
+<button class="action-btn action-btn--neutral" onclick="triggerDetectDomainConflicts()">检测/裁决</button>
+</div>
+<div class="domain-workspace-status" id="domain-workspace-status">点击「领域沉淀维护」后将加载上下文…</div>
+<div id="domain-workspace-change-set"></div>
+<div id="domain-workspace-conflicts"></div>
+<div id="domain-workspace-commit-slot" class="dw-commit-row"></div>
+<div id="domain-workspace-commit"></div>
+</div>` : ''}
+
 ${!isWorktreeSubview ? `<div class="fixed-bottom">
 <div class="input-card">
 <h4>🚀 创建迭代开发版本</h4>
@@ -838,12 +826,276 @@ const isWorktreeSubview=${isWorktreeSubview ? 'true' : 'false'};
 const DOMAIN_GOVERNANCE_TASK_ID='${escapeHtml(governanceTaskId)}';
 const TODO_STATE_KEY='workspaceTodoState.v1';
 const REVIEW_STATE_KEY='stageReviewState.v1';
+const DOMAIN_WORKSPACE_STATE_KEY='domainWorkspaceState.v1';
 const TODO_SOURCE_PANEL=${isWorktreeSubview ? "'worktree'" : "'master'"};
 const TODO_INITIAL_TODOS=[];
 let todoState=loadTodoState();
 let reviewState=loadReviewState();
 let domainActionLoading='';
 const reviewPollTimers={};
+let domainWorkspaceState=loadDomainWorkspaceState();
+
+/** Build a default in-memory state for domain workspace interactions. */
+function createDefaultDomainWorkspaceState(){
+    return {
+        visible:false,
+        loading:false,
+        taskId:'',
+        taskName:'',
+        iterationId:'',
+        iterationPath:'',
+        repoRoot:'',
+        baselineVersion:'',
+        changeSet:null,
+        error:'',
+        conflicts:[],
+        blocking:false,
+        detecting:false,
+        committing:false,
+        commitSummary:null,
+        existingDomains:[],
+        notice:'',
+    };
+}
+
+/** Restore persisted domain workspace state from webview cache. */
+function loadDomainWorkspaceState(){
+    const state=v.getState()||{};
+    const cached=state[DOMAIN_WORKSPACE_STATE_KEY];
+    if(!cached||typeof cached!=='object'){
+        return createDefaultDomainWorkspaceState();
+    }
+    return {
+        ...createDefaultDomainWorkspaceState(),
+        ...cached,
+    };
+}
+
+/** Persist current domain workspace state to webview cache. */
+function saveDomainWorkspaceState(){
+    const state=v.getState()||{};
+    state[DOMAIN_WORKSPACE_STATE_KEY]=domainWorkspaceState;
+    v.setState(state);
+}
+
+/** Render domain workspace panel with current state snapshot. */
+function renderDomainWorkspacePanel(){
+    const panel=document.getElementById('domain-workspace-panel');
+    if(!panel){return;}
+    panel.style.display=domainWorkspaceState.visible?'block':'none';
+
+    const status=document.getElementById('domain-workspace-status');
+    const changeSetWrap=document.getElementById('domain-workspace-change-set');
+    if(!status||!changeSetWrap){return;}
+
+    if(domainWorkspaceState.loading){
+        status.textContent='正在加载上下文…';
+    }else if(domainWorkspaceState.detecting){
+        status.textContent='正在检测冲突…';
+    }else if(domainWorkspaceState.committing){
+        status.textContent='正在写入沉淀…';
+    }else if(domainWorkspaceState.error){
+        status.textContent='⚠ '+domainWorkspaceState.error;
+    }else{
+        const parts=[];
+        const bv=domainWorkspaceState.baselineVersion;
+        if(bv){parts.push('基线 '+bv);}
+        const conflicts=domainWorkspaceState.conflicts||[];
+        if(conflicts.length>0){parts.push('待裁决 '+conflicts.length+' 项');}
+        const s=domainWorkspaceState.commitSummary;
+        if(s){
+            if(s.skippedAsNoChange){parts.push('无变更');}
+            else{parts.push('已沉淀 领域'+(s.processedDomains||0)+'/能力'+(s.processedCapabilities||0));}
+        }
+        if(domainWorkspaceState.notice){parts.push(domainWorkspaceState.notice);}
+        status.textContent=parts.length?parts.join(' · '):'等待加载上下文…';
+    }
+
+    const changeSet=domainWorkspaceState.changeSet;
+    if(!changeSet||!Array.isArray(changeSet.domainChanges)||changeSet.domainChanges.length===0){
+        changeSetWrap.innerHTML='<div class="domain-workspace-empty">当前变更集为空。可先点击上方「更新领域能力」，再回到此处刷新上下文。</div>';
+        renderDomainConflicts();
+        renderDomainCommitBar();
+        return;
+    }
+
+    const rows=changeSet.domainChanges.map((item)=>{
+        const reqId=escapeTodoHtml(item&&item.reqId?String(item.reqId):'');
+        const canonical=item&&item.canonicalDomain?String(item.canonicalDomain):'';
+        const rawDomain=item&&item.rawDomain?String(item.rawDomain):'';
+        const domainCell=escapeTodoHtml(canonical||rawDomain||'')
+            +(canonical?'':' <span class="dw-hint">(未归类)</span>');
+        const title=escapeTodoHtml(item&&item.title?String(item.title):'');
+        const changeType=escapeTodoHtml(item&&item.changeType?String(item.changeType):'');
+        const statusText=escapeTodoHtml(item&&item.status?String(item.status):'');
+        return '<tr>'
+            +'<td>'+reqId+'</td>'
+            +'<td>'+domainCell+'</td>'
+            +'<td>'+title+'</td>'
+            +'<td>'+changeType+'</td>'
+            +'<td>'+statusText+'</td>'
+            +'</tr>';
+    }).join('');
+
+    changeSetWrap.innerHTML=''
+        +'<details class="dw-details">'
+        +'<summary class="dw-summary">领域能力明细（'+changeSet.domainChanges.length+' 项）</summary>'
+        +'<table class="domain-workspace-table">'
+        +'<thead><tr><th>Req-ID</th><th>领域</th><th>能力标题</th><th>变更</th><th>状态</th></tr></thead>'
+        +'<tbody>'+rows+'</tbody>'
+        +'</table>'
+        +'</details>';
+
+    renderDomainConflicts();
+    renderDomainCommitBar();
+}
+
+/** Sanitize a conflict id into a DOM-safe element id fragment. */
+function domainConflictDomId(conflictId){
+    return String(conflictId||'').replace(/[^a-zA-Z0-9_-]/g,'_');
+}
+
+/** Render the conflict adjudication section (naming / capability-key / baseline-version). */
+function renderDomainConflicts(){
+    const wrap=document.getElementById('domain-workspace-conflicts');
+    if(!wrap){return;}
+    const conflicts=domainWorkspaceState.conflicts||[];
+    if(conflicts.length===0){
+        wrap.innerHTML='';
+        return;
+    }
+    const options=(domainWorkspaceState.existingDomains||[])
+        .map((d)=>'<option value="'+escapeTodoHtml(String(d))+'">'+escapeTodoHtml(String(d))+'</option>')
+        .join('');
+    const blocks=conflicts.map((conflict)=>{
+        const cid=String(conflict&&conflict.id?conflict.id:'');
+        const domId=domainConflictDomId(cid);
+        const type=String(conflict&&conflict.type?conflict.type:'');
+        const severity=String(conflict&&conflict.severity?conflict.severity:'blocking');
+        const message=escapeTodoHtml(String(conflict&&conflict.message?conflict.message:''));
+        const cls=severity==='warning'?'dw-conflict dw-conflict--warn':'dw-conflict';
+        let controls='';
+        if(type==='domain-name'){
+            const suggested=escapeTodoHtml(suggestCanonicalFromConflict(conflict));
+            controls=''
+                +'<div class="dw-conflict-row">'
+                +'<input class="dw-input" id="dw-new-'+domId+'" type="text" placeholder="新 canonical(如 dictionary)" value="'+suggested+'">'
+                +'<input class="dw-input" id="dw-dn-'+domId+'" type="text" placeholder="显示名(如 字典治理)">'
+                +'<button class="action-btn action-btn--primary" onclick="resolveDomainConflictAction(\\''+cid+'\\',\\'create-canonical\\',\\''+domId+'\\')">创建受控新领域</button>'
+                +'</div>'
+                +'<div class="dw-conflict-row">'
+                +'<select class="dw-select" id="dw-target-'+domId+'">'+options+'</select>'
+                +'<button class="action-btn action-btn--neutral" onclick="resolveDomainConflictAction(\\''+cid+'\\',\\'merge-existing\\',\\''+domId+'\\')">合并到已有领域</button>'
+                +'<button class="action-btn action-btn--neutral" onclick="resolveDomainConflictAction(\\''+cid+'\\',\\'append-alias\\',\\''+domId+'\\')">登记为别名</button>'
+                +'</div>'
+                +'<div class="dw-hint">「创建受控新领域」会把该领域写入 docs/domains/registry.yaml 并纳入沉淀。</div>';
+        }else if(type==='capability-key'){
+            controls='<div class="dw-conflict-row">'
+                +'<button class="action-btn action-btn--neutral" onclick="resolveDomainConflictAction(\\''+cid+'\\',\\'choose-value\\',\\''+domId+'\\')">确认保留当前归属</button>'
+                +'</div>';
+        }else if(type==='baseline-version'){
+            controls='<div class="dw-conflict-row">'
+                +'<button class="action-btn action-btn--neutral" onclick="triggerRefreshBaseline()">拉取最新基线并重新投影</button>'
+                +'</div>';
+        }
+        return '<div class="'+cls+'">'
+            +'<div class="dw-conflict-msg">['+escapeTodoHtml(type)+'] '+message+'</div>'
+            +controls
+            +'</div>';
+    }).join('');
+    wrap.innerHTML='<div class="domain-workspace-subtitle" style="font-size:12px;color:#d8eaff;margin-top:12px;font-weight:600">⚖ 领域裁决</div>'+blocks;
+}
+
+/** Suggest a canonical slug from the conflict's raw domain / reqIds. */
+function suggestCanonicalFromConflict(conflict){
+    const changes=(domainWorkspaceState.changeSet&&domainWorkspaceState.changeSet.domainChanges)||[];
+    const reqIds=(conflict&&conflict.reqIds)||[];
+    for(let i=0;i<changes.length;i++){
+        const c=changes[i];
+        if(c&&reqIds.indexOf(c.reqId)>=0){
+            const raw=String(c.rawDomain||'').trim();
+            if(raw&&raw!=='uncategorized'){
+                return raw.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+            }
+        }
+    }
+    return '';
+}
+
+/** Render the atomic-commit bar gated on unresolved blocking conflicts. */
+function renderDomainCommitBar(){
+    const slot=document.getElementById('domain-workspace-commit-slot');
+    const wrap=document.getElementById('domain-workspace-commit');
+    const changeSet=domainWorkspaceState.changeSet;
+    const hasChanges=changeSet&&Array.isArray(changeSet.domainChanges)&&changeSet.domainChanges.length>0;
+    const conflicts=domainWorkspaceState.conflicts||[];
+    const blockingCount=conflicts.filter((c)=>c&&c.severity==='blocking').length;
+    const blocked=blockingCount>0||domainWorkspaceState.committing;
+    if(slot){
+        if(!hasChanges){
+            slot.innerHTML='';
+        }else if(blocked){
+            const tip=blockingCount>0?('仍有 '+blockingCount+' 项阻断冲突需先裁决'):'提交进行中';
+            slot.innerHTML='<button class="action-btn action-btn--success" disabled title="'+tip+'">写入沉淀</button>';
+        }else{
+            slot.innerHTML='<button class="action-btn action-btn--success" onclick="triggerCommitDomainKnowledge()">写入沉淀</button>';
+        }
+    }
+    if(wrap){
+        const s=domainWorkspaceState.commitSummary;
+        if(s&&!s.skippedAsNoChange&&Array.isArray(s.writtenFiles)&&s.writtenFiles.length>0){
+            const items=s.writtenFiles.map((f)=>{
+                const full=String(f||'');
+                const base=full.split('\\\\').join('/').split('/').pop();
+                return '<li title="'+escapeTodoHtml(full)+'">'+escapeTodoHtml(base||full)+'</li>';
+            }).join('');
+            wrap.innerHTML='<details class="dw-details"><summary class="dw-summary">写入文件（'+s.writtenFiles.length+'）</summary><ul class="dw-file-list">'+items+'</ul></details>';
+        }else{
+            wrap.innerHTML='';
+        }
+    }
+}
+
+/** Load context for current domain workspace target task. */
+function requestDomainWorkspaceContext(){
+    if(!domainWorkspaceState.repoRoot||!domainWorkspaceState.iterationId){
+        domainWorkspaceState.error='缺少 repoRoot 或 iterationId，无法加载';
+        domainWorkspaceState.loading=false;
+        saveDomainWorkspaceState();
+        renderDomainWorkspacePanel();
+        return;
+    }
+    domainWorkspaceState.loading=true;
+    domainWorkspaceState.error='';
+    saveDomainWorkspaceState();
+    renderDomainWorkspacePanel();
+    v.postMessage({
+        type:'loadDomainKnowledgeContext',
+        repoRoot:domainWorkspaceState.repoRoot,
+        iterationId:domainWorkspaceState.iterationId,
+    });
+}
+
+/** Handle capability-delta generation completion and refresh domain context. */
+function handleCapabilityDeltaGeneratedEvent(message){
+    const taskId=String(message&&message.taskId?message.taskId:'');
+    if(taskId&&domainWorkspaceState.taskId&&taskId!==domainWorkspaceState.taskId){
+        return;
+    }
+    if(!domainWorkspaceState.visible){
+        domainWorkspaceState.visible=true;
+    }
+    domainWorkspaceState.loading=true;
+    domainWorkspaceState.error='';
+    saveDomainWorkspaceState();
+    renderDomainWorkspacePanel();
+    requestDomainWorkspaceContext();
+}
+
+/** Refresh context manually from the domain workspace panel. */
+function reloadDomainWorkspaceContext(){
+    requestDomainWorkspaceContext();
+}
 
 /** Build default UI state for stage-review widgets. */
 function createDefaultReviewState(){
@@ -1432,6 +1684,233 @@ function handleTodoErrorEvent(message){
     renderTodoPanel();
 }
 
+/** Handle API-1 success event and activate domain workspace panel. */
+function handleDomainWorkspaceOpenedEvent(message){
+    domainWorkspaceState.visible=true;
+    domainWorkspaceState.loading=true;
+    domainWorkspaceState.error='';
+    domainWorkspaceState.taskId=message&&message.taskId?String(message.taskId):'';
+    domainWorkspaceState.taskName=message&&message.taskName?String(message.taskName):'';
+    domainWorkspaceState.iterationId=message&&message.iterationId?String(message.iterationId):domainWorkspaceState.taskId;
+    domainWorkspaceState.iterationPath=message&&message.iterationPath?String(message.iterationPath):'';
+    domainWorkspaceState.repoRoot=message&&message.repoRoot?String(message.repoRoot):'';
+    saveDomainWorkspaceState();
+    renderDomainWorkspacePanel();
+    focusDomainMaintenanceCard(message);
+    requestDomainWorkspaceContext();
+}
+
+/** Handle API-2 response and render a concrete context snapshot. */
+function handleDomainContextLoadedEvent(message){
+    domainWorkspaceState.loading=false;
+    const errorCode=message&&message.errorCode?String(message.errorCode):'';
+    if(errorCode){
+        domainWorkspaceState.error=errorCode;
+        saveDomainWorkspaceState();
+        renderDomainWorkspacePanel();
+        return;
+    }
+    const context=message&&message.context?message.context:null;
+    if(!context){
+        domainWorkspaceState.error='DOMAIN_WORKSPACE_LOAD_FAILED: 上下文为空';
+        saveDomainWorkspaceState();
+        renderDomainWorkspacePanel();
+        return;
+    }
+    domainWorkspaceState.error='';
+    domainWorkspaceState.baselineVersion=String(context.baselineVersion||'');
+    domainWorkspaceState.changeSet=context.draftChangeSet||null;
+    const registryDomains=(context.registry&&Array.isArray(context.registry.domains))?context.registry.domains:[];
+    domainWorkspaceState.existingDomains=registryDomains
+        .map((d)=>d&&d.canonical?String(d.canonical):'')
+        .filter(Boolean);
+    domainWorkspaceState.conflicts=[];
+    domainWorkspaceState.blocking=false;
+    domainWorkspaceState.commitSummary=null;
+    domainWorkspaceState.notice='';
+    saveDomainWorkspaceState();
+    renderDomainWorkspacePanel();
+    // Immediately surface naming conflicts so adjudication is one click away. Binds Req-4, Req-5.
+    triggerDetectDomainConflicts();
+}
+
+/** Request conflict detection (naming / capability-key / baseline-version) for the current change set. */
+function triggerDetectDomainConflicts(){
+    const changeSet=domainWorkspaceState.changeSet;
+    if(!changeSet||!Array.isArray(changeSet.domainChanges)||changeSet.domainChanges.length===0){
+        domainWorkspaceState.conflicts=[];
+        domainWorkspaceState.blocking=false;
+        saveDomainWorkspaceState();
+        renderDomainWorkspacePanel();
+        return;
+    }
+    domainWorkspaceState.detecting=true;
+    domainWorkspaceState.notice='';
+    saveDomainWorkspaceState();
+    renderDomainWorkspacePanel();
+    v.postMessage({
+        type:'detectDomainConflicts',
+        changeSet:changeSet,
+        baselineVersion:domainWorkspaceState.baselineVersion||(changeSet.basedOnBaselineVersion||''),
+    });
+}
+
+/** Apply an adjudication decision for one conflict. Binds Req-5. */
+function resolveDomainConflictAction(conflictId,action,domId){
+    let decision=null;
+    if(action==='create-canonical'){
+        const canonicalEl=document.getElementById('dw-new-'+domId);
+        const displayEl=document.getElementById('dw-dn-'+domId);
+        const canonical=canonicalEl&&canonicalEl.value?String(canonicalEl.value).trim():'';
+        if(!canonical){
+            domainWorkspaceState.notice='请先填写新 canonical 名称';
+            saveDomainWorkspaceState();
+            renderDomainWorkspacePanel();
+            return;
+        }
+        const displayName=displayEl&&displayEl.value?String(displayEl.value).trim():canonical;
+        decision={action:'create-canonical',newCanonical:canonical,displayName:displayName};
+    }else if(action==='merge-existing'||action==='append-alias'){
+        const targetEl=document.getElementById('dw-target-'+domId);
+        const target=targetEl&&targetEl.value?String(targetEl.value).trim():'';
+        if(!target){
+            domainWorkspaceState.notice='请选择一个已有 canonical 领域';
+            saveDomainWorkspaceState();
+            renderDomainWorkspacePanel();
+            return;
+        }
+        decision=action==='merge-existing'
+            ?{action:'merge-existing',targetCanonical:target}
+            :{action:'append-alias',alias:target,targetCanonical:target};
+    }else if(action==='choose-value'){
+        decision={action:'choose-value',field:'canonicalDomain',chosenValue:''};
+    }
+    if(!decision){return;}
+    v.postMessage({type:'resolveDomainConflict',conflictId:conflictId,decision:decision,changeSet:domainWorkspaceState.changeSet});
+}
+
+/** Handle conflict detection results pushed from the extension. */
+function handleDomainConflictsDetectedEvent(message){
+    domainWorkspaceState.detecting=false;
+    if(message&&message.errorCode){
+        domainWorkspaceState.notice='冲突检测失败: '+String(message.errorCode);
+        domainWorkspaceState.conflicts=[];
+        domainWorkspaceState.blocking=false;
+    }else{
+        domainWorkspaceState.conflicts=(message&&Array.isArray(message.conflicts))?message.conflicts:[];
+        domainWorkspaceState.blocking=Boolean(message&&message.blocking);
+        if(domainWorkspaceState.conflicts.length===0){
+            domainWorkspaceState.notice='未检测到冲突，可直接写入沉淀';
+        }else{
+            domainWorkspaceState.notice='';
+        }
+    }
+    saveDomainWorkspaceState();
+    renderDomainWorkspacePanel();
+}
+
+/** Handle a single conflict resolution result; re-run detection to refresh remaining conflicts. */
+function handleDomainConflictResolvedEvent(message){
+    if(message&&message.errorCode){
+        domainWorkspaceState.notice='裁决失败: '+String(message.errorCode);
+        saveDomainWorkspaceState();
+        renderDomainWorkspacePanel();
+        return;
+    }
+    if(message&&message.updatedChangeSet){
+        domainWorkspaceState.changeSet=message.updatedChangeSet;
+    }
+    domainWorkspaceState.conflicts=(message&&Array.isArray(message.remainingConflicts))?message.remainingConflicts:[];
+    domainWorkspaceState.blocking=domainWorkspaceState.conflicts.some((c)=>c&&c.severity==='blocking');
+    domainWorkspaceState.notice='已应用裁决，正在复检剩余冲突…';
+    saveDomainWorkspaceState();
+    renderDomainWorkspacePanel();
+    // Re-detect against the updated change set + refreshed registry to confirm resolution. Binds Req-4, Req-8.
+    triggerDetectDomainConflicts();
+}
+
+/** Trigger the atomic commit that writes iteration delta + docs/domains baseline. Binds Req-3. */
+function triggerCommitDomainKnowledge(){
+    const changeSet=domainWorkspaceState.changeSet;
+    if(!changeSet){return;}
+    const blockingCount=(domainWorkspaceState.conflicts||[]).filter((c)=>c&&c.severity==='blocking').length;
+    if(blockingCount>0){
+        domainWorkspaceState.notice='仍有阻断冲突，无法提交';
+        saveDomainWorkspaceState();
+        renderDomainWorkspacePanel();
+        return;
+    }
+    domainWorkspaceState.committing=true;
+    domainWorkspaceState.commitSummary=null;
+    domainWorkspaceState.notice='';
+    saveDomainWorkspaceState();
+    renderDomainWorkspacePanel();
+    v.postMessage({
+        type:'commitDomainKnowledgeChanges',
+        changeSet:changeSet,
+        baselineVersion:domainWorkspaceState.baselineVersion||(changeSet.basedOnBaselineVersion||''),
+        expectedRevisions:changeSet.sourceRevisionSet,
+        autoRebase:true,
+        formatPolicy:'deterministic-v1',
+        resolvedConflicts:[],
+    });
+}
+
+/** Handle atomic commit result and surface the sedimentation summary. Binds Req-3. */
+function handleDomainCommitResultEvent(message){
+    domainWorkspaceState.committing=false;
+    if(message&&message.errorCode){
+        domainWorkspaceState.notice='沉淀失败: '+String(message.errorCode);
+        domainWorkspaceState.commitSummary=null;
+    }else{
+        domainWorkspaceState.commitSummary=(message&&message.summary)?message.summary:null;
+        domainWorkspaceState.notice='';
+    }
+    saveDomainWorkspaceState();
+    renderDomainWorkspacePanel();
+}
+
+/** Request a baseline rebase + reprojection to resolve a baseline-version conflict. Binds Req-4, Req-8. */
+function triggerRefreshBaseline(){
+    const changeSet=domainWorkspaceState.changeSet;
+    if(!changeSet){return;}
+    domainWorkspaceState.detecting=true;
+    domainWorkspaceState.notice='正在拉取最新基线并重投影…';
+    saveDomainWorkspaceState();
+    renderDomainWorkspacePanel();
+    v.postMessage({
+        type:'refreshBaselineAndReproject',
+        changeSet:changeSet,
+        currentBaselineVersion:domainWorkspaceState.baselineVersion||(changeSet.basedOnBaselineVersion||''),
+        expectedRevisions:changeSet.sourceRevisionSet,
+    });
+}
+
+/** Apply a rebase result: reconcile the change set onto the latest baseline, then re-detect. Binds Req-4, Req-8. */
+function handleBaselineReprojectResultEvent(message){
+    domainWorkspaceState.detecting=false;
+    if(message&&message.errorCode){
+        domainWorkspaceState.notice='基线同步失败: '+String(message.errorCode);
+        saveDomainWorkspaceState();
+        renderDomainWorkspacePanel();
+        return;
+    }
+    const latest=message&&message.latestBaselineVersion?String(message.latestBaselineVersion):'';
+    if(latest){
+        domainWorkspaceState.baselineVersion=latest;
+        if(domainWorkspaceState.changeSet){
+            domainWorkspaceState.changeSet.basedOnBaselineVersion=latest;
+            if(message.latestRevisions){
+                domainWorkspaceState.changeSet.sourceRevisionSet=message.latestRevisions;
+            }
+        }
+    }
+    domainWorkspaceState.notice='已同步至最新基线，正在复检冲突…';
+    saveDomainWorkspaceState();
+    renderDomainWorkspacePanel();
+    triggerDetectDomainConflicts();
+}
+
 /** Listen to extension pushed events so list can stay consistent without manual refresh. */
 window.addEventListener('message',(event)=>{
     const message=event&&event.data?event.data:{};
@@ -1439,12 +1918,41 @@ window.addEventListener('message',(event)=>{
         handleTodoChangedEvent(message);
     }else if(message.type==='todo.error'){
         handleTodoErrorEvent(message);
+    }else if(message.type==='domainWorkspaceOpened'){
+        handleDomainWorkspaceOpenedEvent(message);
+    }else if(message.type==='domainContextLoaded'){
+        handleDomainContextLoadedEvent(message);
+    }else if(message.type==='domainConflictsDetected'){
+        handleDomainConflictsDetectedEvent(message);
+    }else if(message.type==='domainConflictResolved'){
+        handleDomainConflictResolvedEvent(message);
+    }else if(message.type==='domainCommitResult'){
+        handleDomainCommitResultEvent(message);
+    }else if(message.type==='baselineReprojectResult'){
+        handleBaselineReprojectResultEvent(message);
+    }else if(message.type==='capabilityDeltaGenerated'){
+        handleCapabilityDeltaGeneratedEvent(message);
     }else if(message.type==='stageReviewOpened'){
         handleStageReviewOpenedEvent(message);
     }else if(message.type==='stageReviewStatus'){
         handleStageReviewStatusEvent(message);
     }
 });
+
+/** Focus and highlight the domain-maintenance card after openDomainKnowledgeWorkspace route succeeds. */
+function focusDomainMaintenanceCard(message){
+    const card=document.getElementById('domain-workspace-panel');
+    if(!card){
+        return;
+    }
+    try{card.scrollIntoView({behavior:'smooth',block:'center'});}catch{}
+    card.classList.add('dk-gov-card--focus');
+    setTimeout(()=>card.classList.remove('dk-gov-card--focus'),1800);
+    const taskId=message&&message.taskId?String(message.taskId):'';
+    if(taskId){
+        try{logWebviewEvent(taskId,'domainWorkspace.opened','focus-card');}catch{}
+    }
+}
 
 /** Delegated handler for dynamically rendered todo-item actions (avoids fragile inline onclick escaping). */
 document.addEventListener('click',(event)=>{
@@ -1484,7 +1992,7 @@ function retry(subId,id){v.postMessage({type:'retryFeature',subId,id})}
 function syncMainCode(id){v.postMessage({type:'syncMainCode',id})}
 function openMasterWorkspace(){v.postMessage({type:'openMasterWorkspace'})}
 function runCustomButton(id,buttonId){v.postMessage({type:'runCustomButton',id,buttonId})}
-function runMainCustomButton(buttonId){v.postMessage({type:'runMainCustomButton',buttonId})}
+
 function toggleAutoPoll(enable){v.postMessage({type:'toggleAutoPoll',enable})}
 function setSubStatus(id,subId,status){v.postMessage({type:'setSubFeatureStatus',id,subId,status})}
 function logWebviewEvent(id,event,detail){
@@ -1566,7 +2074,13 @@ function setFeatureAiProvider(id,ap){v.postMessage({type:'setFeatureAiProvider',
 function pushDev(id){v.postMessage({type:'pushAndNextStage',id})}
 function specReview(id){v.postMessage({type:'specDeltaReview',id})}
 function openDomainKnowledgeWorkspace(id){
-    // Send taskId; iterationPath will be resolved server-side from taskId
+    domainWorkspaceState.visible=true;
+    domainWorkspaceState.loading=true;
+    domainWorkspaceState.error='';
+    domainWorkspaceState.taskId=String(id||'');
+    saveDomainWorkspaceState();
+    renderDomainWorkspacePanel();
+    // Send taskId; iterationPath will be resolved server-side from taskId.
     v.postMessage({type:'openDomainKnowledgeWorkspace',taskId:id,iterationPath:''})
 }
 
@@ -1580,6 +2094,17 @@ document.addEventListener('DOMContentLoaded',()=>{
         v.postMessage({type:'todo.list'});
     }
     initializeStageReviewPanels();
+    const domainPanel=document.getElementById('domain-workspace-panel');
+    if(domainPanel){
+        const domainTaskId=domainPanel.getAttribute('data-task-id')||'';
+        if(domainTaskId&&!domainWorkspaceState.visible){
+            openDomainKnowledgeWorkspace(domainTaskId);
+        }else{
+            renderDomainWorkspacePanel();
+        }
+    }else{
+        renderDomainWorkspacePanel();
+    }
     const taskItems=document.querySelectorAll('.task-item[data-task-id]');
     taskItems.forEach((item)=>{
         const id=item.getAttribute('data-task-id');
@@ -1679,7 +2204,6 @@ button{width:100%;padding:10px;border-radius:8px;border:none;color:white;margin-
 .cb-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
 .cb-row input,.cb-row select{margin:0;min-width:0;box-sizing:border-box}
 .cb-name{flex:1 1 120px}
-.cb-place{flex:1 1 100px}
 .cb-src{flex:1 1 110px}
 .cb-cmd{flex:2 1 150px}
 .cb-args{flex:1 1 110px}
@@ -1929,17 +2453,11 @@ function cbSourceOptions(selected){
 function hookSourceOptions(selected){
     return '<option value="worktree"'+(selected==='worktree'?' selected':'')+'>迭代脚本(scripts)</option>';
 }
-function cbPlacementOptions(selected){
-  var place=selected==='main'?'main':'iteration';
-  return '<option value="iteration"'+(place==='iteration'?' selected':'')+'>子面板（迭代）</option>'+
-    '<option value="main"'+(place==='main'?' selected':'')+'>主面板</option>';
-}
 function cbRowHtml(b){
   b=b||{};
   var dis=CB_READONLY?' disabled':'';
   return '<div class="cb-row">'+
     '<input class="cb-name" placeholder="按钮名称（如 部署）" value="'+cbEsc(b.name||'')+'"'+dis+'>'+
-    '<select class="cb-place" title="显示位置"'+dis+'>'+cbPlacementOptions(b.placement||'iteration')+'</select>'+
     '<select class="cb-src" title="脚本来源" onchange="cbOnSourceChange(this)"'+dis+'>'+cbSourceOptions(b.scriptSource||'master')+'</select>'+
     '<select class="cb-cmd" title="脚本" data-val="'+cbEsc(b.script||'')+'" onchange="cbOnScriptChange(this)"'+dis+'></select>'+
     '<input class="cb-args" placeholder="参数(可选)" value="'+cbEsc(b.args||'')+'"'+dis+'>'+
@@ -2015,9 +2533,7 @@ function saveCustomButtons(){
     var scriptSource=r.querySelector('.cb-src').value;
     var script=r.querySelector('.cb-cmd').value.trim();
     var args=r.querySelector('.cb-args').value.trim();
-    var placeEl=r.querySelector('.cb-place');
-    var placement=(placeEl&&placeEl.value==='main')?'main':'iteration';
-    if(name&&script){buttons.push({name:name,scriptSource:scriptSource,script:script,args:args,placement:placement});}
+    if(name&&script){buttons.push({name:name,scriptSource:scriptSource,script:script,args:args});}
   });
   v.postMessage({type:'saveCustomButtons',buttons:buttons});
 }

@@ -23,6 +23,8 @@ interface HarnessMessageControllerDeps {
     saveDraftChangeSet: (repoRoot: string, iterationId: string, changeSet: import('./models').DomainChangeSet) => Promise<{ savedDraft: import('./models').DomainChangeSet; dirty: boolean }>;
     /** Callback to post the updated change set back to the webview. Binds Req-2, Req-6. */
     domainChangeSetUpdated?: (savedDraft: import('./models').DomainChangeSet | null, dirty: boolean, errorCode?: string) => void;
+    /** Provide the real baseline snapshot + registry loaded for the active session, so projection/conflict routes resolve canonical domains correctly. Binds Req-2, Req-4. */
+    getDomainProjectionInputs: () => { baselineSnapshot: import('./models').DomainBaselineSnapshot[]; registry: import('./models').DomainRegistrySnapshot };
     /** API-4: Preview baseline projection (read-only). Binds Req-2, Req-4, Req-8. */
     previewProjection: (changeSet: import('./models').DomainChangeSet, baselineVersion: string, baselineSnapshot: import('./models').DomainBaselineSnapshot[], registry: import('./models').DomainRegistrySnapshot) => import('./models').DomainProjectionResult;
     /** Callback to post the projection result back to the webview. Binds Req-2, Req-4. */
@@ -36,7 +38,7 @@ interface HarnessMessageControllerDeps {
     /** Callback to post document merge result back to the webview. Binds Req-4, Req-5. */
     domainDocumentMergeResult?: (conflicts: import('./models').DomainConflict[], autoMergedDocuments: import('./models').ProjectedDomainDocument[], errorCode?: string) => void;
     /** API-6: Apply a conflict resolution decision and return the updated change set. Binds Req-4, Req-5. */
-    resolveDomainConflict: (conflictId: string, decision: import('./models').ConflictDecision) => { updatedChangeSet: import('./models').DomainChangeSet; remainingConflicts: import('./models').DomainConflict[] };
+    resolveDomainConflict: (conflictId: string, decision: import('./models').ConflictDecision, changeSet?: import('./models').DomainChangeSet) => { updatedChangeSet: import('./models').DomainChangeSet; remainingConflicts: import('./models').DomainConflict[] };
     /** Callback to post the resolution result back to the webview. Binds Req-4, Req-5. */
     domainConflictResolved?: (updatedChangeSet: import('./models').DomainChangeSet | null, remainingConflicts: import('./models').DomainConflict[], errorCode?: string) => void;
     /** API-7: Atomic commit of domain change set with pre-commit gate. Binds Req-3, Req-6, Req-8. */
@@ -85,10 +87,9 @@ interface HarnessMessageControllerDeps {
     completeDevWithPush: (featureId: string) => Promise<void>;
     pushAndNextStage: (featureId: string) => Promise<void>;
     commitToBaseline: (featureId: string) => Promise<void>;
-    saveCustomButtons: (buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string; placement?: 'iteration' | 'main' }[]) => void;
+    saveCustomButtons: (buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string }[]) => void;
     saveLifecycleHooks: (hooks: { script: string; scriptSource?: string; args?: string }[]) => void;
     runCustomButton: (featureId: string, buttonId: string) => Promise<void>;
-    runMainCustomButton: (buttonId: string) => Promise<void>;
     openScriptDir: () => Promise<void>;
     openHarnessLog: () => void;
     saveAutoPollConfig: (msg: Extract<HarnessMessage, { type: 'saveAutoPollConfig' }>) => void;
@@ -421,11 +422,12 @@ export class HarnessMessageController {
             case 'previewDomainProjection':
                 /** API-4: Compute deterministic baseline projection (read-only). ROUTE-4. Binds Req-2, Req-4, Req-8. */
                 try {
+                    const projectionInputs = this.deps.getDomainProjectionInputs();
                     const projection = this.deps.previewProjection(
                         msg.changeSet,
                         msg.baselineVersion,
-                        [],
-                        { domains: [] },
+                        projectionInputs.baselineSnapshot,
+                        projectionInputs.registry,
                     );
                     this.deps.domainProjectionResult?.(projection);
                 } catch (err) {
@@ -437,11 +439,12 @@ export class HarnessMessageController {
             case 'detectDomainConflicts':
                 /** API-5: Detect domain-name, baseline-version, capability-key conflicts. Binds Req-4, Req-5, Req-8. */
                 try {
+                    const conflictInputs = this.deps.getDomainProjectionInputs();
                     const previewResult = this.deps.previewProjection(
                         msg.changeSet,
                         msg.baselineVersion,
-                        [],
-                        { domains: [] },
+                        conflictInputs.baselineSnapshot,
+                        conflictInputs.registry,
                     );
                     const { conflicts, blocking } = this.deps.detectConflicts(
                         msg.changeSet,
@@ -461,6 +464,7 @@ export class HarnessMessageController {
                     const { updatedChangeSet, remainingConflicts } = this.deps.resolveDomainConflict(
                         msg.conflictId,
                         msg.decision,
+                        msg.changeSet,
                     );
                     this.deps.domainConflictResolved?.(updatedChangeSet, remainingConflicts);
                 } catch (err) {
@@ -493,16 +497,21 @@ export class HarnessMessageController {
                         }
                     }
 
+                    // Rebase the change set onto the effective baseline so version drift is reconciled
+                    // before gating. Without this the internal detect would re-flag baseline-version. Binds Req-4, Req-8.
+                    const rebasedChangeSet = { ...cs, basedOnBaselineVersion: effectiveBaseline, sourceRevisionSet: effectiveRevisions };
+
                     // Step 2: Detect blocking conflicts (INV-5).
-                    const projection = this.deps.previewProjection(cs, effectiveBaseline, [], { domains: [] });
-                    const { blocking } = this.deps.detectConflicts(cs, projection, effectiveBaseline);
+                    const projectionInputs = this.deps.getDomainProjectionInputs();
+                    const projection = this.deps.previewProjection(rebasedChangeSet, effectiveBaseline, projectionInputs.baselineSnapshot, projectionInputs.registry);
+                    const { blocking } = this.deps.detectConflicts(rebasedChangeSet, projection, effectiveBaseline);
                     if (blocking) {
                         throw new Error('DOMAIN_COMMIT_BLOCKED: 存在未解决的阻断冲突，无法提交');
                     }
 
                     // Step 3: Atomic commit. Binds Req-3, INV-4.
                     const summary = this.deps.commitChangeSet(
-                        cs.iterationId, cs, effectiveBaseline, effectiveRevisions, ar, fp, rc,
+                        cs.iterationId, rebasedChangeSet, effectiveBaseline, effectiveRevisions, ar, fp, rc,
                     );
                     this.deps.domainCommitResult?.(summary);
                 } catch (err) {
@@ -681,9 +690,6 @@ export class HarnessMessageController {
                 return;
             case 'runCustomButton':
                 await this.deps.runCustomButton(msg.id, msg.buttonId);
-                return;
-            case 'runMainCustomButton':
-                await this.deps.runMainCustomButton(msg.buttonId);
                 return;
             case 'openScriptDir':
                 await this.deps.openScriptDir();

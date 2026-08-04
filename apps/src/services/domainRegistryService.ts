@@ -13,6 +13,13 @@ import { assertPathInRepoRoot, normalizeAndValidateRepoRoot } from './workspaceR
 
 const REGISTRY_RELATIVE_PATH = path.join('docs', 'domains', 'registry.yaml');
 
+/**
+ * Reserved fallback tokens that must never be persisted as domain aliases.
+ * These are sentinels used internally when a change has no resolvable domain,
+ * so aliasing them onto a real canonical would corrupt future normalization.
+ */
+const RESERVED_DOMAIN_TOKENS = new Set(['uncategorized', 'unknown']);
+
 export type DomainMatchSource =
     | 'explicit'
     | 'canonical'
@@ -205,7 +212,7 @@ export class DomainRegistryService {
             const rawKey = this.normalizeRegistryKey(rawDomain);
             const canonicalKey = this.normalizeRegistryKey(target.canonical);
             const aliasExists = target.aliases.some(alias => this.normalizeRegistryKey(alias) === rawKey);
-            if (rawKey && rawKey !== canonicalKey && !aliasExists) {
+            if (rawKey && rawKey !== canonicalKey && !aliasExists && !this.isReservedDomainToken(rawDomain)) {
                 target.aliases.push(rawDomain);
                 target.aliases = Array.from(new Set(target.aliases.map(item => item.trim()).filter(Boolean)));
                 this.assertRegistryValidOrThrow(registry);
@@ -226,7 +233,7 @@ export class DomainRegistryService {
             registry.domains.push({
                 canonical,
                 displayName: (input.displayName || canonical).trim() || canonical,
-                aliases: this.normalizeRegistryKey(rawDomain) === this.normalizeRegistryKey(canonical) ? [] : [rawDomain],
+                aliases: (this.normalizeRegistryKey(rawDomain) === this.normalizeRegistryKey(canonical) || this.isReservedDomainToken(rawDomain)) ? [] : [rawDomain],
                 status: 'active',
             });
             this.assertRegistryValidOrThrow(registry);
@@ -242,7 +249,7 @@ export class DomainRegistryService {
             }
 
             const aliasExists = target.aliases.some(alias => this.normalizeRegistryKey(alias) === this.normalizeRegistryKey(rawDomain));
-            if (!aliasExists && this.normalizeRegistryKey(target.canonical) !== this.normalizeRegistryKey(rawDomain)) {
+            if (!aliasExists && this.normalizeRegistryKey(target.canonical) !== this.normalizeRegistryKey(rawDomain) && !this.isReservedDomainToken(rawDomain)) {
                 target.aliases.push(rawDomain);
                 target.aliases = Array.from(new Set(target.aliases.map(item => item.trim()).filter(Boolean)));
             }
@@ -608,6 +615,14 @@ export class DomainRegistryService {
      */
     private normalizeRegistryKey(value: string): string {
         return (value || '').trim().toLowerCase();
+    }
+
+    /**
+     * Report whether a raw domain value is a reserved fallback sentinel that must
+     * never be persisted as an alias (e.g. "uncategorized"). Binds Req-5, Req-8.
+     */
+    private isReservedDomainToken(value: string): boolean {
+        return RESERVED_DOMAIN_TOKENS.has(this.normalizeRegistryKey(value));
     }
 
     /**

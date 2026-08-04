@@ -48,6 +48,7 @@ import { AutoPollService } from './services/autoPollService';
 import { appendStructureGateFailureLog } from './services/harnessLog';
 import { CapabilityDeltaService } from './services/capabilityDeltaService';
 import { DomainKnowledgeAggregateService } from './services/domainKnowledgeAggregateService';
+import { DomainRegistryService } from './services/domainRegistryService';
 import { resolveHarnessWorkspaceRoot } from './workspaceRoot';
 
 let harness: Harness | undefined;
@@ -56,37 +57,45 @@ let extensionPath: string;
 // ─────────────────── Harness (main class) ───────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
-    extensionPath = context.extensionPath;
-    harness = new Harness(context);
-    harness.init();
+    try {
+        console.log('[fun-harness] activate.start');
+        extensionPath = context.extensionPath;
+        harness = new Harness(context);
+        harness.init();
 
-    context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider(
-            'fun-harness.sidebar',
-            new HarnessViewProvider(harness),
-            { webviewOptions: { retainContextWhenHidden: true } }
-        )
-    );
+        context.subscriptions.push(
+            vscode.window.registerWebviewViewProvider(
+                'fun-harness.sidebar',
+                new HarnessViewProvider(harness),
+                { webviewOptions: { retainContextWhenHidden: true } }
+            )
+        );
 
-    context.subscriptions.push(
-        vscode.commands.registerCommand('fun-harness.open', async () => {
-            try {
-                await vscode.commands.executeCommand('workbench.view.extension.fun-harness-sidebar');
-            } catch {
-                harness!.panel ? harness!.panel.reveal() : harness!.createPanel();
-            }
-        })
-    );
+        context.subscriptions.push(
+            vscode.commands.registerCommand('fun-harness.open', async () => {
+                try {
+                    await vscode.commands.executeCommand('workbench.view.extension.fun-harness-sidebar');
+                } catch {
+                    harness!.panel ? harness!.panel.reveal() : harness!.createPanel();
+                }
+            })
+        );
 
-    // ROUTE-1: Open subpanel domain knowledge workspace. Binds Req-1, INV-1.
-    context.subscriptions.push(
-        vscode.commands.registerCommand('fun-harness.openDomainKnowledgeWorkspace', async () => {
-            await harness?.handleOpenDomainKnowledgeWorkspaceCommand();
-        })
-    );
+        // ROUTE-1: Open subpanel domain knowledge workspace. Binds Req-1, INV-1.
+        context.subscriptions.push(
+            vscode.commands.registerCommand('fun-harness.openDomainKnowledgeWorkspace', async () => {
+                await harness?.handleOpenDomainKnowledgeWorkspaceCommand();
+            })
+        );
 
-    // ROUTE-7: Remove legacy main-panel domain actions at extension startup. Binds Req-1, INV-1.
-    harness?.unregisterLegacyDomainActions();
+        // ROUTE-7: Remove legacy main-panel domain actions at extension startup. Binds Req-1, INV-1.
+        harness?.unregisterLegacyDomainActions();
+        console.log('[fun-harness] activate.done');
+    } catch (error) {
+        const message = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
+        console.error('[fun-harness] activate.failed', message);
+        void vscode.window.showErrorMessage(`Fun Harness 启动失败：${message}`);
+    }
 }
 
 class HarnessViewProvider implements vscode.WebviewViewProvider {
@@ -128,11 +137,16 @@ class Harness {
     private autoPollService!: AutoPollService;
     private capabilityDeltaService!: CapabilityDeltaService;
     private domainKnowledgeAggregateService!: DomainKnowledgeAggregateService;
+    private domainRegistryService!: DomainRegistryService;
     /** In-memory session state for the subpanel domain knowledge workspace. Binds Req-4, Req-5. */
     private domainSession: {
         changeSet: import('./models').DomainChangeSet | null;
         conflicts: import('./models').DomainConflict[];
-    } = { changeSet: null, conflicts: [] };
+        baselineVersion: string;
+        baselineSnapshot: import('./models').DomainBaselineSnapshot[];
+        registry: import('./models').DomainRegistrySnapshot;
+        repoRoot: string;
+    } = { changeSet: null, conflicts: [], baselineVersion: '', baselineSnapshot: [], registry: { domains: [] }, repoRoot: '' };
     private autoAdvanceRunning: boolean = false;
     private openedWorkspacePath: string = '';
     private initializationError?: string;
@@ -184,8 +198,10 @@ class Harness {
                 dispatchTodo: async (todoContent, worktreePath, prompt) => this.dispatchTodoToAi(todoContent, worktreePath, prompt),
             });
             this.capabilityDeltaService = new CapabilityDeltaService();
+            this.domainRegistryService = new DomainRegistryService();
             this.domainKnowledgeAggregateService = new DomainKnowledgeAggregateService(
                 this.capabilityDeltaService,
+                this.domainRegistryService,
             );
             this.schedulerRegistry = new SchedulerRegistry(
                 (task) => this.getIterationDir(task),
@@ -231,6 +247,9 @@ class Harness {
                     if (context) {
                         this.domainSession.changeSet = context.draftChangeSet;
                         this.domainSession.conflicts = [];
+                        this.domainSession.baselineVersion = context.baselineVersion || '';
+                        this.domainSession.baselineSnapshot = context.baselineSnapshot || [];
+                        this.domainSession.registry = context.registry || { domains: [] };
                     }
                     const webview = this.sidebarView?.webview ?? this.panel?.webview;
                     webview?.postMessage({ type: 'domainContextLoaded', context, errorCode });
@@ -246,6 +265,10 @@ class Harness {
                 },
                 previewProjection: (changeSet, baselineVersion, baselineSnapshot, registry) =>
                     this.domainKnowledgeAggregateService.previewProjection(changeSet, baselineVersion, baselineSnapshot, registry),
+                getDomainProjectionInputs: () => ({
+                    baselineSnapshot: this.domainSession.baselineSnapshot,
+                    registry: this.domainSession.registry,
+                }),
                 domainProjectionResult: (projection, errorCode) => {
                     const webview = this.sidebarView?.webview ?? this.panel?.webview;
                     webview?.postMessage({ type: 'domainProjectionResult', projection, errorCode });
@@ -263,8 +286,8 @@ class Harness {
                     const webview = this.sidebarView?.webview ?? this.panel?.webview;
                     webview?.postMessage({ type: 'domainDocumentMergeResult', conflicts, autoMergedDocuments, errorCode });
                 },
-                resolveDomainConflict: (conflictId, decision) =>
-                    this.handleResolveDomainConflict(conflictId, decision),
+                resolveDomainConflict: (conflictId, decision, changeSet) =>
+                    this.handleResolveDomainConflict(conflictId, decision, changeSet),
                 domainConflictResolved: (updatedChangeSet, remainingConflicts, errorCode) => {
                     if (updatedChangeSet) {
                         this.domainSession.changeSet = updatedChangeSet;
@@ -275,7 +298,7 @@ class Harness {
                 },
                 commitChangeSet: (repoRoot, changeSet, baselineVersion, expectedRevisions, autoRebase, formatPolicy, resolvedConflicts) =>
                     this.domainKnowledgeAggregateService.commitChangeSet(
-                        repoRoot, changeSet, baselineVersion, expectedRevisions, autoRebase, formatPolicy, resolvedConflicts,
+                        this.domainSession.repoRoot || workspaceRoot, changeSet, baselineVersion, expectedRevisions, autoRebase, formatPolicy, resolvedConflicts,
                     ),
                 domainCommitResult: (summary, errorCode) => {
                     if (summary) {
@@ -286,7 +309,7 @@ class Harness {
                 },
                 refreshBaselineAndReproject: (repoRoot, changeSet, currentBaselineVersion, expectedRevisions) =>
                     this.domainKnowledgeAggregateService.refreshBaselineAndReproject(
-                        repoRoot, changeSet, currentBaselineVersion, expectedRevisions,
+                        this.domainSession.repoRoot || workspaceRoot, changeSet, currentBaselineVersion, expectedRevisions,
                     ),
                 baselineReprojectResult: (rebased, latestBaselineVersion, latestRevisions, projection, errorCode) => {
                     const webview = this.sidebarView?.webview ?? this.panel?.webview;
@@ -338,7 +361,6 @@ class Harness {
                 saveCustomButtons: (buttons) => this.handleSaveCustomButtons(buttons),
                 saveLifecycleHooks: (hooks) => this.handleSaveLifecycleHooks(hooks),
                 runCustomButton: async (featureId, buttonId) => this.actionsService.runCustomButtonByFeatureId(featureId, buttonId),
-                runMainCustomButton: async (buttonId) => this.actionsService.runStandaloneCustomButton(buttonId),
                 openScriptDir: () => this.handleOpenScriptDir(),
                 openHarnessLog: () => this.handleOpenHarnessLog(),
                 saveAutoPollConfig: (msg) => this.handleSaveAutoPollConfig(msg),
@@ -696,7 +718,6 @@ class Harness {
             customButtons: this.config.customButtons || [],
             autoPollEnabled: this.config.autoPollEnabled,
             autoPoll: this.isWorktreeSubview() ? this.autoPollService.getStatus() : undefined,
-            specDeltaOverview: this.isWorktreeSubview() ? undefined : this.actionsService.getSpecDeltaOverview(),
         });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -915,7 +936,7 @@ class Harness {
         vscode.window.showInformationMessage('✅ 高级策略已保存');
     }
 
-    private handleSaveCustomButtons(buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string; placement?: 'iteration' | 'main' }[]): void {
+    private handleSaveCustomButtons(buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string }[]): void {
         if (this.configMeta.readOnly) {
             vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改自定义按钮');
             return;
@@ -929,7 +950,7 @@ class Harness {
                 script: (b.script || '').trim(),
                 args: (b.args || '').trim(),
                 command: b.command,
-                placement: b.placement === 'main' ? 'main' as const : 'iteration' as const,
+                placement: 'iteration' as const,
             }))
             .filter(b => b.name && b.script);
 
@@ -1371,12 +1392,33 @@ class Harness {
      * Binds Req-1, INV-2 (API-1).
      */
     private async handleOpenDomainKnowledgeWorkspace(taskId: string, iterationPath: string): Promise<void> {
+        const task = this.features.find(item => item.id === taskId);
+        const resolvedIterationPath = iterationPath || (task ? this.getIterationDir(task) : '');
+        const iterationId = resolvedIterationPath
+            ? path.basename(path.resolve(resolvedIterationPath))
+            : (task?.name || taskId);
+        // Domain workspace artifacts must be written under the active worktree root.
+        const repoRoot = workspaceRoot;
         try {
             await vscode.commands.executeCommand('workbench.view.extension.fun-harness-sidebar');
         } catch {
             harness!.panel ? harness!.panel.reveal() : harness!.createPanel();
         }
         this.render();
+        const webview = this.sidebarView?.webview ?? this.panel?.webview;
+        webview?.postMessage({
+            type: 'domainWorkspaceOpened',
+            opened: true,
+            taskId,
+            taskName: task?.name || '',
+            iterationId,
+            repoRoot,
+            iterationPath: resolvedIterationPath,
+            contextVersion: new Date().toISOString(),
+        });
+        if (!task) {
+            vscode.window.showWarningMessage(`未在当前任务列表中找到任务：${taskId}`);
+        }
     }
 
     /**
@@ -1388,6 +1430,7 @@ class Harness {
         iterationId: string,
     ): Promise<import('./models').DomainKnowledgeContext> {
         const resolvedRepoRoot = resolveHarnessWorkspaceRoot(repoRoot).workspaceRoot;
+        this.domainSession.repoRoot = resolvedRepoRoot;
         return this.domainKnowledgeAggregateService.loadDomainKnowledgeContext(
             resolvedRepoRoot,
             iterationId,
@@ -1420,11 +1463,15 @@ class Harness {
     private handleResolveDomainConflict(
         conflictId: string,
         decision: import('./models').ConflictDecision,
+        incomingChangeSet?: import('./models').DomainChangeSet,
     ): { updatedChangeSet: import('./models').DomainChangeSet; remainingConflicts: import('./models').DomainConflict[] } {
-        const currentChangeSet = this.domainSession.changeSet;
+        // Prefer the webview's authoritative change set; the session copy may be null
+        // when the context loaded without an on-disk draft. Keep the session in sync.
+        const currentChangeSet = incomingChangeSet ?? this.domainSession.changeSet;
         if (!currentChangeSet) {
             throw new Error('DOMAIN_WORKSPACE_LOAD_FAILED: 无法执行裁决，当前会话无有效变更集');
         }
+        this.domainSession.changeSet = currentChangeSet;
         const currentConflicts = this.domainSession.conflicts || [];
 
         // Find the conflict being resolved.
@@ -1436,6 +1483,12 @@ class Harness {
         // Apply the decision to produce an updated change set.
         let updatedDomainChanges = [...currentChangeSet.domainChanges];
 
+        // Raw domain name to adjudicate: taken from the first change bound to this conflict.
+        const rawDomainForConflict = (
+            currentChangeSet.domainChanges.find(change => conflict.reqIds.includes(change.reqId))?.rawDomain
+            || ''
+        ).trim();
+
         if (conflict.type === 'domain-name' && decision.action === 'merge-existing') {
             // Assign targetCanonical to all changes whose reqId is in this conflict. Binds Req-5.
             updatedDomainChanges = updatedDomainChanges.map(change =>
@@ -1443,18 +1496,23 @@ class Harness {
                     ? { ...change, canonicalDomain: decision.targetCanonical }
                     : change,
             );
+            // Persist the merge as a registry alias so future iterations resolve automatically. Binds Req-5, Req-8.
+            this.persistDomainAdjudication({ decision: 'mergeExisting', rawDomain: rawDomainForConflict, targetCanonical: decision.targetCanonical });
         } else if (conflict.type === 'domain-name' && decision.action === 'append-alias') {
             updatedDomainChanges = updatedDomainChanges.map(change =>
                 conflict.reqIds.includes(change.reqId)
                     ? { ...change, canonicalDomain: decision.targetCanonical }
                     : change,
             );
+            this.persistDomainAdjudication({ decision: 'appendAlias', rawDomain: rawDomainForConflict, targetCanonical: decision.targetCanonical });
         } else if (conflict.type === 'domain-name' && decision.action === 'create-canonical') {
             updatedDomainChanges = updatedDomainChanges.map(change =>
                 conflict.reqIds.includes(change.reqId)
                     ? { ...change, canonicalDomain: decision.newCanonical }
                     : change,
             );
+            // Register the controlled new domain in registry.yaml so the vocabulary is sedimented. Binds Req-5, Req-6, Req-8.
+            this.persistDomainAdjudication({ decision: 'createCanonical', rawDomain: rawDomainForConflict, targetCanonical: decision.newCanonical, displayName: decision.displayName });
         } else if (conflict.type === 'capability-key' && decision.action === 'choose-value') {
             // No change-set mutation needed for capability-key; conflicts are cleared after ack.
         } else if (conflict.type === 'document-merge') {
@@ -1471,6 +1529,33 @@ class Harness {
         const remainingConflicts = currentConflicts.filter(c => c.id !== conflictId);
 
         return { updatedChangeSet, remainingConflicts };
+    }
+
+    /**
+     * Persist a domain-name adjudication into the repository registry.yaml and refresh the
+     * in-memory session registry so subsequent projection/conflict detection recognize it.
+     * Idempotent: "canonical already exists" is treated as success. Binds Req-5, Req-6, Req-8.
+     */
+    private persistDomainAdjudication(input: import('./services/domainRegistryService').DomainAdjudicationInput): void {
+        const repoRoot = this.domainSession.repoRoot;
+        if (!repoRoot || !input.rawDomain) {
+            return;
+        }
+        try {
+            this.domainRegistryService.applyAdjudication(repoRoot, input);
+        } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err || '');
+            // Re-registering an existing canonical is a benign idempotent replay.
+            if (!/already exists/i.test(detail)) {
+                console.warn(`[fun-harness] domain adjudication persist skipped: ${detail}`);
+                return;
+            }
+        }
+        try {
+            this.domainSession.registry = this.domainRegistryService.loadRegistry(repoRoot).registry;
+        } catch {
+            // Keep the previous session registry if reload fails.
+        }
     }
 
     /**
@@ -1514,8 +1599,99 @@ class Harness {
         const iterationPath = this.getIterationDir(task);
         try {
             const result = this.capabilityDeltaService.generateForIteration(workspaceRoot, iterationPath);
+            const iterationId = path.basename(path.resolve(iterationPath));
+            const repoRoot = workspaceRoot;
+            try {
+                const context = await this.handleLoadDomainKnowledgeContext(repoRoot, iterationId);
+                // Optional AI refinement: concise, capability-oriented titles that filter one-time
+                // implementation tasks. Deterministic-safe — falls back silently when AI is unavailable.
+                const registryCanonicals = (context.registry?.domains || []).map(entry => entry.canonical);
+                const refinedDelta = await this.capabilityDeltaService.refineDeltaTitles(
+                    result.delta,
+                    registryCanonicals,
+                    (input) => this.promptService.buildDomainSummaryPrompt(input),
+                    (prompt) => this.aiDispatchService.refineToText(prompt, workspaceRoot),
+                );
+                if (refinedDelta !== result.delta) {
+                    this.capabilityDeltaService.persistDelta(result.deltaPath, refinedDelta);
+                    vscode.window.showInformationMessage('🤖 AI 精炼已应用到领域能力标题。');
+                } else {
+                    vscode.window.showWarningMessage(
+                        'AI 精炼未产生变化，已使用确定性标题。若期望 AI 参与，请确认已授权 GitHub Copilot 模型访问（查看 .harness/harness.log 中 [ai-refine] 日志）。',
+                    );
+                }
+                const domainChanges: import('./models').DomainChange[] = [];
+                const seenReqIds = new Set<string>();
+                for (const domain of refinedDelta.domains) {
+                    const rawDomain = (domain.rawDomain || domain.canonical || 'uncategorized').trim() || 'uncategorized';
+                    const canonicalDomain = domain.canonical || null;
+                    for (const capability of domain.capabilities || []) {
+                        const reqId = (capability.reqId || '').trim();
+                        if (!reqId || seenReqIds.has(reqId)) {
+                            continue;
+                        }
+                        seenReqIds.add(reqId);
+                        const status = capability.status === 'deprecated'
+                            ? 'deprecated'
+                            : capability.status === 'removed'
+                                ? 'removed'
+                                : 'active';
+                        const changeType = status === 'deprecated'
+                            ? 'deprecate'
+                            : status === 'removed'
+                                ? 'remove'
+                                : 'add';
+                        domainChanges.push({
+                            canonicalDomain,
+                            rawDomain,
+                            reqId,
+                            title: (capability.title || '').trim(),
+                            userStory: (capability.userStory || '').trim(),
+                            changeType,
+                            status,
+                            contracts: (domain.contracts || [])
+                                .filter(item => (item.reqId || '').trim() === reqId)
+                                .map(item => ({
+                                    id: (item.id || '').trim(),
+                                    reqId,
+                                    method: (item.method || '').trim().toUpperCase(),
+                                    path: (item.path || '').trim(),
+                                    requestShape: item.requestShape || {},
+                                    responseShape: item.responseShape || {},
+                                })),
+                            invariants: (domain.invariants || [])
+                                .filter(item => (item.reqId || '').trim() === reqId)
+                                .map(item => ({
+                                    id: (item.id || '').trim(),
+                                    reqId,
+                                    text: (item.text || '').trim(),
+                                })),
+                        });
+                    }
+                }
+
+                const seededChangeSet: import('./models').DomainChangeSet = {
+                    iterationId,
+                    basedOnBaselineVersion: context.baselineVersion,
+                    sourceRevisionSet: context.draftChangeSet.sourceRevisionSet,
+                    updatedAt: new Date().toISOString(),
+                    domainChanges,
+                };
+                this.domainKnowledgeAggregateService.saveDraftChangeSet(repoRoot, iterationId, seededChangeSet);
+            } catch (seedError) {
+                const detail = seedError instanceof Error ? seedError.message : String(seedError || 'unknown');
+                console.warn(`[fun-harness] capability-delta seed skipped: ${detail}`);
+            }
             const relPath = path.relative(workspaceRoot, result.deltaPath).replace(/\\/g, '/');
             vscode.window.showInformationMessage(`✅ 领域能力增量文件已生成：${relPath}`);
+            const webview = this.sidebarView?.webview ?? this.panel?.webview;
+            webview?.postMessage({
+                type: 'capabilityDeltaGenerated',
+                taskId: featureId,
+                iterationId,
+                iterationPath,
+                deltaPath: relPath,
+            });
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error || 'unknown');
             vscode.window.showErrorMessage(`生成领域能力增量失败：${detail}`);

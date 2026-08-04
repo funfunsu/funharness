@@ -217,6 +217,48 @@ describe('CapabilityDeltaService', () => {
         }
     });
 
+    test('generateForIteration normalizes dictionary requirement titles into capability wording', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            const iterDir = path.join(root, 'specs', 'dictionary-governance');
+            fs.mkdirSync(iterDir, { recursive: true });
+
+            const requirementsContent = [
+                '# Requirements',
+                '```yaml',
+                'artifactType: requirements',
+                'requirements:',
+                '  - id: Req-1',
+                '    domain: billing',
+                '    title: 迁移 business_dictionary 数据到统一字典表',
+                '    userStory: 作为数据库维护员，我希望将旧表数据迁移到统一字典表',
+                '```',
+                '',
+            ].join('\n');
+
+            const designContent = [
+                '# Design',
+                '```yaml',
+                'artifactType: design',
+                'apiContracts: []',
+                'invariants: []',
+                '```',
+                '',
+            ].join('\n');
+
+            fs.writeFileSync(path.join(iterDir, 'requirements.md'), requirementsContent, 'utf8');
+            fs.writeFileSync(path.join(iterDir, 'design.md'), designContent, 'utf8');
+
+            const service = new CapabilityDeltaService();
+            const result = service.generateForIteration(root, iterDir);
+            assert.equal(result.validation.valid, true);
+            assert.equal(result.delta.domains[0].capabilities[0].title, '字典数据迁移与兼容能力');
+        } finally {
+            cleanup(root);
+        }
+    });
+
     // ── New tests for MergeConflictService (Task 2.3) via domainKnowledgeAggregateService ──
 
     test('detectDocumentMergeConflicts auto-merges when only draft changed (Req-4, Req-8)', () => {

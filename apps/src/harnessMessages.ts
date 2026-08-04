@@ -1,38 +1,46 @@
 export type HarnessStep = 'req' | 'des' | 'tcs' | 'tsk' | 'dev';
+
+/** Key stages supported by stage-review workflow. */
 export type ReviewStage = 'requirements' | 'design' | 'testcase';
-export type ReviewPromptSource = 'custom' | 'default';
-export type ReviewExecutionStatus = 'idle' | 'running' | 'completed' | 'failed';
-export type ReviewExecutionResultStatus = 'running' | 'completed' | 'failed';
 
+/** Minimal stage-review context passed from webview panel. */
 export interface StageContext {
-    [key: string]: unknown;
+    taskId: string;
+    stage: string;
+    taskName: string;
+    taskDesc: string;
+    taskStage: string;
 }
 
+/** API-1 output: open stage review metadata. */
 export interface StageReviewOpenResult {
-    reviewEnabled: true;
-    defaultExecuted: false;
+    reviewEnabled: boolean;
+    defaultExecuted: boolean;
 }
 
+/** API-2 output: resolved prompt source + composed prompt. */
 export interface StageReviewPromptResult {
-    source: ReviewPromptSource;
+    source: 'custom' | 'default';
     promptBody: string;
     composedPrompt: string;
 }
 
+/** API-3 output: saved custom prompt version metadata. */
 export interface StageReviewSaveResult {
     savedVersion: number;
     updatedAt: string;
 }
 
+/** API-4 output: async stage review trigger status. */
 export interface StageReviewRunResult {
     reviewId: string;
-    status: ReviewExecutionResultStatus;
-    summary?: string;
+    status: 'running' | 'failed';
     errorReason?: string;
 }
 
+/** API-5 output: latest informational review status. */
 export interface StageReviewStatusResult {
-    status: ReviewExecutionStatus;
+    status: 'idle' | 'running' | 'completed' | 'failed';
     summary?: string;
     errorReason?: string;
 }
@@ -67,7 +75,7 @@ export type HarnessMessage =
     /** API-5: Detect and classify conflicts before commit. Binds Req-4, Req-5, Req-8. */
     | { type: 'detectDomainConflicts'; changeSet: import('./models').DomainChangeSet; baselineVersion: string }
     /** API-6: Apply a conflict resolution decision in the subpanel. Binds Req-4, Req-5. */
-    | { type: 'resolveDomainConflict'; conflictId: string; decision: import('./models').ConflictDecision }
+    | { type: 'resolveDomainConflict'; conflictId: string; decision: import('./models').ConflictDecision; changeSet?: import('./models').DomainChangeSet }
     /** API-7: Atomic commit of the domain change set. Binds Req-3, Req-6, Req-8. */
     | { type: 'commitDomainKnowledgeChanges'; changeSet: import('./models').DomainChangeSet; baselineVersion: string; expectedRevisions: import('./models').DomainRevisionSet; autoRebase: boolean; formatPolicy: 'deterministic-v1'; resolvedConflicts: import('./models').DomainConflictResolution[] }
     /** API-11: Refresh baseline and re-project after drift detection. Binds Req-4, Req-5, Req-8. */
@@ -111,10 +119,9 @@ export type HarnessMessage =
     | { type: 'completeDevWithPush'; id: string }
     | { type: 'pushAndNextStage'; id: string }
     | { type: 'commitToBaseline'; id: string }
-    | { type: 'saveCustomButtons'; buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string; placement?: 'iteration' | 'main' }[] }
+    | { type: 'saveCustomButtons'; buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string }[] }
     | { type: 'saveLifecycleHooks'; hooks: { script: string; scriptSource?: string; args?: string }[] }
     | { type: 'runCustomButton'; id: string; buttonId: string }
-    | { type: 'runMainCustomButton'; buttonId: string }
     | { type: 'openScriptDir' }
     | { type: 'openHarnessLog' }
     | { type: 'saveAutoPollConfig'; interval: number; script: string; prompt: string; skipMarkers: string; enabled: boolean }

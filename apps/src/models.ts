@@ -235,13 +235,11 @@ export interface CustomButton {
      */
     command?: string;
     /**
-     * Where the button is rendered:
-     * - 'iteration' (default): on each task card (worktree subview always; main panel when an
-     *   iteration worktree exists). Runs against that task's worktree iteration dir.
-     * - 'main': in a dedicated area on the main panel that belongs to no task iteration. Runs
-     *   against the master workspace root.
+     * Where the button is rendered: 'iteration' (default) — on each task card (worktree subview
+     * always; main panel when an iteration worktree exists). Runs against that task's worktree
+     * iteration dir.
      */
-    placement?: 'iteration' | 'main';
+    placement?: 'iteration';
 }
 
 /**
@@ -302,7 +300,7 @@ export function normalizeCustomButton(b: CustomButton): CustomButton {
         scriptSource: source,
         script,
         args,
-        placement: b.placement === 'main' ? 'main' : 'iteration',
+        placement: 'iteration',
     };
 }
 

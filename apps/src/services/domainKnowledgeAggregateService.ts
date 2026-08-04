@@ -363,12 +363,36 @@ export class DomainKnowledgeAggregateService {
             try {
                 const raw = fs.readFileSync(draftPath, 'utf8');
                 const parsed: DomainChangeSet = JSON.parse(raw);
+                // If draft is empty, prefer bootstrapping from capability-delta when available.
+                if (!Array.isArray(parsed.domainChanges) || parsed.domainChanges.length === 0) {
+                    const seededFromDelta = this.trySeedDraftFromCapabilityDelta(
+                        repoRoot,
+                        iterationId,
+                        baselineVersion,
+                        revisions,
+                    );
+                    if (seededFromDelta && seededFromDelta.domainChanges.length > 0) {
+                        return seededFromDelta;
+                    }
+                }
                 // Return existing draft as-is; caller (subpanel) will detect version drift.
                 return parsed;
             } catch {
                 // Corrupted draft: fall through to empty initialization.
             }
         }
+
+        // Bootstrap from capability-delta when user has just generated delta but has no draft yet.
+        const seededFromDelta = this.trySeedDraftFromCapabilityDelta(
+            repoRoot,
+            iterationId,
+            baselineVersion,
+            revisions,
+        );
+        if (seededFromDelta) {
+            return seededFromDelta;
+        }
+
         return {
             iterationId,
             basedOnBaselineVersion: baselineVersion,
@@ -376,6 +400,107 @@ export class DomainKnowledgeAggregateService {
             updatedAt: new Date().toISOString(),
             domainChanges: [],
         };
+    }
+
+    /**
+     * Try building an initial DomainChangeSet from capability-delta.json when draft is missing.
+     * This is read-only bootstrap logic and does not write files.
+     */
+    private trySeedDraftFromCapabilityDelta(
+        repoRoot: string,
+        iterationId: string,
+        baselineVersion: string,
+        revisions: DomainRevisionSet,
+    ): DomainChangeSet | null {
+        const candidates = [
+            path.join(repoRoot, 'specs', iterationId, 'delta', 'capability-delta.json'),
+            path.join(repoRoot, 'worktrees', iterationId, 'delta', 'capability-delta.json'),
+            path.join(repoRoot, 'delta', 'capability-delta.json'),
+        ];
+
+        for (const candidate of candidates) {
+            try {
+                assertPathInRepoRoot(repoRoot, candidate);
+                if (!fs.existsSync(candidate)) {
+                    continue;
+                }
+                const raw = fs.readFileSync(candidate, 'utf8');
+                const parsed = JSON.parse(raw) as CapabilityDelta;
+                if (!parsed || !Array.isArray(parsed.domains)) {
+                    continue;
+                }
+
+                const seenReqIds = new Set<string>();
+                const domainChanges: DomainChangeSet['domainChanges'] = [];
+
+                for (const domain of parsed.domains) {
+                    const rawDomain = (domain.rawDomain || domain.canonical || 'uncategorized').trim() || 'uncategorized';
+                    const canonicalDomain = domain.canonical || null;
+                    const contracts = Array.isArray(domain.contracts) ? domain.contracts : [];
+                    const invariants = Array.isArray(domain.invariants) ? domain.invariants : [];
+
+                    for (const capability of Array.isArray(domain.capabilities) ? domain.capabilities : []) {
+                        const reqId = (capability.reqId || '').trim();
+                        if (!reqId || seenReqIds.has(reqId)) {
+                            continue;
+                        }
+                        seenReqIds.add(reqId);
+
+                        const capabilityStatus = capability.status === 'deprecated'
+                            ? 'deprecated'
+                            : capability.status === 'removed'
+                                ? 'removed'
+                                : 'active';
+                        const changeType = capabilityStatus === 'deprecated'
+                            ? 'deprecate'
+                            : capabilityStatus === 'removed'
+                                ? 'remove'
+                                : 'add';
+
+                        domainChanges.push({
+                            canonicalDomain,
+                            rawDomain,
+                            reqId,
+                            title: (capability.title || '').trim(),
+                            userStory: (capability.userStory || '').trim(),
+                            changeType,
+                            status: capabilityStatus,
+                            contracts: contracts
+                                .filter(item => (item.reqId || '').trim() === reqId)
+                                .map(item => ({
+                                    id: (item.id || '').trim(),
+                                    reqId,
+                                    method: (item.method || '').trim().toUpperCase(),
+                                    path: (item.path || '').trim(),
+                                    requestShape: item.requestShape || {},
+                                    responseShape: item.responseShape || {},
+                                })),
+                            invariants: invariants
+                                .filter(item => (item.reqId || '').trim() === reqId)
+                                .map(item => ({
+                                    id: (item.id || '').trim(),
+                                    reqId,
+                                    text: (item.text || '').trim(),
+                                })),
+                        });
+                    }
+                }
+
+                domainChanges.sort((a, b) => a.reqId.localeCompare(b.reqId));
+
+                return {
+                    iterationId,
+                    basedOnBaselineVersion: baselineVersion,
+                    sourceRevisionSet: revisions,
+                    updatedAt: new Date().toISOString(),
+                    domainChanges,
+                };
+            } catch {
+                // Ignore invalid candidate file and continue fallback chain.
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -721,11 +846,16 @@ export class DomainKnowledgeAggregateService {
         }
 
         // Block commit if any blocking conflicts remain (INV-5). Binds Req-3, Req-4.
+        // Re-project against the real on-disk registry + baseline so the commit gate
+        // matches what conflict detection saw. Passing empty inputs would spuriously
+        // fail canonical-domain resolution (e.g. "uncategorized") that detect accepted.
+        const registryLoad = this.domainRegistryService.loadRegistry(normalizedRoot);
+        const baselineSnapshot = this.buildBaselineSnapshots(normalizedRoot, registryLoad.registry);
         const projection = this.previewProjection(
             changeSet,
             baselineVersion,
-            [],
-            { domains: [] },
+            baselineSnapshot,
+            registryLoad.registry,
         );
         const { conflicts: allConflicts, blocking } = this.detectConflicts(changeSet, projection, baselineVersion);
         if (blocking) {
@@ -795,9 +925,14 @@ export class DomainKnowledgeAggregateService {
         writeEntries.push({ filePath: draftPath, content: changeSetContent });
 
         // 2. Domain baseline documents per canonical domain.
+        // Only write domains touched by this change set to avoid unrelated rewrites.
+        const affectedCanonicals = this.resolveAffectedCanonicalDomains(changeSet, registryLoad.registry);
         const processedDomains: string[] = [];
         const processedCapabilities: number[] = [];
         for (const domainDoc of projection.projectedDomains) {
+            if (!affectedCanonicals.has(domainDoc.canonicalDomain)) {
+                continue;
+            }
             const docPath = this.resolveDomainDocPath(normalizedRoot, domainDoc.canonicalDomain);
             assertPathInRepoRoot(normalizedRoot, docPath);
             const docContent = this.serializeDomainDocDeterministicV1(domainDoc);
@@ -806,8 +941,7 @@ export class DomainKnowledgeAggregateService {
             processedCapabilities.push(domainDoc.capabilities.length);
         }
 
-        // 3. Domain index (_index.md) update.
-        const registryLoad = this.domainRegistryService.loadRegistry(normalizedRoot);
+        // 3. Domain index (_index.md) update. Reuse the registry loaded above.
         const indexPath = path.join(normalizedRoot, 'docs', 'domains', '_index.md');
         assertPathInRepoRoot(normalizedRoot, indexPath);
         const existingIndex = readTextIfExists(indexPath) || this.buildInitialIndexTemplate();
@@ -832,6 +966,31 @@ export class DomainKnowledgeAggregateService {
             commitId,
             writtenFiles: writtenFilePaths,
         };
+    }
+
+    /**
+     * Resolve canonical domains actually touched by this change set.
+     */
+    private resolveAffectedCanonicalDomains(
+        changeSet: DomainChangeSet,
+        registry: import('../models').DomainRegistrySnapshot,
+    ): Set<string> {
+        const canonicals = new Set<string>();
+        for (const change of changeSet.domainChanges || []) {
+            const explicitCanonical = (change.canonicalDomain || '').trim();
+            if (explicitCanonical) {
+                canonicals.add(explicitCanonical);
+                continue;
+            }
+            const resolved = this.domainRegistryService.normalizeDomainCanonical(
+                change.rawDomain,
+                registry,
+            );
+            if (resolved.canonical) {
+                canonicals.add(resolved.canonical);
+            }
+        }
+        return canonicals;
     }
 
     /**
@@ -929,10 +1088,7 @@ export class DomainKnowledgeAggregateService {
      * Capabilities/contracts/invariants are sorted by key for consistent output. Binds INV-14.
      */
     private serializeDomainDocDeterministicV1(doc: import('../models').ProjectedDomainDocument): string {
-        const capRows = [...doc.capabilities]
-            .sort((a, b) => a.reqId.localeCompare(b.reqId))
-            .map(cap => `| ${cap.reqId} | ${cap.title} | ${cap.status} |`)
-            .join('\n');
+        const capRows = this.serializeGroupedCapabilityRows(doc);
         const contractRows = [...doc.contracts]
             .sort((a, b) => a.id.localeCompare(b.id))
             .map(c => `| ${c.id} | ${c.reqId} | ${c.method} | ${c.path} |`)
@@ -949,8 +1105,8 @@ export class DomainKnowledgeAggregateService {
             `---`,
             ``,
             `<!-- AUTO:capabilities:start -->`,
-            `| Req-ID | Title | Status |`,
-            `|--------|-------|--------|`,
+            `| 能力 | 状态 | 关联接口 | 关联需求 |`,
+            `|------|------|----------|----------|`,
             capRows,
             `<!-- AUTO:capabilities:end -->`,
             ``,
@@ -977,6 +1133,62 @@ export class DomainKnowledgeAggregateService {
     }
 
     /**
+     * Serialize a capability-centric, de-duplicated capability table for the domain document.
+     * Capabilities sharing the same (title, status) are merged into one row; each row lists the
+     * associated API contract keys and the underlying Req-IDs (for traceability). Grouping,
+     * Req-IDs and API keys are all sorted so output stays deterministic (INV-3/INV-14).
+     */
+    private serializeGroupedCapabilityRows(doc: import('../models').ProjectedDomainDocument): string {
+        const apiByReqId = new Map<string, Set<string>>();
+        for (const contract of doc.contracts) {
+            const reqId = (contract.reqId || '').trim();
+            const contractId = (contract.id || '').trim();
+            if (!reqId || !contractId) {
+                continue;
+            }
+            const set = apiByReqId.get(reqId) || new Set<string>();
+            set.add(contractId);
+            apiByReqId.set(reqId, set);
+        }
+
+        interface CapabilityGroup {
+            title: string;
+            status: string;
+            reqIds: Set<string>;
+            apis: Set<string>;
+        }
+        const groups = new Map<string, CapabilityGroup>();
+        for (const cap of doc.capabilities) {
+            const title = (cap.title || '').trim();
+            const status = (cap.status || 'active').trim();
+            const reqId = (cap.reqId || '').trim();
+            const key = `${title}\u0000${status}`;
+            let group = groups.get(key);
+            if (!group) {
+                group = { title, status, reqIds: new Set<string>(), apis: new Set<string>() };
+                groups.set(key, group);
+            }
+            if (reqId) {
+                group.reqIds.add(reqId);
+                for (const api of apiByReqId.get(reqId) || []) {
+                    group.apis.add(api);
+                }
+            }
+        }
+
+        return [...groups.values()]
+            .sort((a, b) => a.title.localeCompare(b.title) || a.status.localeCompare(b.status))
+            .map(group => {
+                const reqIds = [...group.reqIds].sort((x, y) => x.localeCompare(y)).join(', ');
+                const apis = group.apis.size > 0
+                    ? [...group.apis].sort((x, y) => x.localeCompare(y)).join(', ')
+                    : '-';
+                return `| ${this.escapeCell(group.title)} | ${this.escapeCell(group.status)} | ${this.escapeCell(apis)} | ${this.escapeCell(reqIds)} |`;
+            })
+            .join('\n');
+    }
+
+    /**
      * Rebuild the domain index content to reflect the latest projected domains.
      * Preserves existing HUMAN sections. Binds INV-14, Req-3.
      */
@@ -986,11 +1198,33 @@ export class DomainKnowledgeAggregateService {
         projectedDomains: import('../models').ProjectedDomainDocument[],
     ): string {
         const projectedSet = new Set(projectedDomains.map(d => d.canonicalDomain));
-        const allDomains = registryEntries
-            .filter(e => e.status === 'active' || projectedSet.has(e.canonical))
+        const allDomains = new Map<string, { canonical: string; displayName: string; status: string }>();
+
+        for (const entry of registryEntries) {
+            if (entry.status === 'active' || projectedSet.has(entry.canonical)) {
+                allDomains.set(entry.canonical, {
+                    canonical: entry.canonical,
+                    displayName: entry.displayName || entry.canonical,
+                    status: entry.status || 'active',
+                });
+            }
+        }
+
+        // If projection contains a domain not yet registered, still expose it in index.
+        for (const projected of projectedDomains) {
+            if (!allDomains.has(projected.canonicalDomain)) {
+                allDomains.set(projected.canonicalDomain, {
+                    canonical: projected.canonicalDomain,
+                    displayName: projected.canonicalDomain,
+                    status: 'active',
+                });
+            }
+        }
+
+        const sortedDomains = Array.from(allDomains.values())
             .sort((a, b) => a.canonical.localeCompare(b.canonical));
 
-        const rows = allDomains
+        const rows = sortedDomains
             .map(e => `| [${e.canonical}](./${e.canonical}.md) | ${e.displayName || e.canonical} | ${e.status} |`)
             .join('\n');
 
@@ -1835,15 +2069,37 @@ export class DomainKnowledgeAggregateService {
      */
     private parseCapabilityRows(content: string): CapabilityRow[] {
         const rows = this.parseMarkdownTable(content);
-        return rows
-            .filter(row => (row['Req-ID'] || '').trim().length > 0)
-            .map(row => ({
-                reqId: row['Req-ID'] || '',
+        const result: CapabilityRow[] = [];
+        for (const row of rows) {
+            const capabilityCell = row['能力'] ?? row['Capability'];
+            const reqIdsCell = row['关联需求'] ?? row['Req-IDs'];
+            // New capability-centric grouped format: expand each Req-ID back to a per-reqId record.
+            if (capabilityCell !== undefined && reqIdsCell !== undefined) {
+                const title = (capabilityCell || '').trim();
+                const status = (row['状态'] || row['Status'] || 'active').trim();
+                const reqIds = (reqIdsCell || '')
+                    .split(/[,，]/)
+                    .map(item => item.trim())
+                    .filter(item => item.length > 0);
+                for (const reqId of reqIds) {
+                    result.push({ reqId, title, status, firstIntroduced: '', lastChanged: '' });
+                }
+                continue;
+            }
+            // Legacy per-reqId format (Req-ID | Title | Status | First Introduced | Last Changed).
+            const reqId = (row['Req-ID'] || '').trim();
+            if (reqId.length === 0) {
+                continue;
+            }
+            result.push({
+                reqId,
                 title: row['Title'] || '',
                 status: row['Status'] || 'active',
                 firstIntroduced: row['First Introduced'] || '',
                 lastChanged: row['Last Changed'] || '',
-            }));
+            });
+        }
+        return result;
     }
 
     /**
