@@ -1,23 +1,23 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-08-04T02:19:36.599Z
+- generatedAt: 2026-08-04T02:55:56.956Z
 - taskId: task_1785748071307
 - taskName: 评审植入
 - gateLevel: standard
-- totalChanges: 8
+- totalChanges: 9
 - blockedByGate: 6
 
 ## Executive Summary
 
 - highRiskChanges: 6
 - mediumRiskChanges: 1
-- lowRiskChanges: 1
+- lowRiskChanges: 2
 
 ## Domain Index
 
 | domain | total | high | medium | low | blocked |
 | --- | --- | --- | --- | --- | --- |
-| uncategorized | 8 | 6 | 1 | 1 | 6 |
+| uncategorized | 9 | 6 | 1 | 2 | 6 |
 
 ## Domain Sections
 
@@ -57,4 +57,6 @@
   - changedFiles=21
 - [2026-08-04T02:18:00.736Z] [dev] [low] Development drift gate passed
   - changedFiles=23
+- [2026-08-04T02:55:56.954Z] [dev] [low] Development drift gate passed
+  - changedFiles=3
 
