@@ -1,4 +1,41 @@
 export type HarnessStep = 'req' | 'des' | 'tcs' | 'tsk' | 'dev';
+export type ReviewStage = 'requirements' | 'design' | 'testcase';
+export type ReviewPromptSource = 'custom' | 'default';
+export type ReviewExecutionStatus = 'idle' | 'running' | 'completed' | 'failed';
+export type ReviewExecutionResultStatus = 'running' | 'completed' | 'failed';
+
+export interface StageContext {
+    [key: string]: unknown;
+}
+
+export interface StageReviewOpenResult {
+    reviewEnabled: true;
+    defaultExecuted: false;
+}
+
+export interface StageReviewPromptResult {
+    source: ReviewPromptSource;
+    promptBody: string;
+    composedPrompt: string;
+}
+
+export interface StageReviewSaveResult {
+    savedVersion: number;
+    updatedAt: string;
+}
+
+export interface StageReviewRunResult {
+    reviewId: string;
+    status: ReviewExecutionResultStatus;
+    summary?: string;
+    errorReason?: string;
+}
+
+export interface StageReviewStatusResult {
+    status: ReviewExecutionStatus;
+    summary?: string;
+    errorReason?: string;
+}
 
 export type TodoSourcePanel = 'master' | 'worktree';
 export type TodoStatus = 'open' | 'done' | 'promoted';
@@ -24,6 +61,10 @@ export type HarnessMessage =
     | { type: 'commitDomainBaseline'; id: string }
     | { type: 'previewDomainBaselineSummary'; id: string }
     | { type: 'openCustomPrompt'; step: HarnessStep }
+    | { type: 'openStageReview'; stage: ReviewStage }
+    | { type: 'saveStagePrompt'; stage: ReviewStage; promptBody: string }
+    | { type: 'runStageReview'; stage: ReviewStage; context: StageContext }
+    | { type: 'getLatestReviewStatus'; stage: ReviewStage }
     | { type: 'openCustomConstitution' }
     | { type: 'saveGit'; fg: string; bg: string; bb: string; dr: boolean; mg?: string; md?: { frontend?: string; backend?: string; docs?: string; scripts?: string }; mode?: 'mono' | 'multi' }
     | { type: 'saveAdvancedConfig'; pc: string; mc: number; am: boolean; cm: boolean; ad: boolean; sk: string; ck: string; wsd: string; cps: string; prm: 'local' | 'local+ai'; srd: string; gl: 'relaxed' | 'standard' | 'strict'; cct: string; afm: boolean; pas: boolean }
