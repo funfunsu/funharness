@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { BASE, Config, PROMPT_CONFIGS, PROMPTS_DIR, deriveMasterRoot, getDocsRootDirName, getPrimaryTrackedSpecsDir, getSpecDocsDir, getTrackedSpecsDirCandidates } from '../models';
 import { resolveConstitution, summarizeConstitution } from '../constitution';
+import { ReviewStage, StageContext, StageReviewPromptResult } from '../harnessMessages';
+import type { ReviewPromptConfigService } from './reviewPromptConfigService';
 
 export interface RenderedPrompt {
     content: string;
@@ -410,5 +412,80 @@ export class PromptService {
             rendered = rendered.replace(new RegExp(`{{\\s*${safeKey}\\s*}}`, 'g'), value ?? '');
         }
         return rendered;
+    }
+
+    /**
+     * Per-stage default review prompt bodies (MODEL-2, Req-2, INV-5).
+     * Each stage uses a distinct template to ensure cross-stage prompts are never conflated.
+     */
+    private static readonly DEFAULT_REVIEW_PROMPTS: Record<ReviewStage, string> = {
+        requirements: [
+            '# 需求评审模板（通用默认）',
+            '',
+            '请对以下需求文档进行系统性评审，检查以下维度：',
+            '1. **完整性**：每条需求是否有唯一 Req-* ID、用户故事与验收标准（GIVEN/WHEN/THEN）。',
+            '2. **可测试性**：每条验收标准是否可独立验证，边界条件是否清晰。',
+            '3. **一致性**：需求间是否存在冲突或重复；术语是否统一。',
+            '4. **可追溯性**：需求是否可追溯到业务目标，没有无来源的能力扩展。',
+            '',
+            '请逐条列出发现的问题，并给出修订建议；若无问题请说明理由。',
+        ].join('\n'),
+        design: [
+            '# 设计评审模板（通用默认）',
+            '',
+            '请对以下技术设计文档进行系统性评审，检查以下维度：',
+            '1. **需求覆盖**：所有 Req-* 是否均有对应的 API/Model/不变量设计，无遗漏。',
+            '2. **接口稳定性**：API 契约（路径、字段名、方法签名）是否明确且不与已有契约冲突。',
+            '3. **正确性属性**：不变量（INV-*）是否充分、可验证，且与需求保持一致。',
+            '4. **安全底线**：外部输入是否在边界校验；是否规避 OWASP Top 10 常见漏洞。',
+            '5. **最小实现**：是否存在超出需求范围的过度设计或多余能力扩展。',
+            '',
+            '请逐条列出发现的问题，并给出修订建议；若无问题请说明理由。',
+        ].join('\n'),
+        testcase: [
+            '# 测试用例评审模板（通用默认）',
+            '',
+            '请对以下测试用例文档进行系统性评审，检查以下维度：',
+            '1. **覆盖率**：每条 Req-* 是否至少有一条对应测试用例；正常路径与异常路径均已覆盖。',
+            '2. **格式规范**：每条用例是否遵循 GIVEN/WHEN/THEN 格式且步骤清晰。',
+            '3. **可追溯性**：测试用例是否明确绑定 Req-* ID，无未绑定的游离用例。',
+            '4. **可执行性**：测试步骤是否具体可操作，预期结果是否可客观判断。',
+            '5. **独立性**：各测试用例之间是否存在不必要的依赖，能否独立运行。',
+            '',
+            '请逐条列出发现的问题，并给出修订建议；若无问题请说明理由。',
+        ].join('\n'),
+    };
+
+    /**
+     * Resolve the review prompt for the given stage (API-2, Req-2, Req-3).
+     *
+     * Priority: custom (from configService) > default (INV-6).
+     * The composed prompt always includes stage context snapshot + template body (INV-4).
+     * Different stages always produce distinguishable default prompts (INV-5).
+     *
+     * When configService is not provided the method behaves as if no custom prompt exists
+     * and falls back to the stage default (INV-3).
+     */
+    resolveReviewPromptByStage(
+        stage: ReviewStage,
+        context: StageContext,
+        configService?: ReviewPromptConfigService,
+    ): StageReviewPromptResult {
+        const customPrompt = configService?.getStagePrompt(stage);
+        const hasCustom = typeof customPrompt === 'string' && customPrompt.trim().length > 0;
+
+        const source = hasCustom ? 'custom' : 'default';
+        const promptBody = hasCustom ? customPrompt! : PromptService.DEFAULT_REVIEW_PROMPTS[stage];
+
+        const contextLines = Object.entries(context)
+            .map(([key, value]) => `- ${key}: ${JSON.stringify(value)}`)
+            .join('\n');
+        const contextSection = contextLines
+            ? `## 当前阶段上下文\n${contextLines}`
+            : '## 当前阶段上下文\n（无额外上下文）';
+
+        const composedPrompt = [contextSection, '', promptBody].join('\n');
+
+        return { source, promptBody, composedPrompt };
     }
 }

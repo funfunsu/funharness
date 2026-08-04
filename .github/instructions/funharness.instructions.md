@@ -1,8 +1,31 @@
 ---
-description: Describe when these instructions should be loaded by the agent based on task context
-# applyTo: 'Describe when these instructions should be loaded by the agent based on task context' # when provided, instructions will automatically be added to the request context when the pattern matches an attached file
+description: Fun Harness 编码规范
+applyTo: '**'
 ---
 
-<!-- Tip: Use /create-instructions in chat to generate content with agent assistance -->
+## 定位
 
-Provide project context and coding guidelines that AI should follow when generating code, answering questions, or reviewing changes.
+- 本规范用于约束 Fun Harness 插件代码实现细节。
+- 当前先落地已验证的一条规范，其它条目后续补充。
+
+## 术语
+
+- MUST：必须满足，否则视为不合规。
+- SHOULD：推荐满足，若不满足需有明确理由。
+- MAY：可选实践，按场景采用。
+
+## 编码规范
+
+1. 路径处理规范（必选）
+- MUST：任何路径解析、匹配、分类逻辑必须支持中文及其它非 ASCII 路径。
+- MUST：从 Git 读取变更路径时必须采用稳定策略并处理转义。
+  - MUST：使用 `git -c core.quotepath=false status --porcelain=v1 --untracked-files=all`。
+  - MUST：对 porcelain 路径执行引号与八进制转义解码（如 `\\ddd`）。
+- MUST：在路径比较前统一归一化策略（分隔符与大小写规则一致）。
+- SHOULD：对路径解析失败输出可定位日志（原始输入、解码结果、归一化结果）。
+- MAY：在关键门禁前增加路径识别自检，提前发现编码/转义异常。
+- 验收标准：不得因路径编码/转义问题导致门禁误判或重复触发同一修复流程。
+
+## 预留条目
+
+- 规范 2..N：待后续补充。
