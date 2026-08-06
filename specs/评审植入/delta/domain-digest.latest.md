@@ -1,6 +1,6 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-08-06T07:37:27.785Z
+- generatedAt: 2026-08-06T07:39:37.674Z
 - taskId: task_1785748071307
 - taskName: 评审植入
 - gateLevel: standard
