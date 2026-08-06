@@ -1,7 +1,7 @@
 export type HarnessStep = 'req' | 'des' | 'tcs' | 'tsk' | 'dev';
 
 /** Key stages supported by stage-review workflow. */
-export type ReviewStage = 'requirements' | 'design' | 'testcase';
+export type ReviewStage = 'requirements' | 'design' | 'testcase' | 'tasks';
 
 /** Minimal stage-review context passed from webview panel. */
 export interface StageContext {
@@ -84,13 +84,14 @@ export type HarnessMessage =
     | { type: 'detectDocumentMergeConflicts'; baseDocuments: import('./models').ProjectedDomainDocument[]; currentDocuments: import('./models').ProjectedDomainDocument[]; draftDocuments: import('./models').ProjectedDomainDocument[] }
     // ──────────────────────────────────────────────────────────────
     | { type: 'openCustomPrompt'; step: HarnessStep }
+    | { type: 'openReviewCustomPrompt'; stage: ReviewStage }
     | { type: 'openStageReview'; stage: ReviewStage }
     | { type: 'saveStagePrompt'; stage: ReviewStage; promptBody: string }
     | { type: 'runStageReview'; stage: ReviewStage; context: StageContext }
     | { type: 'getLatestReviewStatus'; stage: ReviewStage }
     | { type: 'openCustomConstitution' }
     | { type: 'saveGit'; fg: string; bg: string; bb: string; dr: boolean; mg?: string; md?: { frontend?: string; backend?: string; docs?: string; scripts?: string }; mode?: 'mono' | 'multi' }
-    | { type: 'saveAdvancedConfig'; pc: string; mc: number; am: boolean; cm: boolean; ad: boolean; sk: string; ck: string; wsd: string; cps: string; prm: 'local' | 'local+ai'; srd: string; gl: 'relaxed' | 'standard' | 'strict'; cct: string; afm: boolean; pas: boolean }
+    | { type: 'saveAdvancedConfig'; pc: string; mc: number; am: boolean; dcm: 'batch' | 'single'; cm: boolean; ad: boolean; ibp: string; iwp: string; ins: boolean; iwl: number; sk: string; ck: string; wsd: string; cps: string; prm: 'local' | 'local+ai'; srd: string; gl: 'relaxed' | 'standard' | 'strict'; cct: string; afm: boolean; pas: boolean }
     | { type: 'initProjectStructure' }
     | { type: 'applyProjectStructurePreview' }
     | { type: 'openArtifactsIndex' }
@@ -114,6 +115,8 @@ export type HarnessMessage =
     | { type: 'openFolderLocation'; id: string; location: 'worktree' | 'frontend' | 'backend' | 'mainFrontend' | 'mainBackend' | 'mono' | 'mainMono' }
     | { type: 'openArtifact'; id: string; artifact: 'requirements' | 'design' | 'testcase' | 'tasks' | 'testScript' }
     | { type: 'next'; id: string; step: HarnessStep; targetStage?: HarnessStep }
+    | { type: 'previous'; id: string; step: HarnessStep }
+    | { type: 'rollbackDev'; id: string }
     | { type: 'pass'; id: string }
     | { type: 'syncMainCode'; id: string }
     | { type: 'completeDevWithPush'; id: string }

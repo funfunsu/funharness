@@ -259,6 +259,53 @@ describe('CapabilityDeltaService', () => {
         }
     });
 
+    test('generateForIteration preserves suggested rawDomain when domain falls back to uncategorized', () => {
+        const root = makeTempDir();
+        try {
+            writeRegistry(root);
+            const iterDir = path.join(root, 'specs', 'suggested-domain');
+            fs.mkdirSync(iterDir, { recursive: true });
+
+            const requirementsContent = [
+                '# Requirements',
+                '```yaml',
+                'artifactType: requirements',
+                'requirements:',
+                '  - id: Req-1',
+                '    domain: uncategorized',
+                '    rawDomain: asset-label-association',
+                '    title: 维护资产标签关联关系',
+                '    userStory: 作为运营人员，我希望维护资产与标签的关联关系',
+                '```',
+                '',
+            ].join('\n');
+
+            const designContent = [
+                '# Design',
+                '```yaml',
+                'artifactType: design',
+                'apiContracts: []',
+                'invariants: []',
+                '```',
+                '',
+            ].join('\n');
+
+            fs.writeFileSync(path.join(iterDir, 'requirements.md'), requirementsContent, 'utf8');
+            fs.writeFileSync(path.join(iterDir, 'design.md'), designContent, 'utf8');
+
+            const service = new CapabilityDeltaService();
+            const result = service.generateForIteration(root, iterDir);
+
+            assert.equal(result.validation.valid, true);
+            assert.equal(result.delta.domains.length, 1);
+            assert.equal(result.delta.domains[0].canonical, null);
+            assert.equal(result.delta.domains[0].rawDomain, 'asset-label-association');
+            assert.equal(result.delta.domains[0].isSuspectedNew, true);
+        } finally {
+            cleanup(root);
+        }
+    });
+
     // ── New tests for MergeConflictService (Task 2.3) via domainKnowledgeAggregateService ──
 
     test('detectDocumentMergeConflicts auto-merges when only draft changed (Req-4, Req-8)', () => {

@@ -16,6 +16,7 @@ import {
     FEATURE_PLAN_LEGACY_REL_PATH,
     FEATURE_PLAN_PRIMARY_REL_PATH,
     Feature,
+    DevRollbackSnapshot,
     getScriptsSubdir,
     getSpecFile,
     getSpecFileRel,
@@ -36,21 +37,6 @@ import { readTextIfExists, safeRemovePath, writeTextAtomic } from './fileOps';
 import { SpecDeltaService } from './specDeltaService';
 import { DomainKnowledgeAggregateService, SuspectedDomainRecord } from './domainKnowledgeAggregateService';
 import { DomainAdjudicationDecision, DomainRegistryService } from './domainRegistryService';
-
-interface ArtifactIndexItem {
-    taskId: string;
-    taskName: string;
-    updatedAt: string;
-    trigger: 'manualPush' | 'taskDone';
-    requirementsPath?: string;
-    designPath?: string;
-}
-
-interface ArtifactIndexFile {
-    version: 1;
-    updatedAt: string;
-    items: ArtifactIndexItem[];
-}
 
 interface HarnessActionsDeps {
     getFeatures: () => Feature[];
@@ -219,6 +205,159 @@ export class HarnessActionsService {
         return result;
     }
 
+    /**
+     * Final execution gate runs at pass/merge time instead of subtask completion.
+     * - relaxed: skip
+     * - standard: run acceptance script `tests/test-api.*` when present
+     * - strict: run acceptance + all `tests/test-<id>.*` scripts for current OS
+     * Missing scripts are non-blocking.
+     */
+    private async runFinalExecutionGate(task: Feature, iterDir: string): Promise<{
+        passed: boolean;
+        skipped: boolean;
+        summary: string;
+        outputTail: string;
+    }> {
+        const gate = resolveGateLevel(this.deps.getConfig());
+        if (gate === 'relaxed') {
+            return {
+                passed: true,
+                skipped: true,
+                summary: 'gateLevel=relaxed，跳过最终执行门禁',
+                outputTail: '',
+            };
+        }
+
+        const isWin = process.platform === 'win32';
+        const ext = isWin ? '.ps1' : '.sh';
+        const testsDir = path.join(iterDir, 'tests');
+        const scriptMap = new Map<string, string>();
+
+        const acceptance = path.join(testsDir, `test-api${ext}`);
+        if (fs.existsSync(acceptance)) {
+            scriptMap.set('test-api', acceptance);
+        }
+
+        if (gate === 'strict' && fs.existsSync(testsDir)) {
+            for (const name of fs.readdirSync(testsDir)) {
+                if (!name.toLowerCase().endsWith(ext)) {
+                    continue;
+                }
+                if (!/^test-\d+\.\d+/.test(name)) {
+                    continue;
+                }
+                const key = name.slice(0, -ext.length);
+                scriptMap.set(key, path.join(testsDir, name));
+            }
+        }
+
+        const scripts = Array.from(scriptMap.entries())
+            .map(([name, file]) => ({ name, file }))
+            .sort((a, b) => a.name.localeCompare(b.name));
+
+        if (scripts.length === 0) {
+            return {
+                passed: true,
+                skipped: true,
+                summary: `gateLevel=${gate}，未发现可执行脚本`,
+                outputTail: '',
+            };
+        }
+
+        const failed: Array<{ name: string; code: number; timedOut: boolean; output: string }> = [];
+        for (const script of scripts) {
+            appendHarnessLog(iterDir, 'execution-gate', `[${task.id}] ▶ final-gate run ${script.name} (${script.file})`);
+            const result = await this.runScriptForGate(script.file, iterDir);
+            if (result.code !== 0 || result.timedOut) {
+                failed.push({
+                    name: script.name,
+                    code: result.code,
+                    timedOut: result.timedOut,
+                    output: result.output,
+                });
+            }
+            appendHarnessLog(
+                iterDir,
+                'execution-gate',
+                `[${task.id}] ${result.code === 0 && !result.timedOut ? '✅' : '❌'} final-gate ${script.name} exit=${result.code}${result.timedOut ? ' timeout' : ''}`,
+            );
+        }
+
+        if (failed.length === 0) {
+            return {
+                passed: true,
+                skipped: false,
+                summary: `执行门禁通过（${scripts.map(item => item.name).join('、')}）`,
+                outputTail: '',
+            };
+        }
+
+        const summary = failed.map(item => `${item.name}(exit=${item.code}${item.timedOut ? ',timeout' : ''})`).join('、');
+        const outputTail = failed
+            .map(item => `# ${item.name}\n${(item.output || '').trim().slice(-1200)}`)
+            .filter(Boolean)
+            .join('\n\n');
+
+        return {
+            passed: false,
+            skipped: false,
+            summary,
+            outputTail,
+        };
+    }
+
+    private runScriptForGate(scriptFile: string, cwd: string): Promise<{ code: number; timedOut: boolean; output: string }> {
+        return new Promise((resolve) => {
+            const isPs = scriptFile.toLowerCase().endsWith('.ps1');
+            const cmd = isPs ? 'powershell' : (process.platform === 'win32' ? 'bash' : 'sh');
+            const args = isPs
+                ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptFile]
+                : [scriptFile];
+
+            let settled = false;
+            let output = '';
+            const capture = (buf: Buffer): void => {
+                output += buf.toString();
+                if (output.length > 8000) {
+                    output = output.slice(-8000);
+                }
+            };
+
+            let child;
+            try {
+                child = spawn(cmd, args, { cwd, shell: false });
+            } catch {
+                resolve({ code: -1, timedOut: false, output });
+                return;
+            }
+
+            const timer = setTimeout(() => {
+                if (!settled) {
+                    settled = true;
+                    try { child.kill(); } catch { /* ignore */ }
+                    resolve({ code: -1, timedOut: true, output });
+                }
+            }, 180_000);
+
+            child.stdout?.on('data', capture);
+            child.stderr?.on('data', capture);
+            child.on('error', () => {
+                if (!settled) {
+                    settled = true;
+                    clearTimeout(timer);
+                    resolve({ code: -1, timedOut: false, output });
+                }
+            });
+            child.on('close', (code) => {
+                if (!settled) {
+                    settled = true;
+                    clearTimeout(timer);
+                    resolve({ code: code ?? -1, timedOut: false, output });
+                }
+            });
+        });
+    }
+
     private showLocalBaseFallbackNoticeIfAny(): void {
         const notice = this.deps.gitService.consumeLocalBaseFallbackNotice();
         if (notice) {
@@ -381,6 +520,7 @@ export class HarnessActionsService {
 
             task.iterationBranch = undefined;
             task.baseBranchUsed = undefined;
+            task.devRollbackSnapshot = undefined;
             task.stage = STAGE.INITIALIZING;
             this.logTaskReset(task, '任务状态已重置为 initializing，等待用户打开 Worktree 时重建代码');
 
@@ -477,7 +617,6 @@ export class HarnessActionsService {
         if (!result.success) {
             vscode.window.showErrorMessage(result.message, { modal: true });
         } else {
-            this.syncTaskDocsToMaster(task, iterDir, 'manualPush');
             vscode.window.showInformationMessage(result.message);
         }
     }
@@ -499,7 +638,6 @@ export class HarnessActionsService {
             vscode.window.showErrorMessage(brief, { detail: extra || undefined, modal: true });
             return;
         }
-        this.syncTaskDocsToMaster(task, iterDir, 'manualPush');
         vscode.window.showInformationMessage(result.message);
     }
 
@@ -858,6 +996,17 @@ export class HarnessActionsService {
         const task = this.getFeatureById(featureId);
         if (!task) return;
 
+        if (step === 'tsk') {
+            const validation = this.validateStageArtifact(task, 'tsk');
+            if (!validation.valid) {
+                vscode.window.showErrorMessage(
+                    `任务拆解产物校验未通过，无法进入开发阶段：\n- ${validation.errors.join('\n- ')}`,
+                    { modal: true },
+                );
+                return;
+            }
+        }
+
         const nextAgentStep: Partial<Record<HarnessStep, HarnessStep>> = {
             req: 'des',
             des: 'tcs',
@@ -890,7 +1039,10 @@ export class HarnessActionsService {
         if (step === 'req') task.stage = STAGE.WRITING_DESIGN;
         if (step === 'des') task.stage = STAGE.WRITING_TESTCASE;
         if (step === 'tcs') task.stage = STAGE.WRITING_TASKS;
-        if (step === 'tsk') task.stage = STAGE.DEVELOPING;
+        if (step === 'tsk') {
+            await this.captureDevRollbackSnapshot(task);
+            task.stage = STAGE.DEVELOPING;
+        }
         if (step === 'dev') {
             const passed = await this.runDevDriftGateWithRepair(task);
             if (!passed) {
@@ -909,6 +1061,82 @@ export class HarnessActionsService {
         }
     }
 
+    async previousStageByFeatureId(featureId: string, step: HarnessStep): Promise<void> {
+        const task = this.getFeatureById(featureId);
+        if (!task) return;
+
+        let previousStage: Feature['stage'] | undefined;
+        let previousLabel = '';
+
+        if (step === 'des') {
+            previousStage = STAGE.WRITING_REQUIREMENT;
+            previousLabel = '需求阶段';
+        }
+        if (step === 'tcs') {
+            previousStage = STAGE.WRITING_DESIGN;
+            previousLabel = '设计阶段';
+        }
+        if (step === 'tsk') {
+            previousStage = STAGE.WRITING_TESTCASE;
+            previousLabel = '测试用例阶段';
+        }
+
+        if (!previousStage) {
+            return;
+        }
+
+        task.allowStageRegressionOnce = true;
+        task.stage = previousStage;
+        this.deps.saveAndRender();
+        delete task.allowStageRegressionOnce;
+        vscode.window.showInformationMessage(`已回到${previousLabel}`);
+    }
+
+    async rollbackDevByFeatureId(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
+        if (!task) return;
+
+        if (task.stage !== STAGE.DEVELOPING) {
+            vscode.window.showWarningMessage('仅支持在开发阶段执行该回退操作');
+            return;
+        }
+
+        const confirmLabel = '确认回退';
+        const answer = await vscode.window.showWarningMessage(
+            `将回退任务「${task.name}」的任务进度到任务拆分刚结束状态。该操作仅重置 tasks.md 子任务状态，是否继续？`,
+            {
+                modal: true,
+                detail: '执行内容：1) 回滚 apps/ 目录代码变更；2) 将 tasks.md 中 done/doing/failed 重置为未完成；3) 清理 signals/done-*；4) requirements/design/testcase 文档保持不变。',
+            },
+            confirmLabel,
+        );
+        if (answer !== confirmLabel) {
+            return;
+        }
+
+        const iterDir = this.deps.getIterationDir(task);
+        const taskPlanPath = this.resolveTaskPlanFile(iterDir);
+
+        this.deps.stopScheduler(task.id);
+
+        const rollbackResult = await this.deps.gitService.rollbackIterationAppsOnly(task, iterDir);
+        if (!rollbackResult.success) {
+            vscode.window.showErrorMessage(rollbackResult.message, { modal: true });
+            return;
+        }
+
+        const changedTaskCount = this.resetTaskPlanStatusesToTodo(taskPlanPath);
+
+        const removedSignals = this.clearDoneSignals(iterDir);
+        await this.captureDevRollbackSnapshot(task, true);
+        task.allowStageRegressionOnce = true;
+        task.stage = STAGE.WRITING_TASKS;
+        this.deps.saveAndRender();
+        delete task.allowStageRegressionOnce;
+
+        vscode.window.showInformationMessage(`${rollbackResult.message}；已重置 ${changedTaskCount} 个子任务为未完成；已清理 ${removedSignals} 个 done 信号；阶段已回到任务拆解`);
+    }
+
     async autoAdvanceReadyTasks(): Promise<boolean> {
         let changed = false;
         for (const task of this.deps.getFeatures()) {
@@ -925,6 +1153,13 @@ export class HarnessActionsService {
                 continue;
             }
 
+            // Task decomposition is an explicit human gate. Do not run automatic
+            // validation/repair dispatch here, otherwise entering TSK can trigger
+            // repeated background AI sessions before the user confirms.
+            if (step === 'tsk') {
+                continue;
+            }
+
             const validation = this.validateStageArtifact(task, step);
             if (!validation.valid) {
                 await this.tryAutoRepair(task, step, validation.errors);
@@ -933,14 +1168,6 @@ export class HarnessActionsService {
 
             this.clearRepairState(task, step);
             if (step === 'tcs') task.stage = STAGE.WRITING_TASKS;
-            if (step === 'tsk') {
-                // strict gate keeps the task plan as a human gate: pass machine checks,
-                // then wait for explicit human confirmation before entering development.
-                if (resolveGateLevel(this.deps.getConfig()) === 'strict') {
-                    continue;
-                }
-                task.stage = STAGE.DEVELOPING;
-            }
             changed = true;
         }
 
@@ -960,6 +1187,23 @@ export class HarnessActionsService {
         }
 
         const iterDir = this.deps.getIterationDir(task);
+        const finalGate = await this.runFinalExecutionGate(task, iterDir);
+        if (!finalGate.passed) {
+            appendHarnessLog(iterDir, 'execution-gate', `[${task.id}] ❌ final-gate failed: ${finalGate.summary}`);
+            vscode.window.showErrorMessage(
+                `执行门禁未通过：${finalGate.summary}`,
+                {
+                    modal: true,
+                    detail: finalGate.outputTail || '请先启动依赖服务并重试。',
+                },
+            );
+            return;
+        }
+        if (!finalGate.skipped) {
+            appendHarnessLog(iterDir, 'execution-gate', `[${task.id}] ✅ final-gate passed: ${finalGate.summary}`);
+            vscode.window.showInformationMessage(finalGate.summary);
+        }
+
         const mergeResult = await this.deps.gitService.mergeIterationToTarget(task, iterDir);
         if (!mergeResult.success) {
             const detail = mergeResult.message || '未知错误';
@@ -976,7 +1220,6 @@ export class HarnessActionsService {
         task.stage = STAGE.DONE;
         this.deps.onPass(task);
         this.deps.saveAndRender();
-        this.syncTaskDocsToMaster(task, iterDir, 'taskDone');
         if (mergeResult.message) {
             vscode.window.showInformationMessage(mergeResult.message);
         }
@@ -1232,7 +1475,6 @@ export class HarnessActionsService {
             vscode.window.showErrorMessage(result.message, { modal: true });
             return;
         }
-        this.syncTaskDocsToMaster(task, iterDir, 'manualPush');
 
         // Then: Mark as complete development (change to READY_FOR_REVIEW)
         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -1252,7 +1494,6 @@ export class HarnessActionsService {
             vscode.window.showErrorMessage(result.message, { modal: true });
             return;
         }
-        this.syncTaskDocsToMaster(task, iterDir, 'manualPush');
 
         // Then: Change to READY_FOR_REVIEW stage
         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -1328,69 +1569,7 @@ export class HarnessActionsService {
             return;
         }
 
-        vscode.window.showInformationMessage('Spec 评审完成：未发现阻断项（详情已打开）');
-    }
-
-    /**
-     * Run main-panel domain aggregation preview and store suspected domains for manual adjudication.
-     */
-    async reviewSuspectedDomainsByFeatureId(featureId: string): Promise<void> {
-        if (this.deps.isWorktreeSubview()) {
-            vscode.window.showWarningMessage('疑似新领域裁决仅支持主面板执行');
-            return;
-        }
-
-        const task = this.getFeatureById(featureId);
-        if (!task) {
-            return;
-        }
-
-        const workspaceRoot = this.deps.getMasterRoot();
-        const repoRoot = this.resolveDomainBaselineRepoRoot(workspaceRoot);
-        this.ensureDomainRegistrySeed(workspaceRoot, repoRoot);
-        const existingPending = this.readSuspectedDomainStore();
-        const result = this.getDomainKnowledgeAggregateService().aggregatePendingDeltas(workspaceRoot, true, repoRoot);
-        const mergedPending = this.mergeSuspectedDomainRecords(existingPending, result.suspectedDomains);
-        this.writeSuspectedDomainStore(mergedPending);
-        this.writeRegistryCoverageReport(workspaceRoot, repoRoot);
-
-        if (mergedPending.length === 0) {
-            if (result.processed.length > 0) {
-                vscode.window.showInformationMessage(`已完成领域基线聚合：处理 ${result.processed.length} 个迭代，未发现待裁决领域`);
-            } else {
-                vscode.window.showInformationMessage('未发现待裁决领域，已完成聚合预检查');
-            }
-            return;
-        }
-
-        const summary = mergedPending
-            .slice(0, 5)
-            .map(item => `${item.rawDomain} (${item.iteration})`)
-            .join('；');
-        vscode.window.showWarningMessage(`发现 ${mergedPending.length} 个待裁决领域：${summary}`);
-    }
-
-    /**
-     * Commit docs/domains baseline changes on the current main-branch working tree.
-     */
-    async commitDomainBaselineByFeatureId(featureId: string): Promise<void> {
-        if (this.deps.isWorktreeSubview()) {
-            vscode.window.showWarningMessage('领域基线提交仅支持主面板执行');
-            return;
-        }
-
-        const task = this.getFeatureById(featureId);
-        if (!task) {
-            return;
-        }
-
-        const repoRoot = this.resolveDomainBaselineRepoRoot(this.deps.getMasterRoot());
-        const result = await this.deps.gitService.commitDomainBaseline(repoRoot);
-        if (!result.success) {
-            vscode.window.showErrorMessage(result.message, { modal: true });
-            return;
-        }
-        vscode.window.showInformationMessage(result.message);
+        vscode.window.showInformationMessage('Spec 评审完成：未发现阻断项（详情 已打开）');
     }
 
     /**
@@ -1746,6 +1925,10 @@ export class HarnessActionsService {
             }
         }
 
+        if (step === 'tsk') {
+            errors.push(...this.validateTaskOutputPathContract(task));
+        }
+
         // Semantic traceability hard gate: cross-artifact Req-* ID closure.
         if ((step === 'des' || step === 'tcs' || step === 'tsk')) {
             const reqPath = getSpecFile(iterDir, cfg, 'requirements.md');
@@ -1774,6 +1957,66 @@ export class HarnessActionsService {
         }
 
         return { valid: errors.length === 0, errors };
+    }
+
+    private validateTaskOutputPathContract(task: Feature): string[] {
+        const scheduler = this.deps.getScheduler(task);
+        const subTasks = scheduler.parseSubFeaturesMd();
+        const errors: string[] = [];
+
+        for (const st of subTasks) {
+            for (const raw of st.output) {
+                const token = this.normalizeOutputPathToken(raw);
+                if (!token) {
+                    continue;
+                }
+
+                if (/\s*[（(][^（）()]*[）)]\s*$/.test(token)) {
+                    errors.push(`任务 ${st.id} 输出项包含括号注释，禁止使用：${raw}`);
+                    continue;
+                }
+
+                if (/\s*\[[^\]]*\]\s*$/.test(token) || /\s*\{[^}]*\}\s*$/.test(token)) {
+                    errors.push(`任务 ${st.id} 输出项包含注释后缀，禁止使用：${raw}`);
+                    continue;
+                }
+
+                if (/[:：]\s*\S+/.test(token)) {
+                    errors.push(`任务 ${st.id} 输出项包含说明性后缀，禁止使用：${raw}`);
+                    continue;
+                }
+
+                if (/^[a-zA-Z]:[\\/]/.test(token) || token.startsWith('/')) {
+                    errors.push(`任务 ${st.id} 输出项必须是仓库相对路径，禁止绝对路径：${raw}`);
+                    continue;
+                }
+
+                if (/^\.\.?[\\/]/.test(token)) {
+                    errors.push(`任务 ${st.id} 输出项必须从仓库根相对路径开始，禁止 ./ 或 ../：${raw}`);
+                    continue;
+                }
+
+                if (!/[\\/]/.test(token)) {
+                    errors.push(`任务 ${st.id} 输出项必须为完整相对路径（至少包含一级目录）：${raw}`);
+                }
+            }
+        }
+
+        return errors;
+    }
+
+    private normalizeOutputPathToken(value: string): string {
+        let token = String(value || '').trim();
+        if (!token) {
+            return '';
+        }
+        if (/^`[^`]+`$/.test(token)) {
+            token = token.slice(1, -1).trim();
+        }
+        if ((/^"[^"]+"$/.test(token)) || (/^'[^']+'$/.test(token))) {
+            token = token.slice(1, -1).trim();
+        }
+        return token;
     }
 
     private validateTestManifestSchema(manifest: Record<string, unknown>): string[] {
@@ -2019,6 +2262,70 @@ export class HarnessActionsService {
         return resolveFeaturePlanFileForIteration(iterDir, this.deps.getConfig());
     }
 
+    private async captureDevRollbackSnapshot(task: Feature, force: boolean = false): Promise<void> {
+        if (!force && task.devRollbackSnapshot) {
+            return;
+        }
+
+        const iterDir = this.deps.getIterationDir(task);
+        const taskPlanPath = this.resolveTaskPlanFile(iterDir);
+        const relPath = path.relative(iterDir, taskPlanPath).replace(/\\/g, '/');
+        const taskPlanContent = readTextIfExists(taskPlanPath) || '';
+        const repoHeadByKind = await this.deps.gitService.captureIterationRepoHeads(iterDir);
+        const snapshot: DevRollbackSnapshot = {
+            createdAt: new Date().toISOString(),
+            taskPlanRelPath: relPath || 'tasks.md',
+            taskPlanContent,
+            repoHeadByKind,
+        };
+        task.devRollbackSnapshot = snapshot;
+    }
+
+    private resetTaskPlanStatusesToTodo(taskPlanPath: string): number {
+        const existing = readTextIfExists(taskPlanPath);
+        if (!existing) {
+            return 0;
+        }
+
+        let changed = 0;
+        const rewritten = existing.split(/\r?\n/).map((line) => {
+            const next = line.replace(/^(\s*-\s*\[)\s*(x|X|doing|failed)(\]\s*\d+\.\d+\s+)/, '$1 $3');
+            if (next !== line) {
+                changed += 1;
+            }
+            return next;
+        }).join('\n');
+
+        if (changed > 0) {
+            fs.writeFileSync(taskPlanPath, rewritten, 'utf8');
+        }
+        return changed;
+    }
+
+    private clearDoneSignals(iterDir: string): number {
+        const signalsDir = path.join(iterDir, 'signals');
+        if (!fs.existsSync(signalsDir)) {
+            return 0;
+        }
+        const entries = fs.readdirSync(signalsDir);
+        let removed = 0;
+        for (const name of entries) {
+            if (!name.startsWith('done-')) {
+                continue;
+            }
+            const fullPath = path.join(signalsDir, name);
+            try {
+                if (fs.statSync(fullPath).isFile()) {
+                    fs.unlinkSync(fullPath);
+                    removed += 1;
+                }
+            } catch {
+                // Ignore best-effort cleanup failures for individual files.
+            }
+        }
+        return removed;
+    }
+
     private stageArtifactFileName(step: Exclude<HarnessStep, 'dev'>): string {
         const fileMap = {
             req: 'requirements.md',
@@ -2144,130 +2451,6 @@ export class HarnessActionsService {
 
     private normalize(inputPath: string): string {
         return inputPath.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
-    }
-
-    private syncTaskDocsToMaster(task: Feature, iterDir: string, trigger: 'manualPush' | 'taskDone'): void {
-        try {
-            // Iteration-docs-to-root archival is only meaningful in multi-repo mode. In monorepo mode
-            // the git merge of the iteration branch already propagates docs into the main repo, so
-            // this manual copy-back would be redundant.
-            const cfg = this.deps.getConfig();
-            if (Boolean(cfg.monorepoGit?.trim())) {
-                return;
-            }
-            const sourceRequirements = resolveSpecFile(iterDir, cfg, 'requirements.md');
-            const sourceDesign = resolveSpecFile(iterDir, cfg, 'design.md');
-            const masterRoot = this.resolveMasterWorkspaceRoot();
-            if (!masterRoot) {
-                return;
-            }
-
-            const safeName = task.name.replace(/[^a-zA-Z0-9_-]/g, '-');
-            const targetRequirements = path.join(masterRoot, 'docs', 'requirements', `requirements-${safeName}.md`);
-            const targetDesign = path.join(masterRoot, 'docs', 'designs', `designs-${safeName}.md`);
-
-            const copied: string[] = [];
-            let requirementsSynced = false;
-            let designSynced = false;
-            if (this.copyNonEmptyFile(sourceRequirements, targetRequirements)) {
-                copied.push('requirements');
-                requirementsSynced = true;
-            }
-            if (this.copyNonEmptyFile(sourceDesign, targetDesign)) {
-                copied.push('design');
-                designSynced = true;
-            }
-
-            this.updateArtifactIndex(masterRoot, task, trigger, {
-                requirementsPath: requirementsSynced ? targetRequirements : undefined,
-                designPath: designSynced ? targetDesign : undefined,
-            });
-
-            if (copied.length > 0) {
-                const tip = trigger === 'taskDone' ? '任务完成后已归档文档' : '提交代码后已归档文档';
-                vscode.window.showInformationMessage(`${tip}：${copied.join('、')}（taskId=${task.id}）`);
-            }
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            vscode.window.showWarningMessage(`归档需求/设计文档失败：${message}`);
-        }
-    }
-
-    private copyNonEmptyFile(sourcePath: string, targetPath: string): boolean {
-        if (!fs.existsSync(sourcePath)) {
-            return false;
-        }
-        const content = fs.readFileSync(sourcePath, 'utf8');
-        if (!content.trim()) {
-            return false;
-        }
-        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-        fs.writeFileSync(targetPath, content, 'utf8');
-        return true;
-    }
-
-    private updateArtifactIndex(
-        masterRoot: string,
-        task: Feature,
-        trigger: 'manualPush' | 'taskDone',
-        paths: { requirementsPath?: string; designPath?: string }
-    ): void {
-        const indexPath = path.join(masterRoot, 'docs', 'artifacts-index.json');
-        const now = new Date().toISOString();
-
-        let data: ArtifactIndexFile = {
-            version: 1,
-            updatedAt: now,
-            items: [],
-        };
-
-        if (fs.existsSync(indexPath)) {
-            try {
-                const raw = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as Partial<ArtifactIndexFile>;
-                if (Array.isArray(raw.items)) {
-                    data = {
-                        version: 1,
-                        updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : now,
-                        items: raw.items.filter((item): item is ArtifactIndexItem => Boolean(item && typeof item.taskId === 'string')),
-                    };
-                }
-            } catch {
-                // Keep default empty index when existing file is malformed.
-            }
-        }
-
-        const existing = data.items.find(item => item.taskId === task.id);
-        if (existing) {
-            existing.taskName = task.name;
-            existing.updatedAt = now;
-            existing.trigger = trigger;
-            if (paths.requirementsPath) {
-                existing.requirementsPath = this.toWorkspaceLikePath(masterRoot, paths.requirementsPath);
-            }
-            if (paths.designPath) {
-                existing.designPath = this.toWorkspaceLikePath(masterRoot, paths.designPath);
-            }
-        } else {
-            data.items.push({
-                taskId: task.id,
-                taskName: task.name,
-                updatedAt: now,
-                trigger,
-                ...(paths.requirementsPath ? { requirementsPath: this.toWorkspaceLikePath(masterRoot, paths.requirementsPath) } : {}),
-                ...(paths.designPath ? { designPath: this.toWorkspaceLikePath(masterRoot, paths.designPath) } : {}),
-            });
-        }
-
-        data.updatedAt = now;
-        data.items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-
-        fs.mkdirSync(path.dirname(indexPath), { recursive: true });
-        fs.writeFileSync(indexPath, JSON.stringify(data, null, 2), 'utf8');
-    }
-
-    private toWorkspaceLikePath(masterRoot: string, absPath: string): string {
-        const rel = path.relative(masterRoot, absPath).replace(/\\/g, '/');
-        return rel || absPath;
     }
 
     private toRelativeIterationPath(iterDir: string, absPath: string): string {

@@ -83,7 +83,57 @@ node scripts/validate-webview.js  # 单独验证 Webview 内联脚本
 - 路径比较前统一归一化分隔符与大小写策略。
 - `docs/domains/registry.yaml` 可能为空——需求阶段若无法取到合规 canonical domain，必须触发 FAILURE PROTOCOL 阻断报告，不得静默跳过。
 
-### 2. Webview 脚本
+### 2. Prompt 落盘约定
+
+所有阶段（包括评审阶段）遵循统一的 Prompt 两层结构：
+
+#### 2a. 通用 System Prompt（内置默认层）
+
+放置于 `apps/system-prompts/`，所有文件均随插件分发：
+
+| 阶段 | 文件名 |
+|------|--------|
+| 需求 Agent | `requirement_system_prompt.md` |
+| 设计 Agent | `design_system_prompt.md` |
+| 测试用例 Agent | `testcase_system_prompt.md` |
+| 任务拆解 Agent | `task_system_prompt.md` |
+| 开发 Agent | `dev_system_prompt.md` |
+| 需求评审 | `review_requirements_system_prompt.md` |
+| 设计评审 | `review_design_system_prompt.md` |
+| 测试用例评审 | `review_testcase_system_prompt.md` |
+| 宪法默认 | `constitution_default.md` |
+
+- 不得将 prompt 内容硬编码在 TypeScript 源文件中；源码只保存文件路径引用和加载逻辑。
+
+#### 2b. 用户自定义层（项目级覆盖）
+
+用户可在项目的 git-tracked specs 目录（如 `specs/`）下放置同名自定义文件，**优先级高于内置默认**：
+
+| 阶段 | 自定义文件名（放于 `specs/` 或项目 prompts 目录） |
+|------|------|
+| 需求 Agent | `requirements_custom_prompt.md` |
+| 设计 Agent | `design_custom_prompt.md` |
+| 测试用例 Agent | `testcase_custom_prompt.md` |
+| 任务拆解 Agent | `tasks_custom_prompt.md` |
+| 开发 Agent | `dev_custom_prompt.md` |
+| 需求评审 | `review_requirements_custom_prompt.md` |
+| 设计评审 | `review_design_custom_prompt.md` |
+| 测试用例评审 | `review_testcase_custom_prompt.md` |
+
+- 对于 Agent 类（需求/设计等），自定义文件内容作为**补充追加**，与 system prompt 合并渲染。
+- 对于评审类，自定义文件内容**完整替换**默认 system prompt（`source: 'custom'`）。
+- Webview 侧面板各阶段旁路操作区均有「⚙️ ×× 评审 Prompt」按钮，点击后在编辑器中打开对应自定义文件（文件不存在时自动创建空文件）。
+
+#### 2c. 加载优先级（评审 Prompt 完整链路）
+
+```
+文件自定义 (review_*_custom_prompt.md in specs/)
+  > JSON 自定义 (reviewPromptConfigService, 旧版向后兼容)
+  > 内置 system-prompt 文件 (apps/system-prompts/review_*_system_prompt.md)
+  > 代码内兜底字符串
+```
+
+### 3. Webview 脚本
 
 - 凡修改 `apps/src/webviewTemplates.ts` 或任何 Webview 相关文件，提交前**必须**执行：
   ```
@@ -108,3 +158,4 @@ node scripts/validate-webview.js  # 单独验证 Webview 内联脚本
 - `apps/` 是 VS Code 扩展根，`package.json` 中 `"main": "./out/extension.js"`，编译产物在 `apps/out/`。
 - 测试框架为 Node 原生 `node:test`（Node 18+），测试文件为 `.test.js`，不使用 Jest/Mocha。
 - `specs/<迭代名>/delta/` 记录 SpecDelta 漂移门控产物，不要手动删除。
+- **过程性产物落位**：检查点冻结记录、追溯基线、门禁/提交清单、验证/演练记录等一次性内容必须写入 `.harness/process/`（运行时命名空间，已 gitignore），**禁止写入 `specs/`**。`specs/<迭代名>/` 仅保存 requirements/design/testcase/tasks 四类需长期保存的规范产物（`delta/` 除外）。

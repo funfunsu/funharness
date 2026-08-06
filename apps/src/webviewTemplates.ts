@@ -61,6 +61,7 @@ export interface MainFeatureViewModel {
     pct: number;
     subTasks: SubFeature[];
     latestFailureReason?: string;
+    taskOutputPathWarnings?: string[];
     isAuto: boolean;
     artifacts: {
         requirements: boolean;
@@ -92,7 +93,7 @@ export interface MainFeatureViewModel {
 }
 
 type PanelMode = 'main' | 'worktree';
-type ActionPlacement = 'primary' | 'side';
+type ActionPlacement = 'primary' | 'side' | 'header';
 
 interface FeatureActionContext {
     panelMode: PanelMode;
@@ -112,6 +113,10 @@ interface FeatureActionConfig {
     render: (ctx: FeatureActionContext) => string;
 }
 
+function renderPreviousStageButton(taskId: string, step: 'des' | 'tcs' | 'tsk' | 'dev', title: string): string {
+    return `<button class="action-btn action-btn--previous" onclick="previousStage('${step}','${taskId}')" title="${title}" aria-label="${title}">&lt; 上一步</button>`;
+}
+
 const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
     {
         key: 'req-run',
@@ -119,6 +124,13 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_REQUIREMENT],
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="runAgent('req','${ctx.task.id}')">🤖 运行需求 Agent</button>`,
+    },
+    {
+        key: 'req-review',
+        placement: 'primary',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_REQUIREMENT],
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="triggerStageReview('${ctx.task.id}','requirements')">⚖️ AI 评审</button>`,
     },
     {
         key: 'req-confirm',
@@ -135,11 +147,32 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','requirements')">📄 查看需求产物</button>`,
     },
     {
+        key: 'req-review-prompt',
+        placement: 'side',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_REQUIREMENT],
+        render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('requirements')">⚙️ 需求评审 Prompt</button>`,
+    },
+    {
+        key: 'des-previous',
+        placement: 'header',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_DESIGN],
+        render: (ctx) => renderPreviousStageButton(ctx.task.id, 'des', '返回需求阶段'),
+    },
+    {
         key: 'des-run',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_DESIGN],
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="runAgent('des','${ctx.task.id}')">🤖 运行设计 Agent</button>`,
+    },
+    {
+        key: 'des-review',
+        placement: 'primary',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_DESIGN],
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="triggerStageReview('${ctx.task.id}','design')">⚖️ AI 评审</button>`,
     },
     {
         key: 'des-confirm-tcs',
@@ -163,11 +196,32 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','design')">📄 查看设计产物</button>`,
     },
     {
+        key: 'des-review-prompt',
+        placement: 'side',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_DESIGN],
+        render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('design')">⚙️ 设计评审 Prompt</button>`,
+    },
+    {
+        key: 'tcs-previous',
+        placement: 'header',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_TESTCASE],
+        render: (ctx) => renderPreviousStageButton(ctx.task.id, 'tcs', '返回设计阶段'),
+    },
+    {
         key: 'tcs-run',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TESTCASE],
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="runAgent('tcs','${ctx.task.id}')">🤖 运行测试用例 Agent</button>`,
+    },
+    {
+        key: 'tcs-review',
+        placement: 'primary',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_TESTCASE],
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="triggerStageReview('${ctx.task.id}','testcase')">⚖️ AI 评审</button>`,
     },
     {
         key: 'tcs-confirm',
@@ -184,11 +238,25 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','testcase')">📄 查看测试用例</button>`,
     },
     {
+        key: 'tcs-review-prompt',
+        placement: 'side',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_TESTCASE],
+        render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('testcase')">⚙️ 测试用例评审 Prompt</button>`,
+    },
+    {
         key: 'test-script-view',
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TESTCASE, STAGE.DEVELOPING],
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','testScript')">🧪 查看测试脚本</button>`,
+    },
+    {
+        key: 'tsk-previous',
+        placement: 'header',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_TASKS],
+        render: (ctx) => renderPreviousStageButton(ctx.task.id, 'tsk', '返回测试用例阶段'),
     },
     {
         key: 'tsk-run',
@@ -198,6 +266,13 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="runAgent('tsk','${ctx.task.id}')">🤖 运行任务 Agent</button>`,
     },
     {
+        key: 'tsk-review',
+        placement: 'primary',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_TASKS],
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="triggerStageReview('${ctx.task.id}','tasks')">⚖️ AI 评审</button>`,
+    },
+    {
         key: 'tsk-confirm',
         placement: 'primary',
         panels: ['main', 'worktree'],
@@ -205,11 +280,26 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         render: (ctx) => `<button class="action-btn action-btn--primary" onclick="next('tsk','${ctx.task.id}')">✅ 确认任务拆解</button>`,
     },
     {
+        key: 'tsk-review-prompt',
+        placement: 'side',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_TASKS],
+        render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('tasks')">⚙️ 任务拆解评审 Prompt</button>`,
+    },
+    {
         key: 'tasks-view',
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TASKS, STAGE.DEVELOPING, STAGE.READY_FOR_REVIEW],
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','tasks')">📋 查看任务产物</button>`,
+    },
+    {
+        key: 'dev-tasks-review-prompt',
+        placement: 'side',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.DEVELOPING],
+        when: (ctx) => !ctx.task.quickMode,
+        render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('tasks')">⚙️ 任务拆解评审 Prompt</button>`,
     },
     {
         key: 'dev-auto-toggle',
@@ -245,6 +335,13 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
         render: (ctx) => `<button class="action-btn action-btn--primary" onclick="${ctx.isWorktreeSubview ? 'pushDev' : 'pushAll'}('${ctx.task.id}')">🚀 推送</button>`,
+    },
+    {
+        key: 'dev-rollback-to-task-split',
+        placement: 'header',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.DEVELOPING],
+        render: (ctx) => `<button class="action-btn action-btn--subtle-danger" onclick="rollbackDev('${ctx.task.id}')">回滚</button>`,
     },
     {
         key: 'review-spec',
@@ -300,21 +397,10 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
     },
 ];
 
-function collectTaskActions(ctx: FeatureActionContext): { primaryActions: string[]; sideActions: string[] } {
+function collectTaskActions(ctx: FeatureActionContext): { primaryActions: string[]; sideActions: string[]; headerActions: string[] } {
     const primaryActions: string[] = [];
     const sideActions: string[] = [];
-
-    // Debug: log the collection context and configuration
-    if (ctx.task.id && ctx.task.id.includes('task_')) {
-        const actionDebugLog = {
-            taskId: ctx.task.id,
-            panelMode: ctx.panelMode,
-            taskStage: ctx.task.stage,
-            isWorktreeSubview: ctx.isWorktreeSubview,
-            configCount: FEATURE_ACTION_CONFIGS.length,
-        };
-        console.debug('[collectTaskActions]', actionDebugLog);
-    }
+    const headerActions: string[] = [];
 
     for (const action of FEATURE_ACTION_CONFIGS) {
         if (!action.panels.includes(ctx.panelMode)) {
@@ -332,25 +418,18 @@ function collectTaskActions(ctx: FeatureActionContext): { primaryActions: string
         }
         if (action.placement === 'primary') {
             primaryActions.push(rendered);
+        } else if (action.placement === 'header') {
+            headerActions.push(rendered);
         } else {
             sideActions.push(rendered);
         }
     }
 
-    // Debug: log results
-    if (ctx.task.id && ctx.task.id.includes('task_')) {
-        console.debug('[collectTaskActions.result]', {
-            primaryCount: primaryActions.length,
-            sideCount: sideActions.length,
-            primaryKeys: primaryActions.length > 0 ? 'generated' : 'none',
-        });
-    }
-
-    return { primaryActions, sideActions };
+    return { primaryActions, sideActions, headerActions };
 }
 
 /** Map internal task stage to review stage contract used by review messages (Req-1). */
-function getReviewStageByTaskStage(stage: Feature['stage']): 'requirements' | 'design' | 'testcase' | null {
+function getReviewStageByTaskStage(stage: Feature['stage']): 'requirements' | 'design' | 'testcase' | 'tasks' | null {
     if (stage === STAGE.WRITING_REQUIREMENT) {
         return 'requirements';
     }
@@ -360,51 +439,24 @@ function getReviewStageByTaskStage(stage: Feature['stage']): 'requirements' | 'd
     if (stage === STAGE.WRITING_TESTCASE) {
         return 'testcase';
     }
+    if (stage === STAGE.WRITING_TASKS) {
+        return 'tasks';
+    }
     return null;
 }
 
 /** Human-readable labels for review stages shown in the webview panel. */
-function getReviewStageLabel(stage: 'requirements' | 'design' | 'testcase'): string {
+function getReviewStageLabel(stage: 'requirements' | 'design' | 'testcase' | 'tasks'): string {
     if (stage === 'requirements') {
         return '需求';
     }
     if (stage === 'design') {
         return '设计';
     }
-    return '测试用例';
-}
-
-/** Render the optional review entry + status panel + custom prompt editor for key stages (Req-1, Req-3, Req-4). */
-function buildStageReviewSectionHtml(task: Feature): string {
-    const reviewStage = getReviewStageByTaskStage(task.stage);
-    if (!reviewStage) {
-        return '';
+    if (stage === 'tasks') {
+        return '任务拆解';
     }
-    const stageLabel = getReviewStageLabel(reviewStage);
-    const taskId = escapeHtml(task.id);
-    const taskName = escapeHtml(task.name || '');
-    const desc = escapeHtml(task.desc || '');
-    const key = `${taskId}-${reviewStage}`;
-    return `<div class="review-panel" data-task-id="${taskId}" data-task-name="${taskName}" data-task-desc="${desc}" data-review-stage="${reviewStage}">
-<div class="review-panel-head">
-<div class="review-panel-title">⚖️ ${stageLabel}评审（可选）</div>
-<div class="review-panel-actions">
-<button class="action-btn action-btn--neutral review-panel-btn" onclick="triggerStageReview('${taskId}','${reviewStage}')">发起评审</button>
-<button class="action-btn action-btn--neutral review-panel-btn" onclick="refreshStageReviewStatus('${taskId}','${reviewStage}')">刷新状态</button>
-<button class="action-btn action-btn--neutral review-panel-btn" onclick="toggleStagePromptEditor('${taskId}','${reviewStage}')">自定义 Prompt</button>
-</div>
-</div>
-<div class="review-status-line">状态：<span id="review-status-${key}" class="review-status-badge review-status-idle">idle</span></div>
-<div id="review-summary-${key}" class="review-summary" style="display:none"></div>
-<div id="review-error-${key}" class="review-error" style="display:none"></div>
-<div id="review-note-${key}" class="review-note">未点击评审时不会阻断主流程推进。</div>
-<div id="review-editor-${key}" class="review-editor" style="display:none">
-<textarea id="review-prompt-${key}" rows="4" placeholder="按阶段填写自定义评审 Prompt；保存后该阶段评审优先使用自定义模板"></textarea>
-<div class="review-editor-actions">
-<button class="action-btn action-btn--primary review-panel-btn" onclick="saveStageReviewPrompt('${taskId}','${reviewStage}')">保存自定义 Prompt</button>
-</div>
-</div>
-</div>`;
+    return '测试用例';
 }
 
 export function buildMainPageHtml(
@@ -456,6 +508,7 @@ body{background:#111;color:#eee;padding:14px;font-family:-apple-system;padding-b
 .action{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
 .action button{flex:1;padding:8px;border-radius:8px;border:none;font-size:11px;min-width:80px}
 .action-stack{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.action-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .action-group{display:flex;gap:6px;flex-wrap:wrap}
 .action-label{font-size:11px;color:#8f8f94;text-transform:uppercase;letter-spacing:.04em}
 .action-btn{flex:1;min-width:80px;padding:8px 10px;border-radius:8px;border:1px solid transparent;font-size:11px;font-weight:600;line-height:1;display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;transition:background-color .16s ease,border-color .16s ease,color .16s ease,transform .12s ease}
@@ -473,23 +526,12 @@ body{background:#111;color:#eee;padding:14px;font-family:-apple-system;padding-b
 .action-btn--warning:hover{background:#ffb143}
 .action-btn--danger{background:#ff3b30;color:#fff}
 .action-btn--danger:hover{background:#ff5550}
-.review-panel{margin-top:10px;padding:10px;border-radius:10px;background:#1a1a1d;border:1px solid #2f2f35}
-.review-panel-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
-.review-panel-title{font-size:12px;font-weight:600;color:#e8e8ed}
-.review-panel-actions{display:flex;gap:6px;flex-wrap:wrap}
-.review-panel-btn{min-width:auto;flex:none;padding:6px 10px}
-.review-status-line{margin-top:8px;font-size:12px;color:#c9c9ce}
-.review-status-badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
-.review-status-idle{background:#3a3a3f;color:#d7d7dc}
-.review-status-running{background:#2b4c6f;color:#b4dcff}
-.review-status-completed{background:#1e4a31;color:#95f0be}
-.review-status-failed{background:#5a2222;color:#ffb4b4}
-.review-summary{margin-top:6px;padding:8px;border-radius:8px;background:#1f3a2b;color:#c4f0d8;font-size:12px;line-height:1.45;white-space:pre-wrap}
-.review-error{margin-top:6px;padding:8px;border-radius:8px;background:#4b1f1f;color:#ffbcbc;font-size:12px;line-height:1.45;white-space:pre-wrap}
-.review-note{margin-top:6px;font-size:11px;color:#9d9da6}
-.review-editor{margin-top:8px}
-.review-editor textarea{margin-bottom:6px;min-height:90px;resize:vertical}
-.review-editor-actions{display:flex;justify-content:flex-end}
+.action-btn--subtle-danger{flex:none;min-width:auto;padding:0;background:transparent;border:none;color:#8f8f94}
+.action-btn--subtle-danger:hover{background:transparent;color:#ff8b85;transform:none}
+.action-btn--icon-only{flex:none;min-width:auto;width:36px;padding:8px}
+.action-btn__icon{width:14px;height:14px;display:block}
+.action-btn--previous{flex:none;min-width:auto;padding:0;background:transparent;border:none;color:#8f8f94;font-size:11px;line-height:1.2}
+.action-btn--previous:hover{background:transparent;color:#d0d0d6;transform:none}
 .fixed-bottom{position:sticky;bottom:0;background:#111;padding-top:8px;padding-bottom:4px;margin-top:10px}
 .input-card{background:#1c1c1e;border-radius:12px;padding:12px}
 input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:#2c2c2e;color:#fff;margin-bottom:8px}
@@ -675,9 +717,11 @@ ${visibleTaskViews.map(view => {
     const showSubTasks = (t.stage === STAGE.WRITING_TASKS || t.stage === STAGE.DEVELOPING) && subTasks.length > 0;
     const canOperateSubTasks = t.stage === STAGE.DEVELOPING;
     const allSubTasksDone = t.stage === STAGE.DEVELOPING && stats.total > 0 && stats.done >= stats.total;
+    const outputWarnings = view.taskOutputPathWarnings || [];
+    const outputWarningsPreview = outputWarnings.slice(0, 2);
     const hasWorktree = Boolean(t.worktreePath) || health.worktreeExists || health.frontendExists || health.backendExists;
     const panelMode: PanelMode = isWorktreeSubview ? 'worktree' : 'main';
-    const { primaryActions, sideActions } = collectTaskActions({
+    const { primaryActions, sideActions, headerActions } = collectTaskActions({
         panelMode,
         isWorktreeSubview,
         taskView: view,
@@ -696,9 +740,8 @@ ${visibleTaskViews.map(view => {
 
     const actionHtml = `
 <div class="action-stack">
-  ${primaryActions.length > 0 ? `<div class="action-label">主流程操作</div><div class="action-group">${primaryActions.join('')}${t.stage === STAGE.DEVELOPING ? `<!-- STAGE=DEVELOPING, primaryCount=${primaryActions.length} -->` : ''}</div>` : ''}
+    ${(primaryActions.length > 0 || headerActions.length > 0) ? `<div class="action-header"><div class="action-label">主流程操作</div>${headerActions.length > 0 ? `<div class="action-group">${headerActions.join('')}</div>` : ''}</div>${primaryActions.length > 0 ? `<div class="action-group">${primaryActions.join('')}${t.stage === STAGE.DEVELOPING ? `<!-- STAGE=DEVELOPING, primaryCount=${primaryActions.length} -->` : ''}</div>` : ''}` : ''}
   ${sideActions.length > 0 ? `<div class="action-label">旁路操作</div><div class="action-group">${sideActions.join('')}</div>` : ''}
-  ${t.stage === STAGE.DEVELOPING && primaryActions.length === 0 ? `<div style="color:#ff9500;font-size:11px;padding:4px;background:#2b2308;border:1px solid #7a5d00;border-radius:4px;margin-top:4px">⚠DEBUG: DEVELOPING 阶段但无主流程按钮 (panelMode=${panelMode})</div>` : ''}
 </div>`;
 
     return `
@@ -729,10 +772,10 @@ ${!t.quickMode ? `<div>阶段：${STAGE_LABEL[t.stage] || t.stage}</div>
 <div class="task-status">原因：${health.summary || '-'}</div>
 ${(t.stage === STAGE.DEVELOPING || t.stage === STAGE.READY_FOR_REVIEW) ? `<div class="health-line" style="margin:4px 0">${buildDeltaBadgeHtml(t.id, view.specDeltaStatus)}</div>` : ''}
 ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.latestFailureReason}</div>` : ''}
+${outputWarningsPreview.length > 0 ? `<div class="task-status" style="color:#ffb143">输出路径告警：${outputWarningsPreview.map(escapeHtml).join('；')}${outputWarnings.length > outputWarningsPreview.length ? `（+${outputWarnings.length - outputWarningsPreview.length}）` : ''}</div>` : ''}
 <div class="task-status">待办:${stats.todo} 执行中:${stats.doing} 完成:${stats.done}${stats.failed > 0 ? ` 失败:${stats.failed}` : ''}</div>
 <div class="task-progress"><div class="progress-bar" style="width:${view.pct}%"></div></div>
 <div style="font-size:12px">进度：${view.pct}%</div>` : ''}
-${buildStageReviewSectionHtml(t)}
 ${isWorktreeSubview ? `<div class="config-actions" style="margin-top:6px">
 <button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
 <button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
@@ -825,14 +868,11 @@ const v=acquireVsCodeApi();
 const isWorktreeSubview=${isWorktreeSubview ? 'true' : 'false'};
 const DOMAIN_GOVERNANCE_TASK_ID='${escapeHtml(governanceTaskId)}';
 const TODO_STATE_KEY='workspaceTodoState.v1';
-const REVIEW_STATE_KEY='stageReviewState.v1';
 const DOMAIN_WORKSPACE_STATE_KEY='domainWorkspaceState.v1';
 const TODO_SOURCE_PANEL=${isWorktreeSubview ? "'worktree'" : "'master'"};
 const TODO_INITIAL_TODOS=[];
 let todoState=loadTodoState();
-let reviewState=loadReviewState();
 let domainActionLoading='';
-const reviewPollTimers={};
 let domainWorkspaceState=loadDomainWorkspaceState();
 
 /** Build a default in-memory state for domain workspace interactions. */
@@ -1097,260 +1137,14 @@ function reloadDomainWorkspaceContext(){
     requestDomainWorkspaceContext();
 }
 
-/** Build default UI state for stage-review widgets. */
-function createDefaultReviewState(){
-    return { byKey:{} };
-}
-
-/** Restore persisted stage-review UI state from VS Code webview state storage. */
-function loadReviewState(){
-    const state=v.getState()||{};
-    const cached=state[REVIEW_STATE_KEY];
-    if(!cached||typeof cached!=='object'||!cached.byKey||typeof cached.byKey!=='object'){
-        return createDefaultReviewState();
-    }
-    return { byKey:cached.byKey };
-}
-
-/** Persist stage-review UI state for refresh-safe continuity. */
-function saveReviewState(){
-    const state=v.getState()||{};
-    state[REVIEW_STATE_KEY]=reviewState;
-    v.setState(state);
-}
-
-/** Build stable state key for one task-stage review panel. */
-function getReviewStateKey(taskId,stage){
-    return String(taskId||'')+'::'+String(stage||'');
-}
-
-/** Ensure one review-state entry exists and return it. */
-function ensureReviewEntry(taskId,stage){
-    const key=getReviewStateKey(taskId,stage);
-    if(!reviewState.byKey[key]){
-        reviewState.byKey[key]={
-            status:'idle',
-            summary:'',
-            errorReason:'',
-            editorOpen:false,
-            customPrompt:'',
-            reviewEnabled:true,
-            defaultExecuted:false,
-            lastPromptSavedAt:'',
-        };
-    }
-    return reviewState.byKey[key];
-}
-
-/** Escape dynamic text before writing into review panel HTML slots. */
-function escapeReviewHtml(value){
-    return String(value??'')
-        .replace(/&/g,'&amp;')
-        .replace(/</g,'&lt;')
-        .replace(/>/g,'&gt;')
-        .replace(/\"/g,'&quot;')
-        .replace(/'/g,'&#39;');
-}
-
-/** Start polling latest status while a stage review is running. */
-function startStageReviewPolling(taskId,stage){
-    const timerKey=getReviewStateKey(taskId,stage);
-    stopStageReviewPolling(taskId,stage);
-    let attempts=0;
-    reviewPollTimers[timerKey]=setInterval(function(){
-        attempts+=1;
-        v.postMessage({type:'getLatestReviewStatus',stage});
-        if(attempts>=20){
-            stopStageReviewPolling(taskId,stage);
-        }
-    },1500);
-}
-
-/** Stop polling for one task-stage key. */
-function stopStageReviewPolling(taskId,stage){
-    const timerKey=getReviewStateKey(taskId,stage);
-    const timer=reviewPollTimers[timerKey];
-    if(timer){
-        clearInterval(timer);
-        delete reviewPollTimers[timerKey];
-    }
-}
-
-/** Stop polling for all panels bound to a stage when terminal status arrives. */
-function stopStageReviewPollingByStage(stage){
-    Object.keys(reviewPollTimers).forEach(function(timerKey){
-        if(timerKey.endsWith('::'+stage)){
-            clearInterval(reviewPollTimers[timerKey]);
-            delete reviewPollTimers[timerKey];
-        }
-    });
-}
-
-/** Resolve key-stage review context from one rendered task panel. */
-function getReviewPanelContext(taskId,stage){
-    const selector='.review-panel[data-task-id="'+String(taskId||'')+'"][data-review-stage="'+String(stage||'')+'"]';
-    const panel=document.querySelector(selector);
-    if(!panel){
-        return { taskId:String(taskId||''), stage:String(stage||''), taskName:'', taskDesc:'', taskStage:'' };
-    }
-    return {
-        taskId:String(taskId||''),
-        stage:String(stage||''),
-        taskName:String(panel.getAttribute('data-task-name')||''),
-        taskDesc:String(panel.getAttribute('data-task-desc')||''),
-        taskStage:String(stage||''),
-    };
-}
-
-/** Render all visible stage-review panels from local state cache. */
-function renderStageReviewPanels(){
-    const panels=document.querySelectorAll('.review-panel[data-task-id][data-review-stage]');
-    panels.forEach(function(panel){
-        const taskId=String(panel.getAttribute('data-task-id')||'');
-        const stage=String(panel.getAttribute('data-review-stage')||'');
-        const key=getReviewStateKey(taskId,stage);
-        const entry=ensureReviewEntry(taskId,stage);
-
-        const statusEl=document.getElementById('review-status-'+taskId+'-'+stage);
-        const summaryEl=document.getElementById('review-summary-'+taskId+'-'+stage);
-        const errorEl=document.getElementById('review-error-'+taskId+'-'+stage);
-        const noteEl=document.getElementById('review-note-'+taskId+'-'+stage);
-        const editorEl=document.getElementById('review-editor-'+taskId+'-'+stage);
-        const promptEl=document.getElementById('review-prompt-'+taskId+'-'+stage);
-
-        if(statusEl){
-            statusEl.className='review-status-badge review-status-'+entry.status;
-            statusEl.textContent=entry.status;
-        }
-        if(summaryEl){
-            const summary=String(entry.summary||'').trim();
-            summaryEl.style.display=summary?'block':'none';
-            summaryEl.innerHTML=summary?('摘要：'+escapeReviewHtml(summary)):' ';
-        }
-        if(errorEl){
-            const reason=String(entry.errorReason||'').trim();
-            errorEl.style.display=reason?'block':'none';
-            errorEl.innerHTML=reason?('失败原因：'+escapeReviewHtml(reason)):' ';
-        }
-        if(noteEl){
-            let note='未点击评审时不会阻断主流程推进。';
-            if(entry.lastPromptSavedAt){
-                note='自定义 Prompt 已保存（'+entry.lastPromptSavedAt+'），该阶段后续评审将优先使用自定义模板。';
-            }
-            noteEl.textContent=note;
-        }
-        if(editorEl){
-            editorEl.style.display=entry.editorOpen?'block':'none';
-        }
-        if(promptEl&&String(promptEl.value||'')!==String(entry.customPrompt||'')){
-            promptEl.value=String(entry.customPrompt||'');
-        }
-
-        reviewState.byKey[key]=entry;
-    });
-    saveReviewState();
-}
-
-/** Request stage-review open + latest-status and make panel visible by contract defaults. */
-function initializeStageReviewPanels(){
-    const panels=document.querySelectorAll('.review-panel[data-task-id][data-review-stage]');
-    const asked={};
-    panels.forEach(function(panel){
-        const taskId=String(panel.getAttribute('data-task-id')||'');
-        const stage=String(panel.getAttribute('data-review-stage')||'');
-        ensureReviewEntry(taskId,stage);
-        if(!asked[stage]){
-            v.postMessage({type:'openStageReview',stage});
-            v.postMessage({type:'getLatestReviewStatus',stage});
-            asked[stage]=true;
-        }
-    });
-    renderStageReviewPanels();
-}
-
-/** Toggle stage-specific custom prompt editor visibility. */
-function toggleStagePromptEditor(taskId,stage){
-    const entry=ensureReviewEntry(taskId,stage);
-    entry.editorOpen=!entry.editorOpen;
-    saveReviewState();
-    renderStageReviewPanels();
-}
-
-/** Save stage custom prompt through message contract API-3. */
-function saveStageReviewPrompt(taskId,stage){
-    const promptEl=document.getElementById('review-prompt-'+String(taskId||'')+'-'+String(stage||''));
-    const promptBody=promptEl?String(promptEl.value||''):'';
-    const entry=ensureReviewEntry(taskId,stage);
-    entry.customPrompt=promptBody;
-    entry.lastPromptSavedAt=new Date().toISOString().slice(0,19).replace('T',' ');
-    saveReviewState();
-    renderStageReviewPanels();
-    v.postMessage({type:'saveStagePrompt',stage,promptBody});
-}
-
-/** Trigger review execution and start polling latest status updates. */
+/** Trigger a stage review; result is surfaced via VS Code notification. */
 function triggerStageReview(taskId,stage){
-    const entry=ensureReviewEntry(taskId,stage);
-    entry.status='running';
-    entry.summary='';
-    entry.errorReason='';
-    saveReviewState();
-    renderStageReviewPanels();
-    const context=getReviewPanelContext(taskId,stage);
-    v.postMessage({type:'runStageReview',stage,context});
-    startStageReviewPolling(taskId,stage);
+    v.postMessage({type:'runStageReview',stage,context:{taskId:String(taskId||''),taskStage:String(stage||'')}});
 }
 
-/** Ask extension host for the latest status snapshot of one stage. */
-function refreshStageReviewStatus(taskId,stage){
-    ensureReviewEntry(taskId,stage);
-    saveReviewState();
-    v.postMessage({type:'getLatestReviewStatus',stage});
-}
-
-/** Handle open-stage response and refresh per-stage panels with contract defaults. */
-function handleStageReviewOpenedEvent(message){
-    const stage=String(message&&message.stage?message.stage:'');
-    if(!stage){
-        return;
-    }
-    const panels=document.querySelectorAll('.review-panel[data-review-stage="'+stage+'"]');
-    panels.forEach(function(panel){
-        const taskId=String(panel.getAttribute('data-task-id')||'');
-        const entry=ensureReviewEntry(taskId,stage);
-        entry.reviewEnabled=Boolean(message.reviewEnabled);
-        entry.defaultExecuted=Boolean(message.defaultExecuted);
-        if(entry.defaultExecuted===false&&entry.status!=='running'&&entry.status!=='completed'&&entry.status!=='failed'){
-            entry.status='idle';
-        }
-    });
-    saveReviewState();
-    renderStageReviewPanels();
-}
-
-/** Handle latest stage-review status push event and stop polling when terminal state arrives. */
-function handleStageReviewStatusEvent(message){
-    const stage=String(message&&message.stage?message.stage:'');
-    const status=String(message&&message.status?message.status:'idle');
-    if(!stage){
-        return;
-    }
-    const safeStatus=(status==='running'||status==='completed'||status==='failed'||status==='idle')?status:'idle';
-    const summary=message&&message.summary?String(message.summary):'';
-    const errorReason=message&&message.errorReason?String(message.errorReason):'';
-    const panels=document.querySelectorAll('.review-panel[data-review-stage="'+stage+'"]');
-    panels.forEach(function(panel){
-        const taskId=String(panel.getAttribute('data-task-id')||'');
-        const entry=ensureReviewEntry(taskId,stage);
-        entry.status=safeStatus;
-        entry.summary=summary;
-        entry.errorReason=errorReason;
-    });
-    if(safeStatus!=='running'){
-        stopStageReviewPollingByStage(stage);
-    }
-    saveReviewState();
-    renderStageReviewPanels();
+/** Open the user-custom review prompt file for editing (same convention as other stage prompts). */
+function openReviewCustomPrompt(stage){
+    v.postMessage({type:'openReviewCustomPrompt',stage});
 }
 
 /** Render loading/disabled status for top-level domain-governance actions. */
@@ -1932,10 +1726,6 @@ window.addEventListener('message',(event)=>{
         handleBaselineReprojectResultEvent(message);
     }else if(message.type==='capabilityDeltaGenerated'){
         handleCapabilityDeltaGeneratedEvent(message);
-    }else if(message.type==='stageReviewOpened'){
-        handleStageReviewOpenedEvent(message);
-    }else if(message.type==='stageReviewStatus'){
-        handleStageReviewStatusEvent(message);
     }
 });
 
@@ -1981,6 +1771,8 @@ function create(){
 }
 function runAgent(s,id){v.postMessage({type:'runAgent',step:s,id})}
 function next(s,id,ts){v.postMessage({type:'next',step:s,id,...(ts?{targetStage:ts}:{})})}
+function previousStage(s,id){v.postMessage({type:'previous',step:s,id})}
+function rollbackDev(id){v.postMessage({type:'rollbackDev',id})}
 function pass(id){v.postMessage({type:'pass',id})}
 function refresh(){v.postMessage({type:'refresh'})}
 function pushAll(id){v.postMessage({type:'pushAndNextStage',id})}
@@ -2093,7 +1885,6 @@ document.addEventListener('DOMContentLoaded',()=>{
         renderTodoPanel();
         v.postMessage({type:'todo.list'});
     }
-    initializeStageReviewPanels();
     const domainPanel=document.getElementById('domain-workspace-panel');
     if(domainPanel){
         const domainTaskId=domainPanel.getAttribute('data-task-id')||'';
@@ -2109,12 +1900,6 @@ document.addEventListener('DOMContentLoaded',()=>{
     taskItems.forEach((item)=>{
         const id=item.getAttribute('data-task-id');
         if(id){logWebviewEvent(id,'taskDescEditor.boot','dom-ready');}
-    });
-});
-window.addEventListener('beforeunload',()=>{
-    Object.keys(reviewPollTimers).forEach((timerKey)=>{
-        clearInterval(reviewPollTimers[timerKey]);
-        delete reviewPollTimers[timerKey];
     });
 });
 window.addEventListener('error',(event)=>{
@@ -2240,7 +2025,7 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <div id="gitPaneMono" class="git-pane">
 <h5>单一仓库（Monorepo）Git 地址</h5>
 <input id="mg" value="${monorepoGitValue}" placeholder="代码、文档、脚本位于同一仓库" ${disabled}>
-<div style="font-size:12px;opacity:0.7;margin:4px 0 8px">该模式下，funharness 会将仓库克隆到 <b>repos/mono-main</b> 作为主仓库，并在主仓库与每个迭代 worktree 中按需补齐目录骨架（默认：<b>apps/</b> 代码、<b>docs/</b> 文档、<b>scripts/</b> 项目脚本）。迭代任务以 git worktree 形式生成在 <b>worktrees/&lt;task&gt;/</b>（根即迭代目录）。你可继续在 apps/ 下组织前后端，也可按项目规范调整。若填写了基线分支但远程不存在，系统会在本地主仓库自动创建该分支。</div>
+<div style="font-size:12px;opacity:0.7;margin:4px 0 8px">该模式下，funharness 会将仓库克隆到 <b>repos/mono-main</b> 作为主仓库，并在主仓库与每个迭代 worktree 中按需补齐目录骨架（默认：<b>apps/</b> 代码、<b>docs/</b> 文档、<b>scripts/</b> 项目脚本）。迭代任务以 git worktree 形式生成在 <b>worktrees/&lt;english-slug&gt;/</b>（根即迭代目录，避免中文路径问题）。你可继续在 apps/ 下组织前后端，也可按项目规范调整。若填写了基线分支但远程不存在，系统会在本地主仓库自动创建该分支。</div>
 </div>
 
 <div id="gitPaneMulti" class="git-pane">
@@ -2271,6 +2056,12 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <span>人工修正为完成后自动继续</span>
 <input id="am" type="checkbox" ${config.autoContinueAfterManualDone !== false ? 'checked' : ''} ${disabled}>
 </div>
+<h5>开发会话模式</h5>
+<select id="dcm" ${disabled}>
+<option value="batch" ${config.devConversationMode !== 'single' ? 'selected' : ''}>按批次会话（1.x/2.x，默认）</option>
+<option value="single" ${config.devConversationMode === 'single' ? 'selected' : ''}>只一个会话（全开发阶段复用）</option>
+</select>
+<div style="font-size:12px;opacity:0.75;margin:4px 0 8px">按批次模式下，跨批次切换（如 2.x → 3.x）会要求人工确认后才继续。</div>
 <div class="toggle-row">
 <span>任务拆分精简模式</span>
 <input id="cm" type="checkbox" ${config.compactTaskDecomposition ? 'checked' : ''} ${disabled}>
@@ -2278,6 +2069,16 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <div class="toggle-row">
 <span>按需求描述自动判别拆分模式</span>
 <input id="ad" type="checkbox" ${config.autoDetectTaskSplitMode !== false ? 'checked' : ''} ${disabled}>
+</div>
+<h5>迭代分支前缀（ASCII，默认 task）</h5>
+<input id="ibp" value="${config.iterationBranchPrefix || 'task'}" placeholder="task" ${disabled}>
+<h5>迭代目录前缀（ASCII，默认 task）</h5>
+<input id="iwp" value="${config.iterationWorktreePrefix || config.iterationBranchPrefix || 'task'}" placeholder="task" ${disabled}>
+<h5>迭代目录最大长度（24-120，默认 52）</h5>
+<input id="iwl" type="number" min="24" max="120" value="${config.iterationWorktreeNameMaxLength || 52}" ${disabled}>
+<div class="toggle-row">
+<span>命名保留语义（拼音/英文关键词）</span>
+<input id="ins" type="checkbox" ${config.iterationNamingSemantic !== false ? 'checked' : ''} ${disabled}>
 </div>
 <h5>简单需求关键词（逗号分隔）</h5>
 <input id="sk" value="${config.simpleTaskKeywords || ''}" placeholder="如 blacklist,crud,管理,配置" ${disabled}>
@@ -2294,9 +2095,9 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <input id="srd" value="${config.specRootDir || 'specs'}" placeholder="specs" ${disabled}>
 <h5>机器门禁力度（gateLevel）</h5>
 <select id="gl" ${disabled}>
-<option value="relaxed" ${config.gateLevel === 'relaxed' ? 'selected' : ''}>relaxed · 宽松（追溯仅查悬空引用，任务自动推进）</option>
-<option value="standard" ${config.gateLevel === 'strict' || config.gateLevel === 'relaxed' ? '' : 'selected'}>standard · 标准（追溯全量闭环，任务自动推进）</option>
-<option value="strict" ${config.gateLevel === 'strict' ? 'selected' : ''}>strict · 严格（追溯全量，任务阶段需人工确认）</option>
+<option value="relaxed" ${config.gateLevel === 'relaxed' ? 'selected' : ''}>relaxed · 宽松（追溯仅查悬空引用，任务阶段需人工确认）</option>
+<option value="standard" ${config.gateLevel === 'strict' || config.gateLevel === 'relaxed' ? '' : 'selected'}>standard · 标准（追溯全量闭环，任务阶段需人工确认）</option>
+<option value="strict" ${config.gateLevel === 'strict' ? 'selected' : ''}>strict · 严格（追溯全量 + 更严格执行门禁，任务阶段需人工确认）</option>
 </select>
 <h5>自定义项目目录结构（可选，优先级最高）</h5>
 <textarea id="cps" rows="12" placeholder="填写团队约定的目录结构。留空时：已有项目会自动提炼；新项目回退到默认模板。" ${disabled}>${config.customProjectStructure || ''}</textarea>
@@ -2423,7 +2224,7 @@ function switchGitMode(m){
     if(tx)tx.classList.toggle('active',m==='multi');
 }
 switchGitMode(gitMode);
-function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
+function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,am:document.getElementById('am').checked,dcm:document.getElementById('dcm').value,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,ibp:document.getElementById('ibp').value,iwp:document.getElementById('iwp').value,ins:document.getElementById('ins').checked,iwl:parseInt(document.getElementById('iwl').value)||52,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
 function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
 function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
 function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}

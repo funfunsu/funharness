@@ -626,7 +626,7 @@ describe('DomainKnowledgeAggregateService', () => {
                 sourceRevisionSet: { registryRevision: '', indexRevision: '', domainDocRevisions: {} },
                 updatedAt: new Date().toISOString(),
                 domainChanges: [
-                    { reqId: 'Req-b1', canonicalDomain: 'billing', rawDomain: 'billing', title: 'T', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
+                    { reqId: 'Req-101', canonicalDomain: 'billing', rawDomain: 'billing', title: 'T', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
                 ],
             };
             assert.throws(
@@ -650,7 +650,7 @@ describe('DomainKnowledgeAggregateService', () => {
                 sourceRevisionSet: { registryRevision: '', indexRevision: '', domainDocRevisions: {} },
                 updatedAt: new Date().toISOString(),
                 domainChanges: [
-                    { reqId: 'Req-w1', canonicalDomain: 'billing', rawDomain: 'billing', title: 'Write test cap', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
+                    { reqId: 'Req-201', canonicalDomain: 'billing', rawDomain: 'billing', title: 'Write test cap', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
                 ],
             };
             // Create minimal _index.md so it can be updated.
@@ -681,7 +681,7 @@ describe('DomainKnowledgeAggregateService', () => {
                 sourceRevisionSet: { registryRevision: '', indexRevision: '', domainDocRevisions: {} },
                 updatedAt: new Date().toISOString(),
                 domainChanges: [
-                    { reqId: 'Req-id1', canonicalDomain: 'billing', rawDomain: 'billing', title: 'Idem cap', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
+                    { reqId: 'Req-301', canonicalDomain: 'billing', rawDomain: 'billing', title: 'Idem cap', userStory: '', changeType: 'add', status: 'active', contracts: [], invariants: [] },
                 ],
             };
             const indexPath = path.join(root, 'docs', 'domains', '_index.md');

@@ -69,6 +69,12 @@ export interface DomainSummaryPromptInput {
     registryCanonicals: string[];
 }
 
+interface DomainRegistryPromptContext {
+    domainRegistryPath: string;
+    domainRegistryStatus: 'missing' | 'empty' | 'available';
+    domainRegistryCanonicals: string[];
+}
+
 export class PromptService {
     private readonly systemPromptDir = 'system-prompts';
     private readonly systemPromptFiles: Record<string, string> = {
@@ -412,12 +418,14 @@ export class PromptService {
                 '## 用户可编辑补充（流程无关）',
                 '- （未提供）',
             ].join('\n');
-        return `${constitutionSection}${locked}\n\n${customSection}`;
+        return constitutionSection
+            ? `${locked}\n\n${constitutionSection}${customSection}`
+            : `${locked}\n\n${customSection}`;
     }
 
     /**
-     * Build the highest-priority Constitution block prepended to every stage/dev prompt.
-     * Precedence: only below the runtime instruction. Empty string when no constitution found.
+     * Build the Constitution block inserted after the locked system section.
+     * If a project constitution is found, it fully replaces the bundled default body.
      */
     private renderConstitutionSection(currentWorkSpace: string): string {
         const resolved = resolveConstitution(currentWorkSpace, this.workspaceRoot, this.extensionPath);
@@ -457,6 +465,7 @@ export class PromptService {
         const template = fs.readFileSync(filePath, 'utf8');
         const specDocsDir = getSpecDocsDir(context.currentWorkSpace, config as Config | undefined);
         const docsRootDir = path.join(context.currentWorkSpace, getDocsRootDirName(config as Config | undefined));
+        const domainRegistryContext = this.buildDomainRegistryPromptContext(docsRootDir);
         const vars: Record<string, string> = {
             taskName: context.taskName,
             taskDesc: context.taskDesc,
@@ -469,6 +478,9 @@ export class PromptService {
             testApiPs1Path: path.join(context.currentWorkSpace, 'tests', 'test-api.ps1'),
             testApiShPath: path.join(context.currentWorkSpace, 'tests', 'test-api.sh'),
             testManifestPath: path.join(context.currentWorkSpace, 'tests', 'test-manifest.json'),
+            domainRegistryPath: domainRegistryContext.domainRegistryPath,
+            domainRegistryStatus: domainRegistryContext.domainRegistryStatus,
+            domainRegistryCanonicals: domainRegistryContext.domainRegistryCanonicals.join(', ') || '(none)',
         };
 
         let rendered = template;
@@ -479,8 +491,35 @@ export class PromptService {
         return rendered;
     }
 
+    private buildDomainRegistryPromptContext(docsRootDir: string): DomainRegistryPromptContext {
+        const domainRegistryPath = path.join(docsRootDir, 'domains', 'registry.yaml');
+        if (!fs.existsSync(domainRegistryPath)) {
+            return {
+                domainRegistryPath,
+                domainRegistryStatus: 'missing',
+                domainRegistryCanonicals: [],
+            };
+        }
+
+        const content = fs.readFileSync(domainRegistryPath, 'utf8');
+        const canonicals = Array.from(new Set(content
+            .split(/\r?\n/)
+            .map(line => {
+                const match = line.match(/^\s*(?:-\s*)?canonical\s*:\s*(.+?)\s*$/);
+                return match ? match[1].trim().replace(/^['"]|['"]$/g, '') : '';
+            })
+            .filter(Boolean))).sort((left, right) => left.localeCompare(right));
+
+        return {
+            domainRegistryPath,
+            domainRegistryStatus: canonicals.length > 0 ? 'available' : 'empty',
+            domainRegistryCanonicals: canonicals,
+        };
+    }
+
     /**
-     * Per-stage default review prompt bodies (MODEL-2, Req-2, INV-5).
+     * Per-stage bundled fallback review prompt bodies (MODEL-2, Req-2, INV-5).
+     * Used only when neither a file-based custom prompt nor a bundled system-prompt file is found.
      * Each stage uses a distinct template to ensure cross-stage prompts are never conflated.
      */
     private static readonly DEFAULT_REVIEW_PROMPTS: Record<ReviewStage, string> = {
@@ -519,38 +558,124 @@ export class PromptService {
             '',
             '请逐条列出发现的问题，并给出修订建议；若无问题请说明理由。',
         ].join('\n'),
+        tasks: [
+            '# 任务拆解评审模板（通用默认）',
+            '',
+            '请对以下任务拆解文档进行系统性评审，检查以下维度：',
+            '1. **需求覆盖**：每条 Req-* 是否至少映射到一条可执行任务；是否存在遗漏需求。',
+            '2. **粒度合理性**：任务是否可在单次开发周期内完成；是否避免过粗或过碎的拆分。',
+            '3. **依赖与顺序**：前置依赖、并行关系与执行顺序是否明确，无循环依赖。',
+            '4. **验收可判定**：每个任务是否包含明确完成标准与产物路径（代码/文档/测试）。',
+            '5. **范围控制**：是否引入与需求无关的额外任务或遗漏必要测试/回归任务。',
+            '6. **输出路径规范**：',
+            '   - `输出` 与 YAML `outputs` 必须是仓库相对路径，禁止自然语言描述。',
+            '   - 禁止在路径后追加注释或说明后缀（如 `（含 up/rollback）`、`(...)`、`[说明]`、`{说明}`、`: 说明`）。',
+            '   - 需要表达多个产物时，必须逐条列出完整路径，不得使用“某模块/若干文件/目录（含...）”等聚合描述。',
+            '',
+            '若发现输出路径不规范，请按“问题 -> 风险 -> 修订建议”的格式给出可直接替换的路径写法。',
+            '',
+            '请逐条列出发现的问题，并给出修订建议；若无问题请说明理由。',
+        ].join('\n'),
     };
+
+    /** Map review stage to its bundled system-prompt filename in `apps/system-prompts/`. */
+    private static readonly REVIEW_SYSTEM_PROMPT_FILES: Record<ReviewStage, string> = {
+        requirements: 'review_requirements_system_prompt.md',
+        design: 'review_design_system_prompt.md',
+        testcase: 'review_testcase_system_prompt.md',
+        tasks: 'review_tasks_system_prompt.md',
+    };
+
+    /** Map review stage to the user-customizable filename searched in candidate project dirs. */
+    private static readonly REVIEW_CUSTOM_PROMPT_FILES: Record<ReviewStage, string> = {
+        requirements: 'review_requirements_custom_prompt.md',
+        design: 'review_design_custom_prompt.md',
+        testcase: 'review_testcase_custom_prompt.md',
+        tasks: 'review_tasks_custom_prompt.md',
+    };
+
+    /**
+     * Return the absolute path for the user-custom review prompt file of a given stage.
+     * The file lives in the primary git-tracked specs dir (same convention as other custom prompts).
+     */
+    getReviewCustomPromptPath(stage: ReviewStage): string {
+        const fileName = PromptService.REVIEW_CUSTOM_PROMPT_FILES[stage];
+        return path.join(this.getProjectPromptsDir(), fileName);
+    }
 
     /**
      * Resolve the review prompt for the given stage (API-2, Req-2, Req-3).
      *
-     * Priority: custom (from configService) > default (INV-6).
-     * The composed prompt always includes stage context snapshot + template body (INV-4).
-     * Different stages always produce distinguishable default prompts (INV-5).
+     * Priority (highest to lowest):
+     *   1. File-based custom prompt — `review_{stage}_custom_prompt.md` in project specs dirs.
+     *   2. JSON-based custom prompt — from configService (legacy, backward-compatible).
+     *   3. Bundled system-prompt file — `apps/system-prompts/review_{stage}_system_prompt.md`.
+     *   4. Hardcoded fallback string (INV-5: each stage has a distinct non-empty template).
      *
-     * When configService is not provided the method behaves as if no custom prompt exists
-     * and falls back to the stage default (INV-3).
+     * The composed prompt always includes stage context snapshot + template body (INV-4).
+     * When configService is not provided the method behaves as if no JSON custom prompt exists
+     * and falls back to file/bundled/hardcoded defaults (INV-3).
      */
     resolveReviewPromptByStage(
         stage: ReviewStage,
         context: StageContext,
         configService?: ReviewPromptConfigService,
     ): StageReviewPromptResult {
-        const customPrompt = configService?.getStagePrompt(stage);
-        const hasCustom = typeof customPrompt === 'string' && customPrompt.trim().length > 0;
+        // 1. File-based custom prompt (highest priority).
+        const customFileName = PromptService.REVIEW_CUSTOM_PROMPT_FILES[stage];
+        let fileCustomPrompt: string | undefined;
+        for (const dir of this.getCandidatePromptDirs()) {
+            const candidate = path.join(dir, customFileName);
+            if (fs.existsSync(candidate)) {
+                const raw = fs.readFileSync(candidate, 'utf8').trim();
+                if (raw.length > 0) {
+                    fileCustomPrompt = raw;
+                    break;
+                }
+            }
+        }
 
-        const source = hasCustom ? 'custom' : 'default';
-        const promptBody = hasCustom ? customPrompt! : PromptService.DEFAULT_REVIEW_PROMPTS[stage];
+        // 2. JSON-based custom prompt (legacy backward-compatible).
+        const jsonCustomPrompt = configService?.getStagePrompt(stage);
+        const hasJsonCustom = typeof jsonCustomPrompt === 'string' && jsonCustomPrompt.trim().length > 0;
 
+        if (fileCustomPrompt) {
+            const source = 'custom' as const;
+            const promptBody = fileCustomPrompt;
+            const composedPrompt = this.buildReviewComposedPrompt(context, promptBody);
+            return { source, promptBody, composedPrompt };
+        }
+
+        if (hasJsonCustom) {
+            const source = 'custom' as const;
+            const promptBody = jsonCustomPrompt!;
+            const composedPrompt = this.buildReviewComposedPrompt(context, promptBody);
+            return { source, promptBody, composedPrompt };
+        }
+
+        // 3. Bundled system-prompt file.
+        const systemFileName = PromptService.REVIEW_SYSTEM_PROMPT_FILES[stage];
+        const bundledPath = path.join(this.extensionPath, this.systemPromptDir, systemFileName);
+        let defaultPromptBody: string;
+        if (fs.existsSync(bundledPath)) {
+            defaultPromptBody = fs.readFileSync(bundledPath, 'utf8').trim();
+        } else {
+            // 4. Hardcoded fallback.
+            defaultPromptBody = PromptService.DEFAULT_REVIEW_PROMPTS[stage];
+        }
+
+        const composedPrompt = this.buildReviewComposedPrompt(context, defaultPromptBody);
+        return { source: 'default', promptBody: defaultPromptBody, composedPrompt };
+    }
+
+    /** Build the composed prompt string from context + template body (INV-4). */
+    private buildReviewComposedPrompt(context: StageContext, promptBody: string): string {
         const contextLines = Object.entries(context)
             .map(([key, value]) => `- ${key}: ${JSON.stringify(value)}`)
             .join('\n');
         const contextSection = contextLines
             ? `## 当前阶段上下文\n${contextLines}`
             : '## 当前阶段上下文\n（无额外上下文）';
-
-        const composedPrompt = [contextSection, '', promptBody].join('\n');
-
-        return { source, promptBody, composedPrompt };
+        return [contextSection, '', promptBody].join('\n');
     }
 }

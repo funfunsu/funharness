@@ -1,23 +1,23 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-08-04T03:05:34.499Z
+- generatedAt: 2026-08-06T07:39:37.674Z
 - taskId: task_1785748071307
 - taskName: 评审植入
 - gateLevel: standard
-- totalChanges: 10
-- blockedByGate: 6
+- totalChanges: 12
+- blockedByGate: 7
 
 ## Executive Summary
 
-- highRiskChanges: 6
+- highRiskChanges: 7
 - mediumRiskChanges: 1
-- lowRiskChanges: 3
+- lowRiskChanges: 4
 
 ## Domain Index
 
 | domain | total | high | medium | low | blocked |
 | --- | --- | --- | --- | --- | --- |
-| uncategorized | 10 | 6 | 1 | 3 | 6 |
+| uncategorized | 12 | 7 | 1 | 4 | 7 |
 
 ## Domain Sections
 
@@ -61,4 +61,11 @@
   - changedFiles=3
 - [2026-08-04T03:05:34.498Z] [dev] [low] Development drift gate passed
   - changedFiles=1
+- [2026-08-06T07:03:45.536Z] [dev] [high] Development drift gate blocked
+  - DEV-DRIFT-001: 开发验收阶段检测到代码变更，但 requirements/design/testcase/tasks 未同步更新
+  - DEV-DRIFT-002: 检测到契约敏感代码变更（controller/route/dto/schema/model），但 design.md 未更新
+  - DEV-DRIFT-003: 检测到测试脚本/测试代码变更，但 testcase.md 未更新
+  - changedFiles=33
+- [2026-08-06T07:37:27.783Z] [dev] [low] Development drift gate passed
+  - changedFiles=39
 

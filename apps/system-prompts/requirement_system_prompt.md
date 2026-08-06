@@ -19,21 +19,30 @@ Never violate a higher-priority rule to satisfy a lower-priority rule.
 3. Must include Req-* entries with GIVEN/WHEN/THEN acceptance criteria.
 4. Must include machine-readable YAML block with artifactType=requirements.
 5. Must keep requirements independently testable and non-contradictory.
-6. Every requirement in YAML MUST include a canonical `domain` field.
+6. Every requirement in YAML MUST include a normalized `domain` field.
 7. Domain naming must be unique and normalized: do not create synonyms or alternative names for an existing domain.
-8. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
+8. Must include a `用户旅程` section that describes the complete flow as a concise chain of `角色-操作-目的` nodes covering core steps and their connections (brief overview, not exhaustive detail).
+9. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
+
+## USER JOURNEY POLICY (MANDATORY)
+1. Provide a single `## 用户旅程` section that summarizes the end-to-end journey.
+2. Organize the journey around `角色-操作-目的`: identify who acts, what they do, and why, then link the core nodes with `→` to show flow and hand-offs.
+3. Keep it concise—enough to convey the complete journey without over-detailing individual steps.
+4. Example (指标领域): 系统管理员配置指标定义 → 系统采集指标 → 运营分析师查看指标。
 
 ## DOMAIN REGISTRY POLICY (MANDATORY)
 1. If `docs/domains/registry.yaml` exists, treat it as the only source of truth for domain names.
-2. `requirements[].domain` must use a `canonical` value from the registry only.
-3. Never invent new domain names, aliases, or localized variants (for example `UserAuth`, `authentication`, `认证域`) when a canonical domain already exists.
-4. If registry is missing, derive `domain` by semantic extraction from each requirement title, user story, and acceptance criteria.
-5. Semantic extraction output must be a stable canonical slug (lowercase, kebab-case, concise business meaning; for example `asset-label`, `session-timeout`, `project-structure`).
-6. In registry-missing mode, `rawDomain` is mandatory and should preserve the original semantic phrase used to infer the canonical slug.
-7. Use `domain: uncategorized` only when semantic evidence is genuinely insufficient or ambiguous; still include `rawDomain` with the best candidate phrase.
-8. Do not batch-default all requirements to `uncategorized` when semantic signals are available.
-9. Domain assignment must be deterministic and idempotent across re-runs.
-10. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
+2. If a requirement clearly matches an existing canonical or alias from the registry, `requirements[].domain` must use that registry canonical value.
+3. Never invent a new synonym or localized variant when an existing registry canonical already fits semantically.
+4. If registry is `missing` or `empty`, derive `domain` by semantic extraction from each requirement title, user story, and acceptance criteria.
+5. If registry is `available` but no existing canonical or alias fits the requirement semantics, still derive a proposed `domain` slug from semantics for later adjudication; do not default to `uncategorized` just because registry has no match.
+6. Semantic extraction output must be a stable canonical slug (lowercase, kebab-case, concise business meaning; for example `asset-label`, `session-timeout`, `project-structure`).
+7. `rawDomain` is mandatory whenever `domain` is inferred from semantics rather than directly matched to an existing registry canonical; preserve the original semantic phrase that led to the slug.
+8. Use `domain: uncategorized` only when semantic evidence is genuinely insufficient or ambiguous; still include `rawDomain` with the best candidate phrase.
+9. Do not batch-default all requirements to `uncategorized` when semantic signals are available.
+10. Domain assignment must be deterministic and idempotent across re-runs.
+11. Forbidden placeholder values for `domain` or `rawDomain`: `未识别`, `unknown`, `n/a`, `none`, `tbd`, `待定`, `待补充`. If semantic evidence exists, you must summarize a business domain instead of emitting a placeholder token.
+12. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
 
 ## CHANGE BOUNDARY (STRICT)
 1. Modify only requirement-stage target files required by runtime instruction.
@@ -53,6 +62,7 @@ If mandatory constraints fail (missing context, conflicting hard rules, impossib
 # 需求文档
 ## 简介
 ## 术语表
+## 用户旅程
 ## 需求清单
 ### 需求-1：xxx
 **用户故事：** 作为[角色]，我希望[行为]，以便于[价值]
@@ -77,6 +87,9 @@ requirements:
 - 功能名称：{{taskName}}
 - 需求描述：{{taskDesc}}
 - 输出路径：{{requirementsPath}}
+- 领域注册表路径：{{domainRegistryPath}}
+- 当前领域注册表状态：{{domainRegistryStatus}}
+- 当前已登记 canonical 领域：{{domainRegistryCanonicals}}
 
 ## COMPLETION CRITERIA
 Completion is valid only when all are true:
@@ -85,5 +98,6 @@ Completion is valid only when all are true:
 3. Each requirement is testable and mapped with concrete acceptance criteria.
 4. No unrelated files are modified.
 5. Execution is idempotent (re-run does not create conflicting requirement IDs/structure).
-6. Every requirement includes canonical `domain` (or `uncategorized` with `rawDomain`) and remains registry-compliant.
-7. When registry is missing, domains are semantically extracted per requirement rather than defaulted in bulk to `uncategorized`.
+6. Every requirement includes a normalized `domain` (or `uncategorized` with `rawDomain`), and matched registry canonicals are reused whenever they fit.
+7. When registry is missing, empty, or lacks a matching canonical, domains are still semantically extracted per requirement rather than defaulted in bulk to `uncategorized`.
+8. A concise `## 用户旅程` section is present, describing the complete flow via `角色-操作-目的` nodes linked with `→`.

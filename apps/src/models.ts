@@ -15,7 +15,6 @@ export const DEFAULT_POLL_SCRIPT = 'pullTask.js';
 export const DEFAULT_AUTO_POLL_PROMPT =
     '远程任务清单（todo.md）已更新，请阅读下面的任务清单并执行其中尚未完成的任务；每完成一项，请在 todo.md 对应条目上标注完成。若任务描述不充分，按最小可用实现推进，并在完成说明中标注所做假设。';
 /**
- * Newline-separated markers that mean "no pending task". When a pull's whole trimmed output
  * (case-insensitively) equals any of these, it is treated exactly like an empty pull: todo.md is
  * not overwritten and the AI executor is NOT dispatched. Lets upstreams that print a human sentinel
  * (e.g. get_next_todo_task → "没有未完成的待办任务") avoid triggering a needless run.
@@ -72,6 +71,16 @@ export interface PromptConfig {
     file: string;
 }
 
+export interface DevRollbackSnapshot {
+    createdAt: string;
+    /** Task plan path relative to the iteration directory. */
+    taskPlanRelPath: string;
+    /** Full tasks.md content captured when entering developing stage. */
+    taskPlanContent: string;
+    /** Per-repository HEAD commit captured when entering developing stage. */
+    repoHeadByKind?: Partial<Record<'frontend' | 'backend' | 'mono', string>>;
+}
+
 export interface Feature {
     id: string;
     name: string;
@@ -87,6 +96,10 @@ export interface Feature {
     aiProvider?: string;
     /** When true, the task skips requirements/design/testcase/task-split and goes directly to DEVELOPING. */
     quickMode?: boolean;
+    /** Transient UI override: allow one explicit manual stage rollback to persist across snapshot sync. */
+    allowStageRegressionOnce?: boolean;
+    /** Development-stage rollback checkpoint captured right after task decomposition confirmation. */
+    devRollbackSnapshot?: DevRollbackSnapshot;
 }
 
 // ── AI Provider Registry ───────────────────────────────────────────
@@ -335,8 +348,18 @@ export interface Config {
     autoAdvanceEnabled: boolean;
     autoRepairEnabled: boolean;
     autoContinueAfterManualDone: boolean;
+    /** Development conversation scope mode: one session per batch (1.x/2.x) or one session for all subtasks. */
+    devConversationMode: 'batch' | 'single';
     compactTaskDecomposition: boolean;
     autoDetectTaskSplitMode: boolean;
+    /** Prefix for generated iteration branch names (ASCII only), e.g. task/foo-bar. */
+    iterationBranchPrefix: string;
+    /** Prefix for generated iteration worktree directory names (ASCII only). */
+    iterationWorktreePrefix: string;
+    /** Whether generated branch/worktree names should keep semantic transliteration hints. */
+    iterationNamingSemantic: boolean;
+    /** Max length for generated iteration worktree directory names. */
+    iterationWorktreeNameMaxLength: number;
     simpleTaskKeywords: string;
     complexTaskKeywords: string;
     aiProvider: string;
@@ -358,9 +381,9 @@ export interface Config {
     specRootDir: string;
     /**
      * Machine-gate strictness for auto-advance / auto-repair paths.
-     * - relaxed: 追溯只校验悬空引用（不强制覆盖闭环）；任务阶段自动推进。
-     * - standard: 追溯全量（悬空 + 未覆盖需求）；任务阶段自动推进。(默认)
-     * - strict: 追溯全量；任务阶段需人工确认（额外人工门禁）。
+        * - relaxed: 追溯只校验悬空引用（不强制覆盖闭环）；任务阶段需人工确认。
+        * - standard: 追溯全量（悬空 + 未覆盖需求）；任务阶段需人工确认。(默认)
+          * - strict: 追溯全量；并在最终通过/合并前启用更严格执行门禁。
      */
     gateLevel: 'relaxed' | 'standard' | 'strict';
     /** User-defined buttons rendered on task cards (main panel + worktree subview). */
@@ -669,8 +692,13 @@ export const DEFAULT_CONFIG: Config = {
     autoAdvanceEnabled: true,
     autoRepairEnabled: true,
     autoContinueAfterManualDone: true,
+    devConversationMode: 'batch',
     compactTaskDecomposition: false,
     autoDetectTaskSplitMode: true,
+    iterationBranchPrefix: 'task',
+    iterationWorktreePrefix: 'task',
+    iterationNamingSemantic: true,
+    iterationWorktreeNameMaxLength: 52,
     simpleTaskKeywords: 'blacklist,whitelist,crud,toggle,config,list,search,管理,增删改查,配置,名单',
     complexTaskKeywords: 'workflow,state machine,multi-tenant,distributed,transaction,integration,migration,权限,审批,多角色,并发,分布式,跨系统,联调,多模块,复杂',
     aiProvider: 'copilot-chat',
