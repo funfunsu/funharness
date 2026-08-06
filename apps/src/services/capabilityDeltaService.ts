@@ -17,6 +17,7 @@ import type { DomainSummaryPromptInput } from './promptService';
 interface RequirementRecord {
     id: string;
     domain: string | null;
+    rawDomain: string | null;
     title: string;
     userStory: string;
     status: CapabilityStatus;
@@ -617,7 +618,7 @@ export class CapabilityDeltaService {
     private parseRequirementsFromMachineBlock(requirementsContent: string): RequirementRecord[] {
         const block = this.extractYamlMachineBlock(requirementsContent);
         const sectionLines = this.extractYamlSectionLines(block, 'requirements');
-        const items = this.parseYamlObjectList(sectionLines, ['id', 'domain', 'title', 'userStory']);
+        const items = this.parseYamlObjectList(sectionLines, ['id', 'domain', 'rawDomain', 'title', 'userStory']);
 
         return items
             .map(item => {
@@ -628,9 +629,11 @@ export class CapabilityDeltaService {
                 const title = (item.title || '').trim();
                 const userStory = (item.userStory || '').trim();
                 const domain = (item.domain || '').trim() || null;
+                const rawDomain = (item.rawDomain || '').trim() || null;
                 return {
                     id,
                     domain,
+                    rawDomain,
                     title,
                     userStory,
                     status: this.inferCapabilityStatus(title, userStory),
@@ -706,21 +709,45 @@ export class CapabilityDeltaService {
         registry: { domains: Array<{ canonical: string; aliases: string[]; displayName: string; status: 'active' | 'deprecated' }> },
         requirement: RequirementRecord,
     ): DomainBucket {
+        const domainCandidate = this.pickRequirementDomainCandidate(requirement);
+        const rawDomainCandidate = this.pickRequirementRawDomain(requirement, domainCandidate);
         const normalized = this.domainRegistryService.normalizeDomain(
             registry,
-            requirement.domain,
+            domainCandidate,
             requirement.id,
             {
-                explicitDomain: requirement.domain,
+                explicitDomain: domainCandidate,
             },
         );
 
         return this.ensureBucket(
             buckets,
             normalized.canonical,
-            requirement.domain,
+            rawDomainCandidate,
             normalized.isSuspectedNew,
         );
+    }
+
+    private pickRequirementDomainCandidate(requirement: RequirementRecord): string | null {
+        const domain = (requirement.domain || '').trim();
+        if (domain && !this.isFallbackRequirementDomain(domain)) {
+            return domain;
+        }
+        const rawDomain = (requirement.rawDomain || '').trim();
+        return rawDomain || null;
+    }
+
+    private pickRequirementRawDomain(requirement: RequirementRecord, domainCandidate: string | null): string | null {
+        const rawDomain = (requirement.rawDomain || '').trim();
+        if (rawDomain) {
+            return rawDomain;
+        }
+        return domainCandidate;
+    }
+
+    private isFallbackRequirementDomain(domain: string): boolean {
+        const normalized = domain.trim().toLowerCase();
+        return normalized === 'uncategorized' || normalized === 'unknown';
     }
 
     /**

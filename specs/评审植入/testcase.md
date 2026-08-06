@@ -2,17 +2,18 @@
 
 ## 概述
 
-本用例集覆盖“评审植入”能力的当前实现，重点验证三阶段入口可见性、模板解析优先级、自定义模板覆盖与隔离、评审执行状态反馈，以及评审失败不改变主流程完成语义。
+本用例集覆盖“评审植入”能力的当前实现，重点验证四阶段入口可见性、模板解析优先级、自定义模板覆盖与隔离、评审执行状态反馈，以及评审失败不改变主流程完成语义。
 
 ## 用例清单
 
-### TC-RI-001 三阶段入口可见且默认未执行
+### TC-RI-001 四阶段入口可见且默认未执行
 
 - requirementIds: Req-1
 - 前置条件：评审执行服务已初始化，尚未对任一阶段触发评审。
 - GIVEN 用户进入 requirements 阶段 WHEN 页面加载完成且未触发评审 THEN `getLatestReviewStatus('requirements')` 返回 `idle`，且 summary/errorReason 为空。
 - GIVEN 用户进入 design 阶段 WHEN 页面加载完成且未触发评审 THEN `getLatestReviewStatus('design')` 返回 `idle`。
 - GIVEN 用户进入 testcase 阶段 WHEN 页面加载完成且未触发评审 THEN `getLatestReviewStatus('testcase')` 返回 `idle`。
+- GIVEN 用户进入 tasks 阶段 WHEN 页面加载完成且未触发评审 THEN `getLatestReviewStatus('tasks')` 返回 `idle`。
 
 ### TC-RI-002 未触发评审不阻断主流程
 
@@ -28,6 +29,7 @@
 - GIVEN requirements 阶段未配置自定义 Prompt WHEN 解析模板 THEN `source=default`。
 - GIVEN design 阶段未配置自定义 Prompt WHEN 解析模板 THEN `source=default`。
 - GIVEN testcase 阶段未配置自定义 Prompt WHEN 解析模板 THEN `source=default`。
+- GIVEN tasks 阶段未配置自定义 Prompt WHEN 解析模板 THEN `source=default`。
 - GIVEN 未向 `resolveReviewPromptByStage` 传入 `configService` WHEN 解析 requirements 阶段模板 THEN 系统仍回退 `source=default`，且 `promptBody` 非空。
 
 ### TC-RI-004 composedPrompt 包含阶段上下文与模板正文
@@ -37,11 +39,11 @@
 - GIVEN 上下文包含 `featureId` 与 `title` WHEN 解析 requirements 阶段模板 THEN `composedPrompt` 同时包含上下文字段和值，以及模板正文。
 - GIVEN 上下文为空对象 WHEN 解析 design 阶段模板 THEN `composedPrompt` 仍包含上下文区与模板正文。
 
-### TC-RI-005 三阶段通用模板内容可区分
+### TC-RI-005 四阶段通用模板内容可区分
 
 - requirementIds: Req-2
 - 前置条件：未配置任何阶段自定义 Prompt。
-- GIVEN 分别在 requirements、design、testcase 三阶段解析默认模板 WHEN 比较返回的 `promptBody` THEN 三者内容互不相同。
+- GIVEN 分别在 requirements、design、testcase、tasks 四阶段解析默认模板 WHEN 比较返回的 `promptBody` THEN 四者内容互不相同。
 - GIVEN 任一阶段解析默认模板 WHEN 检查模板长度 THEN `promptBody` 不得为空且应可读。
 
 ### TC-RI-006 自定义模板覆盖默认模板
@@ -82,7 +84,7 @@
 - GIVEN 评审执行失败 WHEN 查询最终状态 THEN 结果不包含 `blocked` 或 `required` 字段。
 - GIVEN 评审尚未执行 WHEN 查询最新状态 THEN 返回 `idle` 且不包含阻断字段。
 - GIVEN 某阶段评审失败 WHEN 用户继续阶段保存或推进 THEN 主流程仍按既有规则判定，不新增“必须评审后才能继续”的强制约束。
-- GIVEN 仅使用合法阶段值 WHEN 分别解析 `requirements`、`design`、`testcase` 模板 THEN 三个阶段均返回非空 `promptBody`（阶段边界基线）。
+- GIVEN 仅使用合法阶段值 WHEN 分别解析 `requirements`、`design`、`testcase`、`tasks` 模板 THEN 四个阶段均返回非空 `promptBody`（阶段边界基线）。
 
 ## 执行记录
 
@@ -97,7 +99,7 @@ taskName: 评审植入
 testCases:
   - id: TC-RI-001
     requirementIds: [Req-1]
-    title: 三阶段入口可见且默认未执行
+    title: 四阶段入口可见且默认未执行
     type: contract
     automated: true
     script: apps/test/reviewStageInjection.test.js
@@ -121,7 +123,7 @@ testCases:
     script: apps/test/reviewStageInjection.test.js
   - id: TC-RI-005
     requirementIds: [Req-2]
-    title: 三阶段通用模板内容可区分
+    title: 四阶段通用模板内容可区分
     type: contract
     automated: true
     script: apps/test/reviewStageInjection.test.js

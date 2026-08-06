@@ -4,6 +4,7 @@ import { BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_ARCHIVE_FILE,
 import { appendHarnessLog } from './harnessLog';
 import { safeRemovePath } from './fileOps';
 import { buildTraceMatrixSnapshot, TraceMatrixSnapshot } from '../specTrace';
+import { deriveIterationWorktreeNameWithOptions } from './branchName';
 
 const STAGE_ORDER: Stage[] = [
     STAGE.INITIALIZING,
@@ -24,6 +25,17 @@ export interface HarnessConfigMeta {
 
 export class FeatureStoreService {
     constructor(private readonly workspaceRoot: string) {}
+
+    private samePath(a: string, b: string): boolean {
+        const na = path.resolve(a || '').replace(/[\\/]+/g, path.sep).toLowerCase();
+        const nb = path.resolve(b || '').replace(/[\\/]+/g, path.sep).toLowerCase();
+        return na === nb;
+    }
+
+    private toPersistedFeature(task: Feature): Feature {
+        const { allowStageRegressionOnce: _allowStageRegressionOnce, ...persisted } = task;
+        return persisted;
+    }
 
     /**
      * Build the latest Req-* trace snapshot for a task iteration using current spec artifacts.
@@ -56,7 +68,31 @@ export class FeatureStoreService {
             // In a child worktree window, always read artifacts from current workspace root.
             return this.workspaceRoot;
         }
-        return task.worktreePath || path.join(this.workspaceRoot, 'worktrees', task.name);
+        const config = this.loadConfig();
+        const englishDir = path.join(this.workspaceRoot, 'worktrees', deriveIterationWorktreeNameWithOptions(task, {
+            branchPrefix: config.iterationBranchPrefix,
+            worktreePrefix: config.iterationWorktreePrefix,
+            semanticSlug: config.iterationNamingSemantic,
+            worktreeNameMaxLength: config.iterationWorktreeNameMaxLength,
+        }));
+        const legacyName = (task.name || '').trim();
+        const legacyDir = legacyName
+            ? path.join(this.workspaceRoot, 'worktrees', legacyName)
+            : '';
+
+        // Lazy migration: old snapshots may persist a legacy path derived from task.name.
+        // If that legacy folder does not exist yet, switch to the new English-safe path.
+        if (task.worktreePath) {
+            if (legacyDir && this.samePath(task.worktreePath, legacyDir)) {
+                if (fs.existsSync(legacyDir)) {
+                    return legacyDir;
+                }
+                return englishDir;
+            }
+            return task.worktreePath;
+        }
+
+        return englishDir;
     }
 
     ensureIterationDir(task: Feature): void {
@@ -147,7 +183,8 @@ export class FeatureStoreService {
             // Critically: do NOT regress task.stage. If the subview already advanced this
             // task (e.g. after passByTaskId set DONE), master must not overwrite it back to
             // an earlier stage just because master's in-memory copy hasn't reloaded yet.
-            const taskToSave = { ...task };
+            const allowStageRegression = task.allowStageRegressionOnce === true;
+            const taskToSave = this.toPersistedFeature(task);
             if (fs.existsSync(file)) {
                 try {
                     const existing = JSON.parse(fs.readFileSync(file, 'utf8')) as Feature[];
@@ -155,7 +192,7 @@ export class FeatureStoreService {
                     if (existingTask?.aiProvider && !task.aiProvider) {
                         taskToSave.aiProvider = existingTask.aiProvider;
                     }
-                    if (existingTask?.stage && this.isStageMoreAdvanced(existingTask.stage, task.stage)) {
+                    if (!allowStageRegression && existingTask?.stage && this.isStageMoreAdvanced(existingTask.stage, task.stage)) {
                         taskToSave.stage = existingTask.stage;
                     }
                 } catch {
@@ -330,8 +367,8 @@ export class FeatureStoreService {
      */
     private saveLocalTasks(tasks: Feature[]): void {
         // Split done tasks from active tasks (Req-1, Req-2, INV-1).
-        const completedTasks = tasks.filter(t => t.stage === STAGE.DONE);
-        const activeTasks = tasks.filter(t => t.stage !== STAGE.DONE);
+        const completedTasks = tasks.filter(t => t.stage === STAGE.DONE).map(task => this.toPersistedFeature(task));
+        const activeTasks = tasks.filter(t => t.stage !== STAGE.DONE).map(task => this.toPersistedFeature(task));
 
         // Archive done tasks first. On failure, retain them in the active file to
         // prevent data loss and allow a self-healing retry on the next save (INV-6).
@@ -363,8 +400,8 @@ export class FeatureStoreService {
         }
         try {
             // Separate done tasks from active tasks for archive-first propagation.
-            const completedTasks = tasks.filter(t => t.stage === STAGE.DONE);
-            const activeTasks = tasks.filter(t => t.stage !== STAGE.DONE);
+            const completedTasks = tasks.filter(t => t.stage === STAGE.DONE).map(task => this.toPersistedFeature(task));
+            const activeTasks = tasks.filter(t => t.stage !== STAGE.DONE).map(task => this.toPersistedFeature(task));
 
             const masterFile = path.join(masterRoot, BASE, HARNESS_STATE_FILE);
             fs.mkdirSync(path.dirname(masterFile), { recursive: true });

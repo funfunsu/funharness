@@ -8,6 +8,9 @@ import { appendHarnessLog } from './harnessLog';
 type DispatchSource = 'stage-agent' | 'dev-subtask';
 
 export class AiDispatchService {
+    /** Keep the latest chat scope per provider so dev subtasks can reuse one chat per batch (1.x / 2.x). */
+    private readonly lastVscodeChatScopeByProvider = new Map<string, string>();
+
     constructor(private readonly getConfig: () => Config) {}
 
     /**
@@ -147,11 +150,12 @@ export class AiDispatchService {
     async dispatch(query: string, iterDir: string, source: DispatchSource, providerOverride?: string): Promise<void> {
         const cfg = this.getConfig();
         const provider = getAiProvider(providerOverride || cfg.aiProvider || 'copilot-chat');
+        const conversationScope = this.resolveConversationScope(source, iterDir, query);
         const snapshot = this.writeDispatchSnapshot(query, iterDir, source, provider.label);
         appendHarnessLog(
             iterDir,
             'ai-dispatch',
-            `source=${source} provider=${provider.label} bytes=${Buffer.byteLength(query, 'utf8')} promptFile=${snapshot || '(write-failed)'}`,
+            `source=${source} provider=${provider.label} scope=${conversationScope || 'none'} bytes=${Buffer.byteLength(query, 'utf8')} promptFile=${snapshot || '(write-failed)'}`,
         );
 
         if (provider.kind === 'manual') {
@@ -160,12 +164,12 @@ export class AiDispatchService {
         }
 
         if (provider.kind === 'vscode-chat') {
-            await this.dispatchVscodeChat(query, provider);
+            await this.dispatchVscodeChat(query, provider, source, conversationScope);
             return;
         }
 
         if (provider.kind === 'panel') {
-            await this.dispatchPanel(query, provider, source);
+            await this.dispatchPanel(query, provider, source, conversationScope);
             return;
         }
 
@@ -208,11 +212,22 @@ export class AiDispatchService {
 
     // ── VS Code Chat dispatch ──────────────────────────────────────
 
-    private async dispatchVscodeChat(query: string, provider: AiProviderDefinition): Promise<void> {
-        try {
-            await vscode.commands.executeCommand('workbench.action.chat.newChat');
-        } catch {
-            // Older VS Code builds may not expose a dedicated new-chat command.
+    private async dispatchVscodeChat(
+        query: string,
+        provider: AiProviderDefinition,
+        source: DispatchSource,
+        conversationScope: string | null,
+    ): Promise<void> {
+        const providerKey = provider.id || provider.label;
+        const previousScope = this.lastVscodeChatScopeByProvider.get(providerKey);
+        const shouldOpenNewChat = this.shouldOpenNewVscodeChat(source, conversationScope, previousScope);
+
+        if (shouldOpenNewChat) {
+            try {
+                await vscode.commands.executeCommand('workbench.action.chat.newChat');
+            } catch {
+                // Older VS Code builds may not expose a dedicated new-chat command.
+            }
         }
 
         const command = provider.chatCommand || 'workbench.action.chat.open';
@@ -220,6 +235,34 @@ export class AiDispatchService {
             query,
             isPartial: false,
         });
+
+        if (source === 'dev-subtask' && conversationScope) {
+            this.lastVscodeChatScopeByProvider.set(providerKey, conversationScope);
+        }
+    }
+
+    /**
+     * Decide whether to open a new VS Code chat session before dispatch.
+     * For dev-subtask dispatches, keep reusing the current session whenever possible:
+     * - open new only on first dev dispatch (no previous scope), or
+     * - when current parsed scope explicitly differs from previous scope (cross-batch).
+     * If scope parsing fails for one dispatch, do NOT force a new chat; reuse current.
+     */
+    private shouldOpenNewVscodeChat(
+        source: DispatchSource,
+        conversationScope: string | null,
+        previousScope: string | undefined,
+    ): boolean {
+        if (source !== 'dev-subtask') {
+            return true;
+        }
+        if (!previousScope) {
+            return true;
+        }
+        if (!conversationScope) {
+            return false;
+        }
+        return previousScope !== conversationScope;
     }
 
     private async testVscodeChat(provider: AiProviderDefinition): Promise<void> {
@@ -289,7 +332,12 @@ export class AiDispatchService {
 
     // ── Panel dispatch (open provider's own panel + clipboard) ───
 
-    private async dispatchPanel(query: string, provider: AiProviderDefinition, source: DispatchSource): Promise<void> {
+    private async dispatchPanel(
+        query: string,
+        provider: AiProviderDefinition,
+        source: DispatchSource,
+        conversationScope: string | null,
+    ): Promise<void> {
         // Always keep the full prompt on the clipboard as a safety net (the panel cannot be
         // auto-submitted programmatically, and deep links cap length).
         await vscode.env.clipboard.writeText(query);
@@ -299,7 +347,7 @@ export class AiDispatchService {
         //    same command its deep link forwards to, but with no URI length/encoding limits.
         if (provider.panelPromptCommand) {
             try {
-                await vscode.commands.executeCommand(provider.panelPromptCommand, undefined, query);
+                await vscode.commands.executeCommand(provider.panelPromptCommand, conversationScope || undefined, query);
                 const sent = await this.maybeAutoSubmit(provider);
                 vscode.window.showInformationMessage(
                     `已唤起 ${provider.label} 并预填提示词${this.autoSubmitTail(sent)}（source=${source}）。`,
@@ -334,6 +382,34 @@ export class AiDispatchService {
         vscode.window.showInformationMessage(
             `已复制提示词到剪贴板并打开 ${provider.label}，请粘贴执行（source=${source}）`,
         );
+    }
+
+    private resolveConversationScope(source: DispatchSource, iterDir: string, query: string): string | null {
+        if (source !== 'dev-subtask') {
+            return null;
+        }
+
+        const mode = this.getConfig().devConversationMode === 'single' ? 'single' : 'batch';
+        if (mode === 'single') {
+            return `dev-single:${iterDir}`;
+        }
+
+        const batch = this.extractSubTaskBatch(query);
+        if (!batch) {
+            return null;
+        }
+
+        return `dev-batch:${iterDir}:${batch}`;
+    }
+
+    private extractSubTaskBatch(query: string): string | null {
+        const text = String(query || '');
+        const match = text.match(/(?:^|\n)\s*-\s*任务ID\s*[：:]\s*(\d+)\.(\d+)/i)
+            || text.match(/(?:^|\n)\s*taskId\s*[：:]\s*(\d+)\.(\d+)/i);
+        if (!match) {
+            return null;
+        }
+        return match[1];
     }
 
     /**

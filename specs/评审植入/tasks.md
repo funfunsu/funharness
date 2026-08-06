@@ -22,7 +22,7 @@
   Owner: Backend
   输入: specs/评审植入/design.md#2.3-路由设计, specs/评审植入/design.md#3.1-API-契约
   输出: apps/src/harnessMessages.ts、apps/src/harnessMessageController.ts 的改造任务说明
-  验收: 仅支持 requirements|design|testcase 三阶段；入口默认不自动执行评审；非法阶段返回可理解失败但不阻断主流程
+  验收: 仅支持 requirements|design|testcase|tasks 四阶段；入口默认不自动执行评审；非法阶段返回可理解失败但不阻断主流程
   追踪: Requirements [Req-1, Req-4] + Properties [INV-1, INV-2, INV-9, INV-10]
 
 - [x] 1.3 检查点A-入口契约冻结
@@ -36,7 +36,7 @@
   Owner: Backend
   输入: specs/评审植入/design.md#3.1-API-契约, specs/评审植入/design.md#3.2-数据模型
   输出: apps/src/services/promptService.ts 的扩展任务说明（新增 resolveReviewPromptByStage 语义）
-  验收: 未配置自定义时按阶段回退 default；构造结果包含上下文与模板正文；三阶段 default 模板可区分
+  验收: 未配置自定义时按阶段回退 default；构造结果包含上下文与模板正文；四阶段 default 模板可区分
   追踪: Requirements [Req-2] + Properties [INV-3, INV-4, INV-5]
 
 - [x] 2.2 自定义模板配置与版本覆盖任务
@@ -64,14 +64,14 @@
   Owner: Frontend
   输入: specs/评审植入/design.md#3.3-组件-Props-/-Events, specs/评审植入/design.md#2.2-项目目录结构
   输出: apps/src/webviewTemplates.ts 的 UI 入口、状态面板、自定义模板编辑区改造任务说明
-  验收: 三阶段入口可见；状态可见（idle/running/completed/failed）；失败原因可读；未评审/评审失败均不阻断阶段推进 UI 操作
+  验收: 四阶段入口可见；状态可见（idle/running/completed/failed）；失败原因可读；未评审/评审失败均不阻断阶段推进 UI 操作
   追踪: Requirements [Req-1, Req-3, Req-4] + Properties [INV-1, INV-8, INV-9, INV-10]
 
 - [x] 3.3 检查点C-端到端行为冻结
   Owner: FullStack
   输入: 任务 3.1, 任务 3.2
   输出: 端到端行为检查记录（入口->模板解析->执行->状态反馈）
-  验收: 三阶段均可独立触发评审；模板来源正确；失败可见且主流程语义不变
+  验收: 四阶段均可独立触发评审；模板来源正确；失败可见且主流程语义不变
   追踪: Requirements [Req-1, Req-2, Req-3, Req-4] + Properties [INV-1..INV-10]
 
 - [x] 4.1 单元与集成测试任务

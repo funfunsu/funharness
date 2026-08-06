@@ -158,3 +158,4 @@ node scripts/validate-webview.js  # 单独验证 Webview 内联脚本
 - `apps/` 是 VS Code 扩展根，`package.json` 中 `"main": "./out/extension.js"`，编译产物在 `apps/out/`。
 - 测试框架为 Node 原生 `node:test`（Node 18+），测试文件为 `.test.js`，不使用 Jest/Mocha。
 - `specs/<迭代名>/delta/` 记录 SpecDelta 漂移门控产物，不要手动删除。
+- **过程性产物落位**：检查点冻结记录、追溯基线、门禁/提交清单、验证/演练记录等一次性内容必须写入 `.harness/process/`（运行时命名空间，已 gitignore），**禁止写入 `specs/`**。`specs/<迭代名>/` 仅保存 requirements/design/testcase/tasks 四类需长期保存的规范产物（`delta/` 除外）。

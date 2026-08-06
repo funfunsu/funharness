@@ -354,6 +354,8 @@ class Harness {
                 openFolderLocation: async (featureId, location) => this.actionsService.openFolderLocationByFeatureId(featureId, location),
                 openArtifact: async (featureId, artifact) => this.actionsService.openArtifactByFeatureId(featureId, artifact),
                 nextStage: async (featureId, step, targetStage) => this.actionsService.nextStageByFeatureId(featureId, step, targetStage),
+                previousStage: async (featureId, step) => this.actionsService.previousStageByFeatureId(featureId, step),
+                rollbackDev: async (featureId) => this.actionsService.rollbackDevByFeatureId(featureId),
                 pass: async (featureId) => this.actionsService.passByFeatureId(featureId),
                 syncMainCode: async (featureId) => this.actionsService.syncMainCodeByFeatureId(featureId),
                 completeDevWithPush: async (featureId) => this.actionsService.completeDevWithPush(featureId),
@@ -686,6 +688,7 @@ class Harness {
                 pct,
                 subTasks: subFeatures,
                 latestFailureReason: this.readLatestFailureReason(iterDir, subFeatures),
+                taskOutputPathWarnings: this.collectTaskOutputPathWarnings(subFeatures),
                 isAuto: scheduler.isAutoMode(),
                 artifacts,
                 health: {
@@ -862,6 +865,7 @@ class Harness {
             requirements: '需求',
             design: '设计',
             testcase: '测试用例',
+            tasks: '任务拆解',
         };
         const label = stageLabels[stage] ?? stage;
         try {
@@ -966,8 +970,13 @@ class Harness {
         this.config.projectConventions = msg.pc;
         this.config.maxConcurrentAutoTasks = Math.max(1, msg.mc || 1);
         this.config.autoContinueAfterManualDone = msg.am;
+        this.config.devConversationMode = msg.dcm === 'single' ? 'single' : 'batch';
         this.config.compactTaskDecomposition = msg.cm;
         this.config.autoDetectTaskSplitMode = msg.ad;
+        this.config.iterationBranchPrefix = (msg.ibp || '').trim() || 'task';
+        this.config.iterationWorktreePrefix = (msg.iwp || '').trim() || this.config.iterationBranchPrefix || 'task';
+        this.config.iterationNamingSemantic = msg.ins !== false;
+        this.config.iterationWorktreeNameMaxLength = Math.max(24, Math.min(120, Math.floor(Number(msg.iwl) || 52)));
         this.config.simpleTaskKeywords = msg.sk;
         this.config.complexTaskKeywords = msg.ck;
         this.config.worktreeSyncPaths = msg.wsd;
@@ -1773,6 +1782,48 @@ class Harness {
         }
 
         return `存在失败子任务：${failed.join(', ')}`;
+    }
+
+    private collectTaskOutputPathWarnings(subTasks: SubFeature[]): string[] {
+        const warnings: string[] = [];
+        for (const st of subTasks) {
+            for (const raw of st.output) {
+                const token = this.normalizeOutputPathToken(raw);
+                if (!token) {
+                    continue;
+                }
+                if (/\s*[（(][^（）()]*[）)]\s*$/.test(token)) {
+                    warnings.push(`[${st.id}] 输出项含括号注释: ${raw}`);
+                    continue;
+                }
+                if (/\s*\[[^\]]*\]\s*$/.test(token) || /\s*\{[^}]*\}\s*$/.test(token)) {
+                    warnings.push(`[${st.id}] 输出项含注释后缀: ${raw}`);
+                    continue;
+                }
+                if (/[:：]\s*\S+/.test(token)) {
+                    warnings.push(`[${st.id}] 输出项含说明性后缀: ${raw}`);
+                    continue;
+                }
+                if (!/[\\/]/.test(token)) {
+                    warnings.push(`[${st.id}] 输出项不是完整相对路径: ${raw}`);
+                }
+            }
+        }
+        return warnings;
+    }
+
+    private normalizeOutputPathToken(value: string): string {
+        let token = String(value || '').trim();
+        if (!token) {
+            return '';
+        }
+        if (/^`[^`]+`$/.test(token)) {
+            token = token.slice(1, -1).trim();
+        }
+        if ((/^"[^"]+"$/.test(token)) || (/^'[^']+'$/.test(token))) {
+            token = token.slice(1, -1).trim();
+        }
+        return token;
     }
 
     private hasMeaningfulArtifactContent(filePath: string): boolean {

@@ -1,5 +1,16 @@
 'use strict';
 
+/**
+ * workspaceRoot 解析回归覆盖基线。
+ *
+ * 覆盖场景：
+ * 1. 从普通项目子目录打开时，应向上解析回主工作区根目录。
+ * 2. 从 worktree 根目录打开时，不应误回退到 master root。
+ * 3. 从 worktree 内部更深层目录打开时，应归一化回当前 worktree 根，而不是跨出 worktree。
+ *
+ * 这组测试守护的是“主仓库与迭代 worktree 的边界解析稳定，不因打开位置不同而串根目录”。
+ */
+
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -20,7 +31,7 @@ function cleanup(dir) {
     }
 }
 
-describe('resolveHarnessWorkspaceRoot', () => {
+describe('workspaceRoot 解析覆盖基线', () => {
     test('returns master root when opening a normal subfolder under project root', () => {
         const root = makeTempDir();
         try {

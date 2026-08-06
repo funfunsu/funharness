@@ -1,8 +1,15 @@
 'use strict';
 
 /**
- * Flow tests for domain-knowledge orchestration and UI/route constraints.
+ * 领域知识流转回归覆盖基线。
  * Coverage: Req-dk-5, Req-dk-6, Req-dk-7, Req-dk-10, Req-dk-11, Req-dk-12.
+ *
+ * 覆盖场景：
+ * 1. 主面板不得回流展示旧版 domain governance 入口，避免与新子面板流程混用。
+ * 2. 子面板上下文、路由可达性、聚合入口与 UI 约束必须保持一致。
+ * 3. capability-delta 聚合链路要能在最小有效输入下跑通，并对阻断条件维持稳定行为。
+ *
+ * 这组测试守护的是“领域知识能力只能沿既定子面板/聚合链路流转，不被旧入口或 UI 旁路破坏”。
  */
 
 const { describe, test } = require('node:test');
@@ -109,7 +116,7 @@ function buildTaskView() {
     };
 }
 
-describe('DomainKnowledge flow constraints', () => {
+describe('领域知识流转覆盖基线', () => {
     // ── Updated: legacy main-panel domain actions must be absent (INV-1, Req-1) ──
     test('main panel DOES NOT render legacy domain governance actions (INV-1, Req-1)', () => {
         const view = buildTaskView();

@@ -69,6 +69,12 @@ export interface DomainSummaryPromptInput {
     registryCanonicals: string[];
 }
 
+interface DomainRegistryPromptContext {
+    domainRegistryPath: string;
+    domainRegistryStatus: 'missing' | 'empty' | 'available';
+    domainRegistryCanonicals: string[];
+}
+
 export class PromptService {
     private readonly systemPromptDir = 'system-prompts';
     private readonly systemPromptFiles: Record<string, string> = {
@@ -412,12 +418,14 @@ export class PromptService {
                 '## 用户可编辑补充（流程无关）',
                 '- （未提供）',
             ].join('\n');
-        return `${constitutionSection}${locked}\n\n${customSection}`;
+        return constitutionSection
+            ? `${locked}\n\n${constitutionSection}${customSection}`
+            : `${locked}\n\n${customSection}`;
     }
 
     /**
-     * Build the highest-priority Constitution block prepended to every stage/dev prompt.
-     * Precedence: only below the runtime instruction. Empty string when no constitution found.
+     * Build the Constitution block inserted after the locked system section.
+     * If a project constitution is found, it fully replaces the bundled default body.
      */
     private renderConstitutionSection(currentWorkSpace: string): string {
         const resolved = resolveConstitution(currentWorkSpace, this.workspaceRoot, this.extensionPath);
@@ -457,6 +465,7 @@ export class PromptService {
         const template = fs.readFileSync(filePath, 'utf8');
         const specDocsDir = getSpecDocsDir(context.currentWorkSpace, config as Config | undefined);
         const docsRootDir = path.join(context.currentWorkSpace, getDocsRootDirName(config as Config | undefined));
+        const domainRegistryContext = this.buildDomainRegistryPromptContext(docsRootDir);
         const vars: Record<string, string> = {
             taskName: context.taskName,
             taskDesc: context.taskDesc,
@@ -469,6 +478,9 @@ export class PromptService {
             testApiPs1Path: path.join(context.currentWorkSpace, 'tests', 'test-api.ps1'),
             testApiShPath: path.join(context.currentWorkSpace, 'tests', 'test-api.sh'),
             testManifestPath: path.join(context.currentWorkSpace, 'tests', 'test-manifest.json'),
+            domainRegistryPath: domainRegistryContext.domainRegistryPath,
+            domainRegistryStatus: domainRegistryContext.domainRegistryStatus,
+            domainRegistryCanonicals: domainRegistryContext.domainRegistryCanonicals.join(', ') || '(none)',
         };
 
         let rendered = template;
@@ -477,6 +489,32 @@ export class PromptService {
             rendered = rendered.replace(new RegExp(`{{\\s*${safeKey}\\s*}}`, 'g'), value ?? '');
         }
         return rendered;
+    }
+
+    private buildDomainRegistryPromptContext(docsRootDir: string): DomainRegistryPromptContext {
+        const domainRegistryPath = path.join(docsRootDir, 'domains', 'registry.yaml');
+        if (!fs.existsSync(domainRegistryPath)) {
+            return {
+                domainRegistryPath,
+                domainRegistryStatus: 'missing',
+                domainRegistryCanonicals: [],
+            };
+        }
+
+        const content = fs.readFileSync(domainRegistryPath, 'utf8');
+        const canonicals = Array.from(new Set(content
+            .split(/\r?\n/)
+            .map(line => {
+                const match = line.match(/^\s*(?:-\s*)?canonical\s*:\s*(.+?)\s*$/);
+                return match ? match[1].trim().replace(/^['"]|['"]$/g, '') : '';
+            })
+            .filter(Boolean))).sort((left, right) => left.localeCompare(right));
+
+        return {
+            domainRegistryPath,
+            domainRegistryStatus: canonicals.length > 0 ? 'available' : 'empty',
+            domainRegistryCanonicals: canonicals,
+        };
     }
 
     /**
@@ -520,6 +558,24 @@ export class PromptService {
             '',
             '请逐条列出发现的问题，并给出修订建议；若无问题请说明理由。',
         ].join('\n'),
+        tasks: [
+            '# 任务拆解评审模板（通用默认）',
+            '',
+            '请对以下任务拆解文档进行系统性评审，检查以下维度：',
+            '1. **需求覆盖**：每条 Req-* 是否至少映射到一条可执行任务；是否存在遗漏需求。',
+            '2. **粒度合理性**：任务是否可在单次开发周期内完成；是否避免过粗或过碎的拆分。',
+            '3. **依赖与顺序**：前置依赖、并行关系与执行顺序是否明确，无循环依赖。',
+            '4. **验收可判定**：每个任务是否包含明确完成标准与产物路径（代码/文档/测试）。',
+            '5. **范围控制**：是否引入与需求无关的额外任务或遗漏必要测试/回归任务。',
+            '6. **输出路径规范**：',
+            '   - `输出` 与 YAML `outputs` 必须是仓库相对路径，禁止自然语言描述。',
+            '   - 禁止在路径后追加注释或说明后缀（如 `（含 up/rollback）`、`(...)`、`[说明]`、`{说明}`、`: 说明`）。',
+            '   - 需要表达多个产物时，必须逐条列出完整路径，不得使用“某模块/若干文件/目录（含...）”等聚合描述。',
+            '',
+            '若发现输出路径不规范，请按“问题 -> 风险 -> 修订建议”的格式给出可直接替换的路径写法。',
+            '',
+            '请逐条列出发现的问题，并给出修订建议；若无问题请说明理由。',
+        ].join('\n'),
     };
 
     /** Map review stage to its bundled system-prompt filename in `apps/system-prompts/`. */
@@ -527,6 +583,7 @@ export class PromptService {
         requirements: 'review_requirements_system_prompt.md',
         design: 'review_design_system_prompt.md',
         testcase: 'review_testcase_system_prompt.md',
+        tasks: 'review_tasks_system_prompt.md',
     };
 
     /** Map review stage to the user-customizable filename searched in candidate project dirs. */
@@ -534,6 +591,7 @@ export class PromptService {
         requirements: 'review_requirements_custom_prompt.md',
         design: 'review_design_custom_prompt.md',
         testcase: 'review_testcase_custom_prompt.md',
+        tasks: 'review_tasks_custom_prompt.md',
     };
 
     /**

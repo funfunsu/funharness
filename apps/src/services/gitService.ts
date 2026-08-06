@@ -4,7 +4,7 @@ import { exec } from 'child_process';
 import { Config, DEFAULT_MONOREPO_DIRS, Feature } from '../models';
 import { appendHarnessLog } from './harnessLog';
 import { clearDirChildrenPreserving, safeRemovePath } from './fileOps';
-import { deriveIterationBranchName } from './branchName';
+import { deriveIterationBranchNameWithOptions } from './branchName';
 
 /**
  * Describes one git repository the harness manages for an iteration. In multi-repo mode there is
@@ -73,6 +73,15 @@ export class GitService {
      */
     private resolveBaseBranch(task?: Feature): string {
         return (task?.baseBranchUsed || this.config.baseBranch || 'main').trim();
+    }
+
+    private deriveBranchName(task: Feature): string {
+        return deriveIterationBranchNameWithOptions(task, {
+            branchPrefix: this.config.iterationBranchPrefix,
+            worktreePrefix: this.config.iterationWorktreePrefix,
+            semanticSlug: this.config.iterationNamingSemantic,
+            worktreeNameMaxLength: this.config.iterationWorktreeNameMaxLength,
+        });
     }
 
     /** True when a single-repository (monorepo) remote is configured. */
@@ -175,7 +184,7 @@ export class GitService {
         this.currentLogDir = iterationDir;
         this.lastExecError = '';
         this.clearOperationNotices();
-        const branchName = deriveIterationBranchName(task);
+        const branchName = this.deriveBranchName(task);
         const baseBranch = (this.config.baseBranch || 'main').trim();
         const requireExactBaseBranch = Boolean(this.config.baseBranch?.trim());
         let resolvedBaseBranch = baseBranch;
@@ -444,7 +453,7 @@ export class GitService {
         this.currentLogDir = iterationDir;
         const failures: Array<{ repo: string; reason: string }> = [];
         const commitMessage = this.buildCommitMessage(task);
-        const expectedBranch = deriveIterationBranchName(task);
+        const expectedBranch = this.deriveBranchName(task);
         const repos = this.resolveRepoDescriptors(iterationDir);
 
         for (const repo of repos) {
@@ -506,7 +515,7 @@ export class GitService {
         this.currentLogDir = iterationDir;
         this.clearOperationNotices();
         const baseBranch = this.resolveBaseBranch(task);
-        const expectedBranch = deriveIterationBranchName(task);
+        const expectedBranch = this.deriveBranchName(task);
         const failures: Array<{ repo: string; reason: string }> = [];
         const repos = this.resolveRepoDescriptors(iterationDir);
 
@@ -520,6 +529,202 @@ export class GitService {
             return { success: false, message: `同步失败：\n${detail}` };
         }
         return { success: true, message: `✅ 已同步主仓库最新代码（${baseBranch}）到当前 worktree` };
+    }
+
+    /** Capture current HEAD commit for each managed iteration repository. */
+    async captureIterationRepoHeads(iterationDir: string): Promise<Partial<Record<'frontend' | 'backend' | 'mono', string>>> {
+        this.currentLogDir = iterationDir;
+        const heads: Partial<Record<'frontend' | 'backend' | 'mono', string>> = {};
+        const repos = this.resolveRepoDescriptors(iterationDir);
+
+        for (const repo of repos) {
+            if (!fs.existsSync(repo.worktreeDir) || !fs.existsSync(path.join(repo.worktreeDir, '.git'))) {
+                continue;
+            }
+            const out = await this.execCmdOutput('git rev-parse HEAD', repo.worktreeDir);
+            const sha = out.success ? out.stdout.trim() : '';
+            if (sha) {
+                heads[repo.kind] = sha;
+            }
+        }
+
+        return heads;
+    }
+
+    /**
+     * Roll back all iteration code changes to the captured development checkpoint.
+     * Priority: captured snapshot SHA -> merge-base(HEAD, origin/base) -> merge-base(HEAD, base) -> current HEAD.
+     */
+    async rollbackIterationCodeToDevCheckpoint(
+        task: Feature,
+        iterationDir: string,
+        snapshotHeads?: Partial<Record<'frontend' | 'backend' | 'mono', string>>,
+    ): Promise<{ success: boolean; message: string; usedFallback?: boolean }> {
+        this.currentLogDir = iterationDir;
+        this.clearOperationNotices();
+        const expectedBranch = this.deriveBranchName(task);
+        const baseBranch = this.resolveBaseBranch(task);
+        const repos = this.resolveRepoDescriptors(iterationDir);
+        const failures: Array<{ repo: string; reason: string }> = [];
+        let usedFallback = false;
+
+        for (const repo of repos) {
+            if (!fs.existsSync(repo.worktreeDir)) {
+                failures.push({ repo: repo.label, reason: `worktree 目录不存在：${repo.worktreeDir}` });
+                continue;
+            }
+
+            const branchErr = await this.assertExpectedBranch(repo.worktreeDir, expectedBranch);
+            if (branchErr) {
+                failures.push({ repo: repo.label, reason: branchErr });
+                continue;
+            }
+
+            const target = await this.resolveRollbackTargetSha(
+                repo.worktreeDir,
+                snapshotHeads?.[repo.kind],
+                baseBranch,
+            );
+            if (!target.sha) {
+                failures.push({ repo: repo.label, reason: target.reason || '无法确定回滚目标提交' });
+                continue;
+            }
+            if (target.source !== 'snapshot') {
+                usedFallback = true;
+            }
+
+            const resetOk = await this.execCmd(`git reset --hard ${target.sha}`, repo.worktreeDir);
+            if (!resetOk) {
+                failures.push({ repo: repo.label, reason: `git reset --hard 失败：${this.lastExecError}` });
+                continue;
+            }
+            const cleanOk = await this.execCmd('git clean -fd', repo.worktreeDir);
+            if (!cleanOk) {
+                failures.push({ repo: repo.label, reason: `git clean -fd 失败：${this.lastExecError}` });
+            }
+        }
+
+        if (failures.length > 0) {
+            const detail = failures.map(item => `[${item.repo}] ${item.reason}`).join('\n');
+            return {
+                success: false,
+                message: `代码回滚失败：\n${detail}`,
+            };
+        }
+
+        const modeNote = usedFallback
+            ? '（未找到开发起点快照，已回退到迭代分支与基线分支共同祖先）'
+            : '（已按开发起点快照回滚）';
+        return {
+            success: true,
+            usedFallback,
+            message: `✅ 代码回滚完成 ${modeNote}`,
+        };
+    }
+
+    /**
+     * Roll back only code changes under `apps/` in the iteration worktree(s).
+     * It resets staged/unstaged tracked files and removes untracked files inside apps only.
+     */
+    async rollbackIterationAppsOnly(task: Feature, iterationDir: string): Promise<{ success: boolean; message: string }> {
+        this.currentLogDir = iterationDir;
+        this.clearOperationNotices();
+        const expectedBranch = this.deriveBranchName(task);
+        const repos = this.resolveRepoDescriptors(iterationDir);
+        const failures: Array<{ repo: string; reason: string }> = [];
+
+        for (const repo of repos) {
+            if (!fs.existsSync(repo.worktreeDir)) {
+                failures.push({ repo: repo.label, reason: `worktree 目录不存在：${repo.worktreeDir}` });
+                continue;
+            }
+
+            const branchErr = await this.assertExpectedBranch(repo.worktreeDir, expectedBranch);
+            if (branchErr) {
+                failures.push({ repo: repo.label, reason: branchErr });
+                continue;
+            }
+
+            const resetIndexOk = await this.execPathScopedCmd('git reset HEAD -- apps', repo.worktreeDir);
+            if (!resetIndexOk) {
+                failures.push({ repo: repo.label, reason: `回滚 apps 暂存区失败：${this.lastExecError}` });
+                continue;
+            }
+
+            const checkoutOk = await this.execPathScopedCmd('git checkout -- apps', repo.worktreeDir);
+            if (!checkoutOk) {
+                failures.push({ repo: repo.label, reason: `回滚 apps 工作区失败：${this.lastExecError}` });
+                continue;
+            }
+
+            const cleanOk = await this.execPathScopedCmd('git clean -fd -- apps', repo.worktreeDir);
+            if (!cleanOk) {
+                failures.push({ repo: repo.label, reason: `清理 apps 未跟踪文件失败：${this.lastExecError}` });
+                continue;
+            }
+        }
+
+        if (failures.length > 0) {
+            const detail = failures.map(item => `[${item.repo}] ${item.reason}`).join('\n');
+            return { success: false, message: `apps 目录代码回滚失败：\n${detail}` };
+        }
+
+        return { success: true, message: '✅ 已回滚 apps 目录代码变更' };
+    }
+
+    private async execPathScopedCmd(cmd: string, cwd: string): Promise<boolean> {
+        const ok = await this.execCmd(cmd, cwd);
+        if (ok) {
+            return true;
+        }
+        const err = this.lastExecError || '';
+        if (/pathspec .* did not match any file/i.test(err) || /unknown revision or path not in the working tree/i.test(err)) {
+            this.logGit(`INFO [${cwd}] 跳过路径作用域命令（无匹配路径）：${cmd}`);
+            this.lastExecError = '';
+            return true;
+        }
+        return false;
+    }
+
+    private async resolveRollbackTargetSha(
+        repoDir: string,
+        snapshotSha: string | undefined,
+        baseBranch: string,
+    ): Promise<{ sha?: string; source: 'snapshot' | 'merge-base-remote' | 'merge-base-local' | 'head'; reason?: string }> {
+        const preferred = (snapshotSha || '').trim();
+        if (preferred) {
+            const exists = await this.execCmd(`git cat-file -e ${preferred}^{commit}`, repoDir);
+            if (exists) {
+                return { sha: preferred, source: 'snapshot' };
+            }
+        }
+
+        const remoteRef = `origin/${baseBranch}`;
+        const remoteExists = await this.execCmd(`git rev-parse --verify ${remoteRef}`, repoDir);
+        if (remoteExists) {
+            const mergeBaseRemote = await this.execCmdOutput(`git merge-base HEAD ${remoteRef}`, repoDir);
+            const sha = mergeBaseRemote.success ? mergeBaseRemote.stdout.trim() : '';
+            if (sha) {
+                return { sha, source: 'merge-base-remote' };
+            }
+        }
+
+        const localExists = await this.execCmd(`git rev-parse --verify ${baseBranch}`, repoDir);
+        if (localExists) {
+            const mergeBaseLocal = await this.execCmdOutput(`git merge-base HEAD ${baseBranch}`, repoDir);
+            const sha = mergeBaseLocal.success ? mergeBaseLocal.stdout.trim() : '';
+            if (sha) {
+                return { sha, source: 'merge-base-local' };
+            }
+        }
+
+        const head = await this.execCmdOutput('git rev-parse HEAD', repoDir);
+        const headSha = head.success ? head.stdout.trim() : '';
+        if (headSha) {
+            return { sha: headSha, source: 'head' };
+        }
+
+        return { source: 'head', reason: this.withExecError('无法读取当前仓库 HEAD') };
     }
 
     /**
@@ -636,7 +841,7 @@ export class GitService {
         // "提交代码" sometimes appeared to succeed without merging.
         const target = this.resolveBaseBranch(task);
 
-        const sourceBranch = deriveIterationBranchName(task);
+        const sourceBranch = this.deriveBranchName(task);
         this.logGit(`=== 提交代码/合并到基线 开始：task="${task.name}" source=${sourceBranch} target=${target} cleanup=${cleanup} ===`);
         if (!sourceBranch) {
             return { success: false, message: '无法识别迭代分支名' };
@@ -670,8 +875,35 @@ export class GitService {
             }
         }
         if (!anyChanges) {
-            this.logGit(`=== 提交代码/合并到基线 跳过：无代码变更 ===`);
-            return { success: true, message: '✅ 无代码变更，已跳过推送合并流程' };
+            this.logGit(`=== 提交代码/合并到基线 无增量变更：与 ${target} 已一致 ===`);
+            if (!cleanup) {
+                return { success: true, message: `✅ 无代码变更：迭代分支已与基线 ${target} 一致` };
+            }
+
+            const cleanupFailures: Array<{ repo: string; reason: string }> = [];
+            for (const repo of repos) {
+                const cleanupResult = await this.cleanupMergedBranch(repo.mainDir, repo.worktreeDir, sourceBranch, target);
+                if (!cleanupResult.ok) {
+                    cleanupFailures.push({ repo: repo.label, reason: cleanupResult.reason || '未知错误' });
+                }
+            }
+
+            if (cleanupFailures.length > 0) {
+                const detail = cleanupFailures.map(f => `[${f.repo}] ${f.reason}`).join('\n');
+                return {
+                    success: true,
+                    cleanupComplete: false,
+                    message: `✅ 无代码变更：迭代分支已与远程基线 ${target} 一致。\n` +
+                        `但部分清理步骤失败：\n${detail}\n` +
+                        `代码本身未受影响，可手动清理 worktree/迭代分支。`,
+                };
+            }
+
+            return {
+                success: true,
+                cleanupComplete: true,
+                message: `✅ 无代码变更：迭代分支已与远程基线 ${target} 一致，并完成清理`,
+            };
         }
 
         // Phase 1 — Backup: ensure each worktree is fully committed and its iteration branch

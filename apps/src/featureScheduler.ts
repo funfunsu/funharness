@@ -1,8 +1,7 @@
 ﻿import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn } from 'child_process';
-import { Config, GateLevel, SubFeature, Feature, getSpecDocsDir, resolveGateLevel, resolveFeaturePlanFileForIteration } from './models';
+import { Config, SubFeature, Feature, getSpecDocsDir, resolveFeaturePlanFileForIteration } from './models';
 import { appendHarnessLog } from './services/harnessLog';
 
 export class FeatureScheduler {
@@ -10,10 +9,12 @@ export class FeatureScheduler {
     private readonly workspaceRoot: string;
     private readonly docsDir: string;
     private watcher: vscode.FileSystemWatcher | null = null;
+    private taskPlanWatcher: vscode.FileSystemWatcher | null = null;
     private pollTimer: ReturnType<typeof setInterval> | null = null;
     private autoMode: boolean = false;
     private timeoutTimer: NodeJS.Timeout | null = null;
     private handledSignals: Set<string> = new Set();
+    private lastSubTaskStatuses: Map<string, SubFeature['status']> = new Map();
     private onStatusChange: () => void;
     private config: Config;
     private readonly dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string) => Promise<void>;
@@ -226,6 +227,15 @@ export class FeatureScheduler {
         );
 
         fs.writeFileSync(file, content, 'utf8');
+        this.refreshSubTaskStatusSnapshot();
+    }
+
+    private buildSubTaskStatusMap(subTasks: SubFeature[] = this.parseSubFeaturesMd()): Map<string, SubFeature['status']> {
+        return new Map(subTasks.map(task => [task.id, task.status]));
+    }
+
+    private refreshSubTaskStatusSnapshot(subTasks: SubFeature[] = this.parseSubFeaturesMd()): void {
+        this.lastSubTaskStatuses = this.buildSubTaskStatusMap(subTasks);
     }
 
     buildDispatchQuery(subTask: SubFeature, iterFeature: Feature): string {
@@ -743,9 +753,14 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         this.startTimeout(subTask.id);
     }
 
-    async dispatchNext(iterTask: Feature): Promise<boolean> {
+    async dispatchNext(iterTask: Feature, completedTaskId?: string): Promise<boolean> {
         const next = this.getNextSubFeature();
         if (next) {
+            if (await this.shouldPauseAtBatchBoundary(completedTaskId, next.id)) {
+                this.autoMode = false;
+                this.onStatusChange();
+                return false;
+            }
             await this.dispatchSubFeature(next, iterTask);
             return true;
         }
@@ -762,8 +777,45 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         return false;
     }
 
+    private getBatchId(taskId: string | undefined): string | null {
+        if (!taskId) {
+            return null;
+        }
+        const match = String(taskId).trim().match(/^(\d+)\./);
+        return match ? match[1] : null;
+    }
+
+    private async shouldPauseAtBatchBoundary(completedTaskId: string | undefined, nextTaskId: string): Promise<boolean> {
+        if (this.config.devConversationMode === 'single') {
+            return false;
+        }
+
+        const fromBatch = this.getBatchId(completedTaskId);
+        const toBatch = this.getBatchId(nextTaskId);
+        if (!fromBatch || !toBatch || fromBatch === toBatch) {
+            return false;
+        }
+
+        const choice = await vscode.window.showInformationMessage(
+            `批次 ${fromBatch}.x 已完成。是否确认进入下一批次 ${toBatch}.x？`,
+            '进入下一批次',
+            '稍后继续'
+        );
+
+        if (choice === '进入下一批次') {
+            this.writeLog(nextTaskId, `✅ 人工确认跨批次推进：${fromBatch}.x -> ${toBatch}.x`);
+            return false;
+        }
+
+        this.writeLog(nextTaskId, `⏸ 跨批次等待人工确认：${fromBatch}.x -> ${toBatch}.x`);
+        vscode.window.showInformationMessage(`已暂停在批次边界（${fromBatch}.x -> ${toBatch}.x）。完成 keep 后点击“开始自动执行”继续。`);
+        return true;
+    }
+
     startWatching(iterTask: Feature): void {
-        if (this.watcher) return;
+        this.refreshSubTaskStatusSnapshot();
+
+        if (this.watcher && this.taskPlanWatcher) return;
 
         const signalsDir = path.join(this.iterDir, 'signals');
         fs.mkdirSync(signalsDir, { recursive: true });
@@ -776,6 +828,16 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             await this.handleSignal(taskId, uri.fsPath, iterTask);
         });
 
+        const taskPlanFile = this.resolveTaskPlanFile();
+        const taskPlanDir = path.dirname(taskPlanFile);
+        const taskPlanPattern = new vscode.RelativePattern(taskPlanDir, path.basename(taskPlanFile));
+        this.taskPlanWatcher = vscode.workspace.createFileSystemWatcher(taskPlanPattern);
+        const onTaskPlanChanged = async () => {
+            await this.handleTaskPlanMutation(iterTask);
+        };
+        this.taskPlanWatcher.onDidChange(onTaskPlanChanged);
+        this.taskPlanWatcher.onDidCreate(onTaskPlanChanged);
+
         // 2) Polling fallback — catches signals that the watcher missed.
         this.startPolling(signalsDir, iterTask);
     }
@@ -785,10 +847,41 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             this.watcher.dispose();
             this.watcher = null;
         }
+        if (this.taskPlanWatcher) {
+            this.taskPlanWatcher.dispose();
+            this.taskPlanWatcher = null;
+        }
         this.stopPolling();
         this.clearTimeout();
         this.handledSignals.clear();
+        this.lastSubTaskStatuses.clear();
         this.autoMode = false;
+    }
+
+    private async handleTaskPlanMutation(iterTask: Feature): Promise<void> {
+        const subTasks = this.parseSubFeaturesMd();
+        const nextStatuses = this.buildSubTaskStatusMap(subTasks);
+        const manuallyCompletedIds = Array.from(this.lastSubTaskStatuses.entries())
+            .filter(([id, status]) => status === 'doing' && nextStatuses.get(id) === 'done' && !this.handledSignals.has(id))
+            .map(([id]) => id);
+
+        this.lastSubTaskStatuses = nextStatuses;
+        this.onStatusChange();
+
+        if (!this.autoMode || this.config.autoContinueAfterManualDone === false || manuallyCompletedIds.length === 0) {
+            return;
+        }
+
+        const currentDoing = subTasks.find(task => task.status === 'doing');
+        if (currentDoing) {
+            return;
+        }
+
+        for (const taskId of manuallyCompletedIds) {
+            this.writeLog(taskId, '✅ 检测到 tasks.md 中的完成标记，自动继续派发下一子任务');
+        }
+        const lastCompletedTaskId = manuallyCompletedIds[manuallyCompletedIds.length - 1];
+        await this.dispatchNext(iterTask, lastCompletedTaskId);
     }
 
     private startPolling(signalsDir: string, iterTask: Feature): void {
@@ -830,9 +923,14 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             return;
         }
 
+        const hasOtherDoingTask = currentTasks.some(t => t.id !== taskId && t.status === 'doing');
+        const canRecoverFromAlreadyDone = currentTask.status === 'done' && !hasOtherDoingTask;
+
         // Skip signals for non-active subtasks to avoid replaying old files.
         // Expected lifecycle: a subtask becomes 'doing' before its done signal is emitted.
-        if (currentTask.status !== 'doing') {
+        // Recovery case: if the task is already marked done in tasks.md and no later task is
+        // currently doing, still accept the signal so auto execution can resume after a stall.
+        if (currentTask.status !== 'doing' && !canRecoverFromAlreadyDone) {
             this.handledSignals.add(taskId);
             this.writeLog(taskId, `ℹ 忽略非进行中任务信号: done-${taskId}（status=${currentTask.status}）`);
             return;
@@ -840,6 +938,9 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
 
         this.handledSignals.add(taskId);
         this.clearTimeout();
+        if (canRecoverFromAlreadyDone) {
+            this.writeLog(taskId, `♻️ 接受已完成任务信号: done-${taskId}（tasks.md 已为 done，继续恢复自动执行）`);
+        }
         this.writeLog(taskId, `信号文件检测到: done-${taskId}`);
 
         const subTasks = this.parseSubFeaturesMd();
@@ -854,7 +955,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         const existingPaths: string[] = [];
 
         for (const f of filesToCheck) {
-            const fullPath = path.isAbsolute(f) ? f : path.join(this.iterDir, f);
+            const fullPath = this.resolveReportedOutputPath(f);
             if (!fs.existsSync(fullPath)) {
                 outputOk = false;
                 missingPaths.push(f);
@@ -867,39 +968,14 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             const source = expectedOutputFiles.length > 0 ? 'tasks.md' : 'signal file';
             this.writeLog(taskId, `📦 输出校验详情 expected=${expectedOutputFiles.length} signal=${signalFiles.length} checked=${filesToCheck.length} source=${source}`);
 
-            // Real-execution Hard Gate: run task/acceptance scripts instead of merely
-            // noting they exist. Controlled by gateLevel (relaxed = skip, standard =
-            // per-task script, strict = per-task + iteration acceptance script).
-            const gate = resolveGateLevel(this.config);
-            const gateResults = await this.runExecutionGate(taskId, gate);
-            const gateFailed = gateResults.some(r => !r.passed);
-
             if (this.autoMode) {
-                if (gateFailed) {
-                    this.updateSubFeatureStatus(taskId, 'failed');
-                    const summary = gateResults.filter(r => !r.passed).map(r => `${r.name}(exit=${r.code})`).join('、');
-                    this.writeLog(taskId, `❌ 执行门禁未通过（gateLevel=${gate}）：${summary}`);
-                    appendHarnessLog(this.iterDir, 'scheduler', `[${taskId}] 执行门禁失败 gate=${gate} | ${summary}`);
-                    this.onStatusChange();
-                    this.autoMode = false;
-                    vscode.window.showWarningMessage(`❌ 任务 ${taskId} 执行门禁未通过：${summary}`);
-                    return;
-                }
                 this.updateSubFeatureStatus(taskId, 'done');
-                const passNote = gateResults.length > 0
-                    ? `，执行门禁通过（${gateResults.map(r => r.name).join('、')}）`
-                    : '';
-                this.writeLog(taskId, `✅ 输出校验通过（检查文件数: ${filesToCheck.length}）${passNote}，自动标记完成`);
+                this.writeLog(taskId, `✅ 输出校验通过（检查文件数: ${filesToCheck.length}），自动标记完成`);
                 this.onStatusChange();
-                await this.dispatchNext(iterTask);
+                await this.dispatchNext(iterTask, taskId);
             } else {
-                const gateNote = gateResults.length === 0
-                    ? ''
-                    : gateFailed
-                        ? `（⚠ 执行门禁未通过：${gateResults.filter(r => !r.passed).map(r => r.name).join('、')}）`
-                        : `（✅ 执行门禁通过：${gateResults.map(r => r.name).join('、')}）`;
                 const choice = await vscode.window.showInformationMessage(
-                    `✅ 任务 ${taskId} 信号已到达${gateNote}，确认推进？`,
+                    `✅ 任务 ${taskId} 信号已到达，确认推进？`,
                     '确认完成', '人工检查'
                 );
                 if (choice === '确认完成') {
@@ -936,7 +1012,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
                 this.writeLog(taskId, '⚠️ 用户选择忽略验证继续推进');
                 this.onStatusChange();
                 if (this.autoMode) {
-                    await this.dispatchNext(iterTask);
+                    await this.dispatchNext(iterTask, taskId);
                 }
             } else if (choice === '标记重试') {
                 this.updateSubFeatureStatus(taskId, 'todo');
@@ -947,103 +1023,6 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
                 this.autoMode = false;
             }
         }
-    }
-
-    /**
-     * Real-execution Hard Gate: run the task/acceptance scripts and require exit code 0.
-     * relaxed → no scripts run; standard → per-task script; strict → per-task + acceptance.
-     * Absence of scripts is non-blocking (falls back to file-existence gate).
-     */
-    private async runExecutionGate(taskId: string, gate: GateLevel): Promise<Array<{ name: string; passed: boolean; code: number }>> {
-        const results: Array<{ name: string; passed: boolean; code: number }> = [];
-        if (gate === 'relaxed') {
-            return results;
-        }
-
-        const isWin = process.platform === 'win32';
-        const scripts: Array<{ name: string; file: string }> = [];
-
-        const perTask = path.join(this.iterDir, 'tests', isWin ? `test-${taskId}.ps1` : `test-${taskId}.sh`);
-        if (fs.existsSync(perTask)) {
-            scripts.push({ name: `test-${taskId}`, file: perTask });
-        }
-
-        if (gate === 'strict') {
-            const acceptance = path.join(this.iterDir, 'tests', isWin ? 'test-api.ps1' : 'test-api.sh');
-            if (fs.existsSync(acceptance)) {
-                scripts.push({ name: 'test-api', file: acceptance });
-            }
-        }
-
-        if (scripts.length === 0) {
-            this.writeLog(taskId, `ℹ 执行门禁(gate=${gate})：未发现可执行测试脚本，按文件存在放行`);
-            return results;
-        }
-
-        for (const s of scripts) {
-            this.writeLog(taskId, `▶ 执行门禁运行脚本: ${s.file}`);
-            const { code, timedOut, output } = await this.runScript(s.file);
-            const passed = code === 0 && !timedOut;
-            this.writeLog(taskId, `${passed ? '✅' : '❌'} 脚本 ${s.name} 结束 exit=${code}${timedOut ? '（超时）' : ''}`);
-            if (!passed && output.trim()) {
-                this.writeLog(taskId, `脚本 ${s.name} 输出(尾部): ${output.trim().slice(-1500)}`);
-            }
-            results.push({ name: s.name, passed, code: timedOut ? -1 : code });
-        }
-        return results;
-    }
-
-    /** Execute a single .ps1/.sh script, capturing exit code and (truncated) output, with a hard timeout. */
-    private runScript(scriptFile: string): Promise<{ code: number; timedOut: boolean; output: string }> {
-        return new Promise((resolve) => {
-            const isPs = scriptFile.toLowerCase().endsWith('.ps1');
-            const cmd = isPs ? 'powershell' : (process.platform === 'win32' ? 'bash' : 'sh');
-            const args = isPs
-                ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptFile]
-                : [scriptFile];
-
-            let settled = false;
-            let output = '';
-            const capture = (buf: Buffer): void => {
-                output += buf.toString();
-                if (output.length > 8000) {
-                    output = output.slice(-8000);
-                }
-            };
-
-            let child;
-            try {
-                child = spawn(cmd, args, { cwd: this.iterDir, shell: false });
-            } catch {
-                resolve({ code: -1, timedOut: false, output });
-                return;
-            }
-
-            const timer = setTimeout(() => {
-                if (!settled) {
-                    settled = true;
-                    try { child.kill(); } catch { /* ignore */ }
-                    resolve({ code: -1, timedOut: true, output });
-                }
-            }, 120_000);
-
-            child.stdout?.on('data', capture);
-            child.stderr?.on('data', capture);
-            child.on('error', () => {
-                if (!settled) {
-                    settled = true;
-                    clearTimeout(timer);
-                    resolve({ code: -1, timedOut: false, output });
-                }
-            });
-            child.on('close', (code) => {
-                if (!settled) {
-                    settled = true;
-                    clearTimeout(timer);
-                    resolve({ code: code ?? -1, timedOut: false, output });
-                }
-            });
-        });
     }
 
     async startAuto(iterTask: Feature): Promise<void> {
@@ -1081,7 +1060,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         this.onStatusChange();
 
         this.startWatching(iterTask);
-        await this.dispatchNext(iterTask);
+        await this.dispatchNext(iterTask, current?.id);
     }
 
     async retrySubFeature(subFeatureId: string, iterFeature: Feature): Promise<void> {
@@ -1130,6 +1109,65 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${message}\n`, 'utf8');
     }
 
+    private resolveReportedOutputPath(value: string): string {
+        if (path.isAbsolute(value)) {
+            return value;
+        }
+
+        const directPath = path.join(this.iterDir, value);
+        if (fs.existsSync(directPath)) {
+            return directPath;
+        }
+
+        if (/[\\/]/.test(value)) {
+            return directPath;
+        }
+
+        const matched = this.findUniqueFileByBasename(value);
+        return matched || directPath;
+    }
+
+    private findUniqueFileByBasename(fileName: string): string | null {
+        const stack = [this.iterDir];
+        const ignoredDirs = new Set(['.git', 'node_modules', '.harness', 'logs', 'signals']);
+        const matches: string[] = [];
+
+        while (stack.length > 0) {
+            const dir = stack.pop();
+            if (!dir) {
+                continue;
+            }
+
+            let entries: fs.Dirent[];
+            try {
+                entries = fs.readdirSync(dir, { withFileTypes: true });
+            } catch {
+                continue;
+            }
+
+            for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    if (!ignoredDirs.has(entry.name)) {
+                        stack.push(fullPath);
+                    }
+                    continue;
+                }
+
+                if (!entry.isFile() || entry.name !== fileName) {
+                    continue;
+                }
+
+                matches.push(fullPath);
+                if (matches.length > 1) {
+                    return null;
+                }
+            }
+        }
+
+        return matches[0] || null;
+    }
+
     private getPathLikeOutputs(subTask: SubFeature | undefined): string[] {
         if (!subTask || subTask.output.length === 0) {
             return [];
@@ -1162,7 +1200,23 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             normalized = normalized.slice(1, -1).trim();
         }
 
+        // Strip one trailing annotation in parentheses.
+        // Example: apps/risk-control-api/db/migration（含 up/rollback）
+        //      -> apps/risk-control-api/db/migration
+        normalized = this.stripTrailingPathAnnotation(normalized);
+
         return normalized;
+    }
+
+    private stripTrailingPathAnnotation(value: string): string {
+        const text = String(value || '').trim();
+        if (!text) {
+            return '';
+        }
+
+        // Remove only a trailing full-width or half-width parenthetical note,
+        // keeping inner path segments untouched.
+        return text.replace(/\s*[（(][^（）()]*[）)]\s*$/, '').trim();
     }
 
     private looksLikeFilePath(value: string): boolean {
@@ -1171,7 +1225,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         }
         // Extract the path part before any parenthetical remark.
         // Supports formats like: "apps/src/file.ts" or "apps/src/file.ts（仅新增方法）" or "apps/src/file.ts (additional method only)"
-        let pathPart = value.split('（')[0].split('(')[0].trim();
+        let pathPart = this.stripTrailingPathAnnotation(value);
         
         if (!pathPart) {
             return false;

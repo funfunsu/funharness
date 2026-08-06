@@ -10,7 +10,7 @@ export const CONSTITUTION_REL_PATH = `${CONSTITUTION_DIR}/${CONSTITUTION_FILE}`;
 
 export interface ResolvedConstitution {
     content: string;
-    /** 'project' when found in a repo/worktree/master .spec; 'bundled-default' otherwise. */
+    /** 'project' when found in tracked specs/legacy paths; 'bundled-default' otherwise. */
     source: 'project' | 'bundled-default';
     path: string;
 }
@@ -39,6 +39,9 @@ function readIfPresent(candidate: string): string | undefined {
  *   4. <masterRoot>/specs/constitution.md
  *   5. Legacy .spec/* fallbacks for backward compatibility
  *   6. bundled default (apps/system-prompts/constitution_default.md)
+ *
+ * Important: once a project constitution is found, it is used as-is.
+ * No bundled default content is appended or merged.
  */
 export function resolveConstitution(
     iterDir: string,

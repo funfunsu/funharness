@@ -61,6 +61,7 @@ export interface MainFeatureViewModel {
     pct: number;
     subTasks: SubFeature[];
     latestFailureReason?: string;
+    taskOutputPathWarnings?: string[];
     isAuto: boolean;
     artifacts: {
         requirements: boolean;
@@ -92,7 +93,7 @@ export interface MainFeatureViewModel {
 }
 
 type PanelMode = 'main' | 'worktree';
-type ActionPlacement = 'primary' | 'side';
+type ActionPlacement = 'primary' | 'side' | 'header';
 
 interface FeatureActionContext {
     panelMode: PanelMode;
@@ -110,6 +111,10 @@ interface FeatureActionConfig {
     stages: Feature['stage'][] | 'all';
     when?: (ctx: FeatureActionContext) => boolean;
     render: (ctx: FeatureActionContext) => string;
+}
+
+function renderPreviousStageButton(taskId: string, step: 'des' | 'tcs' | 'tsk' | 'dev', title: string): string {
+    return `<button class="action-btn action-btn--previous" onclick="previousStage('${step}','${taskId}')" title="${title}" aria-label="${title}">&lt; 上一步</button>`;
 }
 
 const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
@@ -147,6 +152,13 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_REQUIREMENT],
         render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('requirements')">⚙️ 需求评审 Prompt</button>`,
+    },
+    {
+        key: 'des-previous',
+        placement: 'header',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_DESIGN],
+        render: (ctx) => renderPreviousStageButton(ctx.task.id, 'des', '返回需求阶段'),
     },
     {
         key: 'des-run',
@@ -191,6 +203,13 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('design')">⚙️ 设计评审 Prompt</button>`,
     },
     {
+        key: 'tcs-previous',
+        placement: 'header',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_TESTCASE],
+        render: (ctx) => renderPreviousStageButton(ctx.task.id, 'tcs', '返回设计阶段'),
+    },
+    {
         key: 'tcs-run',
         placement: 'primary',
         panels: ['main', 'worktree'],
@@ -233,11 +252,25 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','testScript')">🧪 查看测试脚本</button>`,
     },
     {
+        key: 'tsk-previous',
+        placement: 'header',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_TASKS],
+        render: (ctx) => renderPreviousStageButton(ctx.task.id, 'tsk', '返回测试用例阶段'),
+    },
+    {
         key: 'tsk-run',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TASKS],
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="runAgent('tsk','${ctx.task.id}')">🤖 运行任务 Agent</button>`,
+    },
+    {
+        key: 'tsk-review',
+        placement: 'primary',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_TASKS],
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="triggerStageReview('${ctx.task.id}','tasks')">⚖️ AI 评审</button>`,
     },
     {
         key: 'tsk-confirm',
@@ -247,11 +280,26 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         render: (ctx) => `<button class="action-btn action-btn--primary" onclick="next('tsk','${ctx.task.id}')">✅ 确认任务拆解</button>`,
     },
     {
+        key: 'tsk-review-prompt',
+        placement: 'side',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.WRITING_TASKS],
+        render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('tasks')">⚙️ 任务拆解评审 Prompt</button>`,
+    },
+    {
         key: 'tasks-view',
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TASKS, STAGE.DEVELOPING, STAGE.READY_FOR_REVIEW],
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','tasks')">📋 查看任务产物</button>`,
+    },
+    {
+        key: 'dev-tasks-review-prompt',
+        placement: 'side',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.DEVELOPING],
+        when: (ctx) => !ctx.task.quickMode,
+        render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('tasks')">⚙️ 任务拆解评审 Prompt</button>`,
     },
     {
         key: 'dev-auto-toggle',
@@ -287,6 +335,13 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
         render: (ctx) => `<button class="action-btn action-btn--primary" onclick="${ctx.isWorktreeSubview ? 'pushDev' : 'pushAll'}('${ctx.task.id}')">🚀 推送</button>`,
+    },
+    {
+        key: 'dev-rollback-to-task-split',
+        placement: 'header',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.DEVELOPING],
+        render: (ctx) => `<button class="action-btn action-btn--subtle-danger" onclick="rollbackDev('${ctx.task.id}')">回滚</button>`,
     },
     {
         key: 'review-spec',
@@ -342,21 +397,10 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
     },
 ];
 
-function collectTaskActions(ctx: FeatureActionContext): { primaryActions: string[]; sideActions: string[] } {
+function collectTaskActions(ctx: FeatureActionContext): { primaryActions: string[]; sideActions: string[]; headerActions: string[] } {
     const primaryActions: string[] = [];
     const sideActions: string[] = [];
-
-    // Debug: log the collection context and configuration
-    if (ctx.task.id && ctx.task.id.includes('task_')) {
-        const actionDebugLog = {
-            taskId: ctx.task.id,
-            panelMode: ctx.panelMode,
-            taskStage: ctx.task.stage,
-            isWorktreeSubview: ctx.isWorktreeSubview,
-            configCount: FEATURE_ACTION_CONFIGS.length,
-        };
-        console.debug('[collectTaskActions]', actionDebugLog);
-    }
+    const headerActions: string[] = [];
 
     for (const action of FEATURE_ACTION_CONFIGS) {
         if (!action.panels.includes(ctx.panelMode)) {
@@ -374,25 +418,18 @@ function collectTaskActions(ctx: FeatureActionContext): { primaryActions: string
         }
         if (action.placement === 'primary') {
             primaryActions.push(rendered);
+        } else if (action.placement === 'header') {
+            headerActions.push(rendered);
         } else {
             sideActions.push(rendered);
         }
     }
 
-    // Debug: log results
-    if (ctx.task.id && ctx.task.id.includes('task_')) {
-        console.debug('[collectTaskActions.result]', {
-            primaryCount: primaryActions.length,
-            sideCount: sideActions.length,
-            primaryKeys: primaryActions.length > 0 ? 'generated' : 'none',
-        });
-    }
-
-    return { primaryActions, sideActions };
+    return { primaryActions, sideActions, headerActions };
 }
 
 /** Map internal task stage to review stage contract used by review messages (Req-1). */
-function getReviewStageByTaskStage(stage: Feature['stage']): 'requirements' | 'design' | 'testcase' | null {
+function getReviewStageByTaskStage(stage: Feature['stage']): 'requirements' | 'design' | 'testcase' | 'tasks' | null {
     if (stage === STAGE.WRITING_REQUIREMENT) {
         return 'requirements';
     }
@@ -402,16 +439,22 @@ function getReviewStageByTaskStage(stage: Feature['stage']): 'requirements' | 'd
     if (stage === STAGE.WRITING_TESTCASE) {
         return 'testcase';
     }
+    if (stage === STAGE.WRITING_TASKS) {
+        return 'tasks';
+    }
     return null;
 }
 
 /** Human-readable labels for review stages shown in the webview panel. */
-function getReviewStageLabel(stage: 'requirements' | 'design' | 'testcase'): string {
+function getReviewStageLabel(stage: 'requirements' | 'design' | 'testcase' | 'tasks'): string {
     if (stage === 'requirements') {
         return '需求';
     }
     if (stage === 'design') {
         return '设计';
+    }
+    if (stage === 'tasks') {
+        return '任务拆解';
     }
     return '测试用例';
 }
@@ -465,6 +508,7 @@ body{background:#111;color:#eee;padding:14px;font-family:-apple-system;padding-b
 .action{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
 .action button{flex:1;padding:8px;border-radius:8px;border:none;font-size:11px;min-width:80px}
 .action-stack{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.action-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .action-group{display:flex;gap:6px;flex-wrap:wrap}
 .action-label{font-size:11px;color:#8f8f94;text-transform:uppercase;letter-spacing:.04em}
 .action-btn{flex:1;min-width:80px;padding:8px 10px;border-radius:8px;border:1px solid transparent;font-size:11px;font-weight:600;line-height:1;display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;transition:background-color .16s ease,border-color .16s ease,color .16s ease,transform .12s ease}
@@ -482,6 +526,12 @@ body{background:#111;color:#eee;padding:14px;font-family:-apple-system;padding-b
 .action-btn--warning:hover{background:#ffb143}
 .action-btn--danger{background:#ff3b30;color:#fff}
 .action-btn--danger:hover{background:#ff5550}
+.action-btn--subtle-danger{flex:none;min-width:auto;padding:0;background:transparent;border:none;color:#8f8f94}
+.action-btn--subtle-danger:hover{background:transparent;color:#ff8b85;transform:none}
+.action-btn--icon-only{flex:none;min-width:auto;width:36px;padding:8px}
+.action-btn__icon{width:14px;height:14px;display:block}
+.action-btn--previous{flex:none;min-width:auto;padding:0;background:transparent;border:none;color:#8f8f94;font-size:11px;line-height:1.2}
+.action-btn--previous:hover{background:transparent;color:#d0d0d6;transform:none}
 .fixed-bottom{position:sticky;bottom:0;background:#111;padding-top:8px;padding-bottom:4px;margin-top:10px}
 .input-card{background:#1c1c1e;border-radius:12px;padding:12px}
 input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:#2c2c2e;color:#fff;margin-bottom:8px}
@@ -667,9 +717,11 @@ ${visibleTaskViews.map(view => {
     const showSubTasks = (t.stage === STAGE.WRITING_TASKS || t.stage === STAGE.DEVELOPING) && subTasks.length > 0;
     const canOperateSubTasks = t.stage === STAGE.DEVELOPING;
     const allSubTasksDone = t.stage === STAGE.DEVELOPING && stats.total > 0 && stats.done >= stats.total;
+    const outputWarnings = view.taskOutputPathWarnings || [];
+    const outputWarningsPreview = outputWarnings.slice(0, 2);
     const hasWorktree = Boolean(t.worktreePath) || health.worktreeExists || health.frontendExists || health.backendExists;
     const panelMode: PanelMode = isWorktreeSubview ? 'worktree' : 'main';
-    const { primaryActions, sideActions } = collectTaskActions({
+    const { primaryActions, sideActions, headerActions } = collectTaskActions({
         panelMode,
         isWorktreeSubview,
         taskView: view,
@@ -688,9 +740,8 @@ ${visibleTaskViews.map(view => {
 
     const actionHtml = `
 <div class="action-stack">
-  ${primaryActions.length > 0 ? `<div class="action-label">主流程操作</div><div class="action-group">${primaryActions.join('')}${t.stage === STAGE.DEVELOPING ? `<!-- STAGE=DEVELOPING, primaryCount=${primaryActions.length} -->` : ''}</div>` : ''}
+    ${(primaryActions.length > 0 || headerActions.length > 0) ? `<div class="action-header"><div class="action-label">主流程操作</div>${headerActions.length > 0 ? `<div class="action-group">${headerActions.join('')}</div>` : ''}</div>${primaryActions.length > 0 ? `<div class="action-group">${primaryActions.join('')}${t.stage === STAGE.DEVELOPING ? `<!-- STAGE=DEVELOPING, primaryCount=${primaryActions.length} -->` : ''}</div>` : ''}` : ''}
   ${sideActions.length > 0 ? `<div class="action-label">旁路操作</div><div class="action-group">${sideActions.join('')}</div>` : ''}
-  ${t.stage === STAGE.DEVELOPING && primaryActions.length === 0 ? `<div style="color:#ff9500;font-size:11px;padding:4px;background:#2b2308;border:1px solid #7a5d00;border-radius:4px;margin-top:4px">⚠DEBUG: DEVELOPING 阶段但无主流程按钮 (panelMode=${panelMode})</div>` : ''}
 </div>`;
 
     return `
@@ -721,6 +772,7 @@ ${!t.quickMode ? `<div>阶段：${STAGE_LABEL[t.stage] || t.stage}</div>
 <div class="task-status">原因：${health.summary || '-'}</div>
 ${(t.stage === STAGE.DEVELOPING || t.stage === STAGE.READY_FOR_REVIEW) ? `<div class="health-line" style="margin:4px 0">${buildDeltaBadgeHtml(t.id, view.specDeltaStatus)}</div>` : ''}
 ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.latestFailureReason}</div>` : ''}
+${outputWarningsPreview.length > 0 ? `<div class="task-status" style="color:#ffb143">输出路径告警：${outputWarningsPreview.map(escapeHtml).join('；')}${outputWarnings.length > outputWarningsPreview.length ? `（+${outputWarnings.length - outputWarningsPreview.length}）` : ''}</div>` : ''}
 <div class="task-status">待办:${stats.todo} 执行中:${stats.doing} 完成:${stats.done}${stats.failed > 0 ? ` 失败:${stats.failed}` : ''}</div>
 <div class="task-progress"><div class="progress-bar" style="width:${view.pct}%"></div></div>
 <div style="font-size:12px">进度：${view.pct}%</div>` : ''}
@@ -1719,6 +1771,8 @@ function create(){
 }
 function runAgent(s,id){v.postMessage({type:'runAgent',step:s,id})}
 function next(s,id,ts){v.postMessage({type:'next',step:s,id,...(ts?{targetStage:ts}:{})})}
+function previousStage(s,id){v.postMessage({type:'previous',step:s,id})}
+function rollbackDev(id){v.postMessage({type:'rollbackDev',id})}
 function pass(id){v.postMessage({type:'pass',id})}
 function refresh(){v.postMessage({type:'refresh'})}
 function pushAll(id){v.postMessage({type:'pushAndNextStage',id})}
@@ -1971,7 +2025,7 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <div id="gitPaneMono" class="git-pane">
 <h5>单一仓库（Monorepo）Git 地址</h5>
 <input id="mg" value="${monorepoGitValue}" placeholder="代码、文档、脚本位于同一仓库" ${disabled}>
-<div style="font-size:12px;opacity:0.7;margin:4px 0 8px">该模式下，funharness 会将仓库克隆到 <b>repos/mono-main</b> 作为主仓库，并在主仓库与每个迭代 worktree 中按需补齐目录骨架（默认：<b>apps/</b> 代码、<b>docs/</b> 文档、<b>scripts/</b> 项目脚本）。迭代任务以 git worktree 形式生成在 <b>worktrees/&lt;task&gt;/</b>（根即迭代目录）。你可继续在 apps/ 下组织前后端，也可按项目规范调整。若填写了基线分支但远程不存在，系统会在本地主仓库自动创建该分支。</div>
+<div style="font-size:12px;opacity:0.7;margin:4px 0 8px">该模式下，funharness 会将仓库克隆到 <b>repos/mono-main</b> 作为主仓库，并在主仓库与每个迭代 worktree 中按需补齐目录骨架（默认：<b>apps/</b> 代码、<b>docs/</b> 文档、<b>scripts/</b> 项目脚本）。迭代任务以 git worktree 形式生成在 <b>worktrees/&lt;english-slug&gt;/</b>（根即迭代目录，避免中文路径问题）。你可继续在 apps/ 下组织前后端，也可按项目规范调整。若填写了基线分支但远程不存在，系统会在本地主仓库自动创建该分支。</div>
 </div>
 
 <div id="gitPaneMulti" class="git-pane">
@@ -2002,6 +2056,12 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <span>人工修正为完成后自动继续</span>
 <input id="am" type="checkbox" ${config.autoContinueAfterManualDone !== false ? 'checked' : ''} ${disabled}>
 </div>
+<h5>开发会话模式</h5>
+<select id="dcm" ${disabled}>
+<option value="batch" ${config.devConversationMode !== 'single' ? 'selected' : ''}>按批次会话（1.x/2.x，默认）</option>
+<option value="single" ${config.devConversationMode === 'single' ? 'selected' : ''}>只一个会话（全开发阶段复用）</option>
+</select>
+<div style="font-size:12px;opacity:0.75;margin:4px 0 8px">按批次模式下，跨批次切换（如 2.x → 3.x）会要求人工确认后才继续。</div>
 <div class="toggle-row">
 <span>任务拆分精简模式</span>
 <input id="cm" type="checkbox" ${config.compactTaskDecomposition ? 'checked' : ''} ${disabled}>
@@ -2009,6 +2069,16 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <div class="toggle-row">
 <span>按需求描述自动判别拆分模式</span>
 <input id="ad" type="checkbox" ${config.autoDetectTaskSplitMode !== false ? 'checked' : ''} ${disabled}>
+</div>
+<h5>迭代分支前缀（ASCII，默认 task）</h5>
+<input id="ibp" value="${config.iterationBranchPrefix || 'task'}" placeholder="task" ${disabled}>
+<h5>迭代目录前缀（ASCII，默认 task）</h5>
+<input id="iwp" value="${config.iterationWorktreePrefix || config.iterationBranchPrefix || 'task'}" placeholder="task" ${disabled}>
+<h5>迭代目录最大长度（24-120，默认 52）</h5>
+<input id="iwl" type="number" min="24" max="120" value="${config.iterationWorktreeNameMaxLength || 52}" ${disabled}>
+<div class="toggle-row">
+<span>命名保留语义（拼音/英文关键词）</span>
+<input id="ins" type="checkbox" ${config.iterationNamingSemantic !== false ? 'checked' : ''} ${disabled}>
 </div>
 <h5>简单需求关键词（逗号分隔）</h5>
 <input id="sk" value="${config.simpleTaskKeywords || ''}" placeholder="如 blacklist,crud,管理,配置" ${disabled}>
@@ -2025,9 +2095,9 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <input id="srd" value="${config.specRootDir || 'specs'}" placeholder="specs" ${disabled}>
 <h5>机器门禁力度（gateLevel）</h5>
 <select id="gl" ${disabled}>
-<option value="relaxed" ${config.gateLevel === 'relaxed' ? 'selected' : ''}>relaxed · 宽松（追溯仅查悬空引用，任务自动推进）</option>
-<option value="standard" ${config.gateLevel === 'strict' || config.gateLevel === 'relaxed' ? '' : 'selected'}>standard · 标准（追溯全量闭环，任务自动推进）</option>
-<option value="strict" ${config.gateLevel === 'strict' ? 'selected' : ''}>strict · 严格（追溯全量，任务阶段需人工确认）</option>
+<option value="relaxed" ${config.gateLevel === 'relaxed' ? 'selected' : ''}>relaxed · 宽松（追溯仅查悬空引用，任务阶段需人工确认）</option>
+<option value="standard" ${config.gateLevel === 'strict' || config.gateLevel === 'relaxed' ? '' : 'selected'}>standard · 标准（追溯全量闭环，任务阶段需人工确认）</option>
+<option value="strict" ${config.gateLevel === 'strict' ? 'selected' : ''}>strict · 严格（追溯全量 + 更严格执行门禁，任务阶段需人工确认）</option>
 </select>
 <h5>自定义项目目录结构（可选，优先级最高）</h5>
 <textarea id="cps" rows="12" placeholder="填写团队约定的目录结构。留空时：已有项目会自动提炼；新项目回退到默认模板。" ${disabled}>${config.customProjectStructure || ''}</textarea>
@@ -2154,7 +2224,7 @@ function switchGitMode(m){
     if(tx)tx.classList.toggle('active',m==='multi');
 }
 switchGitMode(gitMode);
-function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,am:document.getElementById('am').checked,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
+function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,am:document.getElementById('am').checked,dcm:document.getElementById('dcm').value,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,ibp:document.getElementById('ibp').value,iwp:document.getElementById('iwp').value,ins:document.getElementById('ins').checked,iwl:parseInt(document.getElementById('iwl').value)||52,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
 function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
 function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
 function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}

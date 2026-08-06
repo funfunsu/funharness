@@ -83,6 +83,8 @@ interface HarnessMessageControllerDeps {
     openFolderLocation: (featureId: string, location: Extract<HarnessMessage, { type: 'openFolderLocation' }>['location']) => Promise<void>;
     openArtifact: (featureId: string, artifact: Extract<HarnessMessage, { type: 'openArtifact' }>['artifact']) => Promise<void>;
     nextStage: (featureId: string, step: Extract<HarnessMessage, { type: 'next' }>['step'], targetStage?: Extract<HarnessMessage, { type: 'next' }>['targetStage']) => Promise<void>;
+    previousStage: (featureId: string, step: Extract<HarnessMessage, { type: 'previous' }>['step']) => Promise<void>;
+    rollbackDev: (featureId: string) => Promise<void>;
     pass: (featureId: string) => Promise<void>;
     syncMainCode: (featureId: string) => Promise<void>;
     completeDevWithPush: (featureId: string) => Promise<void>;
@@ -276,6 +278,8 @@ export class HarnessMessageController {
             case 'openArtifact':
             case 'openFolderLocation':
             case 'next':
+            case 'previous':
+            case 'rollbackDev':
             case 'pass':
             case 'syncMainCode':
             case 'pushAll':
@@ -359,7 +363,7 @@ export class HarnessMessageController {
      * Determine whether the incoming review request targets a supported key stage.
      */
     private isReviewStage(stage: string): stage is ReviewStage {
-        return stage === 'requirements' || stage === 'design' || stage === 'testcase';
+        return stage === 'requirements' || stage === 'design' || stage === 'testcase' || stage === 'tasks';
     }
 
     /**
@@ -369,7 +373,7 @@ export class HarnessMessageController {
         if (this.isReviewStage(stage)) {
             return true;
         }
-        vscode.window.showWarningMessage('REVIEW-VAL-001: 评审仅支持 requirements、design、testcase 三个阶段');
+        vscode.window.showWarningMessage('REVIEW-VAL-001: 评审仅支持 requirements、design、testcase、tasks 四个阶段');
         return false;
     }
 
@@ -674,6 +678,12 @@ export class HarnessMessageController {
                 return;
             case 'next':
                 await this.deps.nextStage(msg.id, msg.step, msg.targetStage);
+                return;
+            case 'previous':
+                await this.deps.previousStage(msg.id, msg.step);
+                return;
+            case 'rollbackDev':
+                await this.deps.rollbackDev(msg.id);
                 return;
             case 'pass':
                 await this.deps.pass(msg.id);

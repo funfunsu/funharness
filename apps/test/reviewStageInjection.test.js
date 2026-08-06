@@ -1,13 +1,16 @@
 'use strict';
 
 /**
- * Unit and integration tests for 评审植入 (Review Stage Injection).
+ * 评审植入回归覆盖基线。
  * Coverage: TEST-1 through TEST-10 as defined in specs/评审植入/design.md#6.-测试策略
  *
- * Req-1: 关键阶段提供可选评审入口
- * Req-2: 评审提示词支持通用模板
- * Req-3: 评审提示词支持用户自定义并可覆盖通用模板
- * Req-4: 评审执行结果与状态可感知且不改变主流程完成语义
+ * 基线目标：
+ * 1. requirements / design / testcase / tasks 四个阶段都有可选评审入口，且默认不执行。
+ * 2. 未触发评审时，主流程绝不能被阻断，也不能隐式引入 blocked / required 语义。
+ * 3. 评审 Prompt 必须支持默认模板、自定义覆盖与阶段上下文装配。
+ * 4. 评审执行成功或失败都应可感知，但不能改写主流程完成语义。
+ *
+ * 这组测试守护的是“评审能力是可选旁路，而不是新的主流程门禁”。
  */
 
 const { describe, test, beforeEach, afterEach } = require('node:test');
@@ -64,9 +67,9 @@ async function waitForReviewCompletion(execService, stage, maxMs = 2000) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TEST-1 / Req-1 / INV-1: 三阶段入口可见且默认未执行
+// TEST-1 / Req-1 / INV-1: 四阶段入口可见且默认未执行
 // ─────────────────────────────────────────────────────────────────────────────
-describe('TEST-1: 三阶段入口可见且默认未执行 (Req-1, INV-1)', () => {
+describe('TEST-1: 四阶段入口可见且默认未执行 (Req-1, INV-1)', () => {
     let tmpDir;
     let configService;
     let execService;
@@ -97,6 +100,11 @@ describe('TEST-1: 三阶段入口可见且默认未执行 (Req-1, INV-1)', () =>
         const status = execService.getLatestReviewStatus('testcase');
         assert.equal(status.status, 'idle');
     });
+
+    test('GIVEN 进入 tasks 阶段 WHEN 页面加载（无评审执行）THEN 状态为 idle', () => {
+        const status = execService.getLatestReviewStatus('tasks');
+        assert.equal(status.status, 'idle');
+    });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,7 +124,7 @@ describe('TEST-2: 不点击评审不阻断主流程 (Req-1, Req-4, INV-2, INV-10
     afterEach(() => cleanup(tmpDir));
 
     test('GIVEN 用户未触发评审 WHEN 查询各阶段状态 THEN 全部为 idle（不携带阻断语义）', () => {
-        for (const stage of ['requirements', 'design', 'testcase']) {
+        for (const stage of ['requirements', 'design', 'testcase', 'tasks']) {
             const result = execService.getLatestReviewStatus(stage);
             assert.equal(result.status, 'idle',
                 `阶段 ${stage} 在无评审执行时应返回 idle`);
@@ -199,9 +207,9 @@ describe('TEST-4: composedPrompt 包含阶段上下文与模板正文 (Req-2, IN
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TEST-5 / Req-2 / INV-5: 三阶段通用模板内容可区分
+// TEST-5 / Req-2 / INV-5: 四阶段通用模板内容可区分
 // ─────────────────────────────────────────────────────────────────────────────
-describe('TEST-5: 三阶段通用模板内容可区分 (Req-2, INV-5)', () => {
+describe('TEST-5: 四阶段通用模板内容可区分 (Req-2, INV-5)', () => {
     let tmpDir;
     let promptService;
 
@@ -212,22 +220,33 @@ describe('TEST-5: 三阶段通用模板内容可区分 (Req-2, INV-5)', () => {
 
     afterEach(() => cleanup(tmpDir));
 
-    test('GIVEN 分别在三个阶段发起评审 WHEN 获取默认 promptBody THEN 三者内容互不相同', () => {
+    test('GIVEN 分别在四个阶段发起评审 WHEN 获取默认 promptBody THEN 四者内容互不相同', () => {
         const reqResult = promptService.resolveReviewPromptByStage('requirements', {});
         const desResult = promptService.resolveReviewPromptByStage('design', {});
         const tcsResult = promptService.resolveReviewPromptByStage('testcase', {});
+        const tskResult = promptService.resolveReviewPromptByStage('tasks', {});
 
         assert.notEqual(reqResult.promptBody, desResult.promptBody, 'requirements 与 design 默认模板应不同');
         assert.notEqual(desResult.promptBody, tcsResult.promptBody, 'design 与 testcase 默认模板应不同');
         assert.notEqual(reqResult.promptBody, tcsResult.promptBody, 'requirements 与 testcase 默认模板应不同');
+        assert.notEqual(tskResult.promptBody, reqResult.promptBody, 'tasks 与 requirements 默认模板应不同');
+        assert.notEqual(tskResult.promptBody, desResult.promptBody, 'tasks 与 design 默认模板应不同');
+        assert.notEqual(tskResult.promptBody, tcsResult.promptBody, 'tasks 与 testcase 默认模板应不同');
     });
 
-    test('GIVEN 三阶段默认模板 THEN 每个模板均非空且含阶段关键词', () => {
-        const stages = ['requirements', 'design', 'testcase'];
+    test('GIVEN 四阶段默认模板 THEN 每个模板均非空且含阶段关键词', () => {
+        const stages = ['requirements', 'design', 'testcase', 'tasks'];
         for (const stage of stages) {
             const result = promptService.resolveReviewPromptByStage(stage, {});
             assert.ok(result.promptBody.length > 20, `${stage} 默认模板不得为空短字符串`);
         }
+    });
+
+    test('GIVEN tasks 默认评审模板 WHEN 读取 promptBody THEN 必须包含输出路径规范检查', () => {
+        const result = promptService.resolveReviewPromptByStage('tasks', {});
+        assert.equal(result.promptBody.includes('输出路径规范'), true);
+        assert.equal(result.promptBody.includes('输出` 与 YAML `outputs`'), true);
+        assert.equal(result.promptBody.includes('（含 up/rollback）'), true);
     });
 });
 
@@ -261,6 +280,15 @@ describe('TEST-6: 自定义模板覆盖默认模板 (Req-3, INV-6)', () => {
 
         const result = promptService.resolveReviewPromptByStage('design', {}, configService);
         assert.equal(result.source, 'custom');
+    });
+
+    test('GIVEN tasks 已配置自定义 Prompt WHEN 解析模板 THEN source=custom 且内容为自定义内容', () => {
+        const customBody = '任务拆解评审自定义模板内容';
+        configService.saveStagePrompt('tasks', customBody);
+
+        const result = promptService.resolveReviewPromptByStage('tasks', {}, configService);
+        assert.equal(result.source, 'custom');
+        assert.equal(result.promptBody, customBody);
     });
 });
 
@@ -350,6 +378,13 @@ describe('TEST-8: 阶段间配置相互隔离 (Req-3, INV-8)', () => {
 
         const reqResult = promptService.resolveReviewPromptByStage('requirements', {}, configService);
         assert.equal(reqResult.source, 'default', 'testcase 配置不应影响 requirements');
+    });
+
+    test('GIVEN tasks 有自定义 WHEN 解析 design THEN design 不受影响', () => {
+        configService.saveStagePrompt('tasks', '任务拆解评审自定义模板');
+
+        const desResult = promptService.resolveReviewPromptByStage('design', {}, configService);
+        assert.equal(desResult.source, 'default', 'tasks 配置不应影响 design');
     });
 });
 
@@ -447,7 +482,7 @@ describe('TEST-10: 评审失败不改变主流程完成语义 (Req-4, INV-10)', 
         // 非法阶段不在 ReviewStage 枚举中，默认模板 map 不含对应 key
         // 行为：promptBody 应为 undefined 或解析结果中 source 不定
         // 此处验证正常阶段均有非空 promptBody，非法阶段超出测试契约范围
-        for (const stage of ['requirements', 'design', 'testcase']) {
+        for (const stage of ['requirements', 'design', 'testcase', 'tasks']) {
             const result = promptService.resolveReviewPromptByStage(stage, {});
             assert.ok(result.promptBody, `合法阶段 ${stage} 应有非空 promptBody`);
         }
