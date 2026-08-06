@@ -1,0 +1,134 @@
+{
+  "iteration": "评审植入",
+  "generatedAt": "2020-08-21T10:04:32.000Z",
+  "contentHash": "f025fc7aeafccbcfaad02864a93d39e132495df1",
+  "domains": [
+    {
+      "canonical": null,
+      "rawDomain": null,
+      "isSuspectedNew": true,
+      "capabilities": [],
+      "contracts": [
+        {
+          "id": "API-1",
+          "reqId": "Req-1",
+          "method": "MESSAGE",
+          "path": "openStageReview",
+          "requestShape": {
+            "stage": "enum(requirements|design|testcase|tasks)"
+          },
+          "responseShape": {}
+        },
+        {
+          "id": "API-5",
+          "reqId": "Req-4",
+          "method": "MESSAGE+SERVICE",
+          "path": "ReviewExecutionService#getLatestReviewStatus",
+          "requestShape": {
+            "stage": "enum(requirements|design|testcase|tasks)"
+          },
+          "responseShape": {
+            "status": "enum(idle|running|completed|failed)",
+            "summary": "string?",
+            "errorReason": "string?"
+          }
+        },
+        {
+          "id": "API-4",
+          "reqId": "Req-2",
+          "method": "MESSAGE+SERVICE",
+          "path": "ReviewExecutionService#runStageReview",
+          "requestShape": {
+            "stage": "enum(requirements|design|testcase|tasks)",
+            "context": "StageContext"
+          },
+          "responseShape": {
+            "reviewId": "string",
+            "status": "enum(running|failed)",
+            "summary": "string?",
+            "errorReason": "string?"
+          }
+        },
+        {
+          "id": "API-3",
+          "reqId": "Req-3",
+          "method": "MESSAGE+SERVICE",
+          "path": "saveStagePrompt -> ReviewPromptConfigService#saveStagePrompt",
+          "requestShape": {
+            "stage": "enum(requirements|design|testcase|tasks)",
+            "promptBody": "string"
+          },
+          "responseShape": {}
+        },
+        {
+          "id": "API-2",
+          "reqId": "Req-2",
+          "method": "SERVICE",
+          "path": "PromptService#resolveReviewPromptByStage",
+          "requestShape": {
+            "stage": "enum(requirements|design|testcase|tasks)",
+            "context": "StageContext",
+            "configService": "ReviewPromptConfigService?"
+          },
+          "responseShape": {
+            "source": "enum(custom|default)",
+            "promptBody": "string",
+            "composedPrompt": "string"
+          }
+        }
+      ],
+      "invariants": [
+        {
+          "id": "INV-1",
+          "reqId": "Req-1",
+          "text": "stage page load must render review entry and not auto-run review"
+        },
+        {
+          "id": "INV-10",
+          "reqId": "Req-4",
+          "text": "failed or skipped review must not introduce mandatory-review gate for stage completion"
+        },
+        {
+          "id": "INV-2",
+          "reqId": "Req-1",
+          "text": "not clicking review must not block stage progression"
+        },
+        {
+          "id": "INV-3",
+          "reqId": "Req-2",
+          "text": "missing custom prompt must fallback to stage default prompt"
+        },
+        {
+          "id": "INV-4",
+          "reqId": "Req-2",
+          "text": "review request must include stage context and prompt body"
+        },
+        {
+          "id": "INV-5",
+          "reqId": "Req-2",
+          "text": "default prompts for requirements, design, testcase must be distinguishable"
+        },
+        {
+          "id": "INV-6",
+          "reqId": "Req-3",
+          "text": "existing stage custom prompt must override default prompt"
+        },
+        {
+          "id": "INV-7",
+          "reqId": "Req-3",
+          "text": "latest saved custom prompt version must be used for subsequent reviews"
+        },
+        {
+          "id": "INV-8",
+          "reqId": "Req-3",
+          "text": "custom prompt configuration must be isolated per stage"
+        },
+        {
+          "id": "INV-9",
+          "reqId": "Req-4",
+          "text": "review execution status must transition to running and end in completed or failed with summary/reason"
+        }
+      ]
+    }
+  ]
+}
