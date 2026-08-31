@@ -436,4 +436,106 @@ describe('开发回退链路覆盖基线', () => {
         assert.equal(feature.stage, STAGE.WRITING_TASKS, 'invalid output path should block entering developing stage');
         assert.equal(sink.errors.some(msg => msg.includes('无法进入开发阶段')), true);
     });
+
+    test('next tsk->dev allows bracket-wrapped single output path token', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        const specsDir = path.join(tmpDir, 'specs');
+        fs.mkdirSync(specsDir, { recursive: true });
+
+        fs.writeFileSync(path.join(specsDir, 'requirements.md'), [
+            '# 需求文档',
+            '## 需求清单',
+            '### 需求-1：Webview 热区联动',
+            '#### 验收标准',
+            '- 通过',
+            '```yaml',
+            'artifactType: requirements',
+            'requirements:',
+            '  - id: Req-1',
+            '    title: Webview 热区联动',
+            '```',
+            '',
+        ].join('\n'), 'utf8');
+
+        fs.writeFileSync(path.join(specsDir, 'tasks.md'), [
+            '# 任务拆解文档',
+            '## 任务清单',
+            '- [ ] 1.1 落盘热区模板',
+            '  - Owner: Frontend',
+            '  - 输入: specs/design.md#3.1',
+            '  - 输出: [apps/src/webviewTemplates.ts]',
+            '  - 验收: 通过',
+            '  - 追踪: [Req-1][INV-1]',
+            '## 机器可读区',
+            '```yaml',
+            'artifactType: tasks',
+            'tasks:',
+            '  - id: 1.1',
+            '    name: 落盘热区模板',
+            '    owner: Frontend',
+            '    domain: ui',
+            '    dependsOn: []',
+            '    inputs: [specs/design.md#3.1]',
+            '    outputs: [apps/src/webviewTemplates.ts]',
+            '    requirementIds: [Req-1]',
+            '```',
+            '',
+        ].join('\n'), 'utf8');
+
+        const feature = {
+            id: 'task-allow-bracket-wrapped-output',
+            name: 'allow bracket wrapped output token',
+            desc: 'desc',
+            stage: STAGE.WRITING_TASKS,
+        };
+        const features = [feature];
+        const sink = { errors: [] };
+        const vscodeMock = createVscodeMock(sink);
+        const HarnessActionsService = loadHarnessActionsService(vscodeMock);
+        const service = new HarnessActionsService({
+            getFeatures: () => features,
+            getConfig: () => ({ ...DEFAULT_CONFIG, specRootDir: 'specs' }),
+            getMasterRoot: () => tmpDir,
+            getIterationDir: () => tmpDir,
+            ensureIterationDir: () => {},
+            saveAndRender: () => {},
+            gitService: {
+                async rollbackIterationAppsOnly() { return { success: true, message: 'ok' }; },
+                async captureIterationRepoHeads() { return { mono: 'abc123' }; },
+            },
+            getScheduler: () => ({
+                startAuto: async () => {},
+                pause: () => {},
+                manualNext: async () => {},
+                retrySubFeature: async () => {},
+                updateSubFeatureStatus: () => {},
+                isAutoMode: () => false,
+                parseSubFeaturesMd: () => ([{
+                    id: '1.1',
+                    name: '落盘热区模板',
+                    owner: 'Frontend',
+                    depends: [],
+                    input: 'specs/design.md#3.1',
+                    output: ['[apps/src/webviewTemplates.ts]'],
+                    acceptance: ['通过'],
+                    requirementIds: ['Req-1'],
+                    propertyIds: ['INV-1'],
+                    status: 'todo',
+                    rawLine: '- [ ] 1.1 落盘热区模板',
+                }]),
+            }),
+            stopScheduler: () => {},
+            onPass: () => {},
+            isWorktreeSubview: () => false,
+            dispatchAi: async () => {},
+            copyProjectStructureToIteration: () => {},
+            renderAgentPrompt: () => ({ content: 'prompt', source: 'default', path: '' }),
+        });
+
+        await service.nextStageByFeatureId('task-allow-bracket-wrapped-output', 'tsk');
+
+        assert.equal(feature.stage, STAGE.DEVELOPING, 'bracket-wrapped pure path should not block entering developing stage');
+        assert.equal(sink.errors.some(msg => msg.includes('无法进入开发阶段')), false);
+    });
 });

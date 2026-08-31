@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import {
+    AiQuickChatButtonInput,
+    AiQuickChatButtonsSaveResult,
     BASE,
     Config,
     CUSTOM_SCRIPT_DIR,
@@ -50,6 +52,10 @@ import { CapabilityDeltaService } from './services/capabilityDeltaService';
 import { DomainKnowledgeAggregateService } from './services/domainKnowledgeAggregateService';
 import { DomainRegistryService } from './services/domainRegistryService';
 import { resolveHarnessWorkspaceRoot } from './workspaceRoot';
+
+type SaveAiQuickChatButtonsRouteResult =
+    | AiQuickChatButtonsSaveResult
+    | { ok: false; readonlyRejected: true; message: string };
 
 let harness: Harness | undefined;
 let workspaceRoot: string;
@@ -362,6 +368,8 @@ class Harness {
                 pushAndNextStage: async (featureId) => this.actionsService.pushAndNextStage(featureId),
                 commitToBaseline: async (featureId) => this.actionsService.commitToBaselineByFeatureId(featureId),
                 saveCustomButtons: (buttons) => this.handleSaveCustomButtons(buttons),
+                saveAiQuickChatButtons: (_taskId, buttons) => this.handleSaveAiQuickChatButtons(buttons),
+                runAiQuickChatButton: async (featureId, buttonId) => this.actionsService.runAiQuickChatButtonByFeatureId(featureId, buttonId),
                 saveLifecycleHooks: (hooks) => this.handleSaveLifecycleHooks(hooks),
                 runCustomButton: async (featureId, buttonId) => this.actionsService.runCustomButtonByFeatureId(featureId, buttonId),
                 openScriptDir: () => this.handleOpenScriptDir(),
@@ -720,6 +728,7 @@ class Harness {
             isWorktreeSubview: this.isWorktreeSubview(),
             aiProvider: this.config.aiProvider,
             customButtons: this.config.customButtons || [],
+            aiQuickChatButtons: this.config.aiQuickChatButtons || [],
             autoPollEnabled: this.config.autoPollEnabled,
             autoPoll: this.isWorktreeSubview() ? this.autoPollService.getStatus() : undefined,
         });
@@ -1024,6 +1033,41 @@ class Harness {
         }
         this.renderSettings();
         vscode.window.showInformationMessage(`✅ 已保存 ${normalized.length} 个自定义按钮`);
+    }
+
+    /** Validate and persist AI quick-chat button config, rejecting writes from readonly snapshots. */
+    private handleSaveAiQuickChatButtons(buttons: AiQuickChatButtonInput[]): SaveAiQuickChatButtonsRouteResult {
+        if (this.configMeta.readOnly) {
+            const result = {
+                ok: false as const,
+                readonlyRejected: true as const,
+                message: '当前窗口使用的是主窗口配置快照，不允许在此修改 AI 快捷对话按钮',
+            };
+            vscode.window.showWarningMessage(result.message);
+            return result;
+        }
+
+        const saveResult = this.featureStore.saveAiQuickChatButtons(buttons || []);
+        if ('validationErrors' in saveResult) {
+            const message = saveResult.validationErrors
+                .map(issue => {
+                    const fieldLabel = issue.field === 'label' ? '名称' : '对话内容';
+                    if (issue.code === 'blank') {
+                        return `第 ${issue.index + 1} 项${fieldLabel}不能为空白`;
+                    }
+                    return `第 ${issue.index + 1} 项${fieldLabel}超过上限 ${issue.limit}`;
+                })
+                .join('；');
+            vscode.window.showWarningMessage(`AI 快捷对话按钮保存失败：${message}`);
+            return saveResult;
+        }
+
+        this.config.aiQuickChatButtons = saveResult.buttons;
+        this.featureStore.syncAiQuickChatButtonsToWorktrees(saveResult.buttons);
+        this.loadConfig();
+        this.renderSettings();
+        vscode.window.showInformationMessage(`✅ 已保存 ${saveResult.buttons.length} 个 AI 快捷对话按钮`);
+        return saveResult;
     }
 
     private handleSaveLifecycleHooks(hooks: { script: string; scriptSource?: string; args?: string }[]): void {
@@ -1796,7 +1840,7 @@ class Harness {
                     warnings.push(`[${st.id}] 输出项含括号注释: ${raw}`);
                     continue;
                 }
-                if (/\s*\[[^\]]*\]\s*$/.test(token) || /\s*\{[^}]*\}\s*$/.test(token)) {
+                if (/\s+\[[^\]]*\]\s*$/.test(token) || /\s+\{[^}]*\}\s*$/.test(token)) {
                     warnings.push(`[${st.id}] 输出项含注释后缀: ${raw}`);
                     continue;
                 }
@@ -1816,6 +1860,9 @@ class Harness {
         let token = String(value || '').trim();
         if (!token) {
             return '';
+        }
+        if ((/^\[[^\[\]]+\]$/.test(token)) || (/^\{[^{}]+\}$/.test(token))) {
+            token = token.slice(1, -1).trim();
         }
         if (/^`[^`]+`$/.test(token)) {
             token = token.slice(1, -1).trim();

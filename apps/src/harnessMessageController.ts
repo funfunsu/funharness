@@ -4,7 +4,16 @@ import { WorkspaceTodoStoreService, WorkspaceTodoItem } from './services/workspa
 import { appendStructureGateFailureLog, appendTodoLog } from './services/harnessLog';
 import { GranularityRuleConflictError, SampleProfileUnavailableError, StructureGateFailedError } from './services/projectStructureService';
 import { PromptContractIncompleteError } from './services/promptService';
-import { DomainKnowledgeContext } from './models';
+import { AiQuickChatButtonInput, AiQuickChatButtonsSaveResult, DomainKnowledgeContext } from './models';
+
+type SaveAiQuickChatButtonsRouteResult =
+    | AiQuickChatButtonsSaveResult
+    | { ok: false; readonlyRejected: true; message: string };
+
+type RunAiQuickChatButtonRouteResult = {
+    accepted: boolean;
+    failureReason?: 'not_found_or_invalid' | 'dispatch_failed';
+};
 
 interface HarnessMessageControllerDeps {
     isWorktreeSubview: () => boolean;
@@ -91,6 +100,7 @@ interface HarnessMessageControllerDeps {
     pushAndNextStage: (featureId: string) => Promise<void>;
     commitToBaseline: (featureId: string) => Promise<void>;
     saveCustomButtons: (buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string }[]) => void;
+    saveAiQuickChatButtons: (taskId: string, buttons: AiQuickChatButtonInput[]) => SaveAiQuickChatButtonsRouteResult;
     saveLifecycleHooks: (hooks: { script: string; scriptSource?: string; args?: string }[]) => void;
     runCustomButton: (featureId: string, buttonId: string) => Promise<void>;
     openScriptDir: () => Promise<void>;
@@ -106,6 +116,8 @@ interface HarnessMessageControllerDeps {
     todoPromoteToFeature?: (msg: Extract<HarnessMessage, { type: 'todo.promoteToFeature' }>) => Promise<void>;
     todoChanged?: (msg: Extract<HarnessMessage, { type: 'todo.changed' }>) => void;
     todoError?: (msg: Extract<HarnessMessage, { type: 'todo.error' }>) => void;
+    // Optional: full dispatch implemented in task 4.1; registered here for allowlist + routing.
+    runAiQuickChatButton?: (taskId: string, buttonId: string) => Promise<RunAiQuickChatButtonRouteResult>;
 }
 
 export class HarnessMessageController {
@@ -244,6 +256,42 @@ export class HarnessMessageController {
         appendTodoLog(workspaceRoot, code, message, detail);
     }
 
+    /**
+     * Wrap AI quick-chat save so unexpected extension-side failures become user-visible warnings.
+     */
+    private handleSaveAiQuickChatButtonsMessage(
+        msg: Extract<HarnessMessage, { type: 'saveAiQuickChatButtons' }>,
+    ): void {
+        try {
+            this.deps.saveAiQuickChatButtons(msg.taskId, msg.buttons);
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error || 'unknown');
+            vscode.window.showErrorMessage(`AI 快捷对话按钮保存异常：${detail}`);
+        }
+    }
+
+    /**
+     * Wrap AI quick-chat dispatch so route misconfiguration or thrown errors never escape the controller.
+     */
+    private async handleRunAiQuickChatButtonMessage(
+        msg: Extract<HarnessMessage, { type: 'runAiQuickChatButton' }>,
+    ): Promise<void> {
+        if (!this.deps.runAiQuickChatButton) {
+            vscode.window.showWarningMessage('AI 快捷对话按钮派发未配置');
+            return;
+        }
+
+        try {
+            const result = await this.deps.runAiQuickChatButton(msg.taskId, msg.buttonId);
+            if (!result.accepted && !result.failureReason) {
+                vscode.window.showWarningMessage('AI 快捷对话发送失败，请检查按钮配置后重试');
+            }
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error || 'unknown');
+            vscode.window.showErrorMessage(`AI 快捷对话发送异常：${detail}`);
+        }
+    }
+
     private ensureWorktreeAllowed(msg: HarnessMessage): boolean {
         if (!this.deps.isWorktreeSubview()) {
             return true;
@@ -301,6 +349,8 @@ export class HarnessMessageController {
             case 'todo.delete':
             case 'todo.list':
             case 'todo.promoteToFeature':
+            case 'saveAiQuickChatButtons':
+            case 'runAiQuickChatButton':
                 return true;
             case 'page':
                 if (msg.page === 'main') {
@@ -702,6 +752,12 @@ export class HarnessMessageController {
                 return;
             case 'saveCustomButtons':
                 this.deps.saveCustomButtons(msg.buttons);
+                return;
+            case 'saveAiQuickChatButtons':
+                this.handleSaveAiQuickChatButtonsMessage(msg);
+                return;
+            case 'runAiQuickChatButton':
+                await this.handleRunAiQuickChatButtonMessage(msg);
                 return;
             case 'saveLifecycleHooks':
                 this.deps.saveLifecycleHooks(msg.hooks);

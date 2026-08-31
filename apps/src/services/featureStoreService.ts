@@ -1,6 +1,6 @@
 ﻿import * as fs from 'fs';
 import * as path from 'path';
-import { BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_ARCHIVE_FILE, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, ITERATION_ARCHIVE_SCHEMA_VERSION, IterationArchiveDocument, IterationArchiveItem, STAGE, Stage, Feature, normalizeCustomButton, resolveSpecFile, resolveFeaturePlanFileForIteration } from '../models';
+import { AiQuickChatButtonInput, AiQuickChatButtonsSaveResult, BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_ARCHIVE_FILE, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, ITERATION_ARCHIVE_SCHEMA_VERSION, IterationArchiveDocument, IterationArchiveItem, STAGE, Stage, Feature, normalizeAiQuickChatButtons, normalizeCustomButton, resolveSpecFile, resolveFeaturePlanFileForIteration, validateAiQuickChatButtons } from '../models';
 import { appendHarnessLog } from './harnessLog';
 import { safeRemovePath } from './fileOps';
 import { buildTraceMatrixSnapshot, TraceMatrixSnapshot } from '../specTrace';
@@ -267,6 +267,9 @@ export class FeatureStoreService {
             merged.customButtons = Array.isArray(loaded.customButtons)
                 ? (loaded.customButtons as CustomButton[]).map(normalizeCustomButton)
                 : [];
+            merged.aiQuickChatButtons = normalizeAiQuickChatButtons(
+                Array.isArray(loaded.aiQuickChatButtons) ? loaded.aiQuickChatButtons : [],
+            );
             // Ensure lifecycleHooks exists and deep-merge with defaults so old configs auto-fill.
             merged.lifecycleHooks = {
                 worktreeOpen: Array.isArray(loaded?.lifecycleHooks?.worktreeOpen)
@@ -277,6 +280,22 @@ export class FeatureStoreService {
         } catch {
             return { ...DEFAULT_CONFIG };
         }
+    }
+
+    /** Validate and persist only the AI quick-chat button field while preserving other config values. */
+    saveAiQuickChatButtons(buttons: AiQuickChatButtonInput[]): AiQuickChatButtonsSaveResult {
+        const normalized = normalizeAiQuickChatButtons(buttons || []);
+        const validationErrors = validateAiQuickChatButtons(normalized);
+        if (validationErrors.length > 0) {
+            return { ok: false, validationErrors };
+        }
+
+        const config = this.loadConfig();
+        this.saveConfig({
+            ...config,
+            aiQuickChatButtons: normalized,
+        });
+        return { ok: true, buttons: normalized };
     }
 
     /**
@@ -308,12 +327,50 @@ export class FeatureStoreService {
         }
     }
 
+    /**
+     * Mirror the latest AI quick-chat configuration into every existing worktree snapshot while
+     * preserving the rest of each snapshot's settings. This keeps the read-only subview config in
+     * sync with the master config after a save.
+     */
+    syncAiQuickChatButtonsToWorktrees(buttons: AiQuickChatButtonInput[]): void {
+        const worktreesRoot = path.join(this.workspaceRoot, 'worktrees');
+        if (!fs.existsSync(worktreesRoot)) {
+            return;
+        }
+        const normalized = normalizeAiQuickChatButtons(buttons || []);
+        for (const entry of fs.readdirSync(worktreesRoot, { withFileTypes: true })) {
+            if (!entry.isDirectory()) {
+                continue;
+            }
+            const cfgFile = path.join(worktreesRoot, entry.name, BASE, 'config.json');
+            if (!fs.existsSync(cfgFile)) {
+                continue;
+            }
+            try {
+                const raw = JSON.parse(fs.readFileSync(cfgFile, 'utf8')) as Record<string, unknown>;
+                raw.aiQuickChatButtons = normalized;
+                fs.writeFileSync(cfgFile, JSON.stringify(raw, null, 2), 'utf8');
+            } catch {
+                // Ignore malformed snapshots; never block the master save.
+            }
+        }
+    }
+
     saveConfig(config: Config): void {
         const meta = this.getConfigMeta();
         const file = this.getConfigFile();
         fs.mkdirSync(path.dirname(file), { recursive: true });
-        const payload = {
+        const normalizedConfig: Config = {
             ...config,
+            customButtons: Array.isArray(config.customButtons)
+                ? config.customButtons.map(normalizeCustomButton)
+                : [],
+            aiQuickChatButtons: normalizeAiQuickChatButtons(
+                Array.isArray(config.aiQuickChatButtons) ? config.aiQuickChatButtons : [],
+            ),
+        };
+        const payload = {
+            ...normalizedConfig,
             __harnessConfigOrigin: meta.origin === 'worktreeSnapshot' ? 'worktreeSnapshot' : 'master',
             __harnessMasterRoot: meta.masterRoot,
         };

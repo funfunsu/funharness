@@ -1,9 +1,13 @@
 domains:
-	- canonical: domain-knowledge
-		displayName: 领域知识沉淀
-		aliases: []
-		status: active
-	- canonical: project-structure-init
-		displayName: 项目结构初始化
-		aliases: []
-		status: active
+  - canonical: domain-knowledge
+    displayName: 领域知识沉淀
+    aliases: []
+    status: active
+  - canonical: project-structure-init
+    displayName: 项目结构初始化
+    aliases: []
+    status: active
+  - canonical: ai-quick-chat
+    displayName: AI快捷对话
+    aliases: []
+    status: active

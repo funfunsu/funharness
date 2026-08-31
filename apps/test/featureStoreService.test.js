@@ -173,3 +173,66 @@ describe('worktree 命名覆盖基线', () => {
         }
     });
 });
+
+describe('AI 快捷对话配置持久化覆盖基线', () => {
+    test('saveAiQuickChatButtons preserves other config values and writes field as a standalone list', () => {
+        const root = makeTempDir();
+        try {
+            const service = new FeatureStoreService(root);
+            const configPath = path.join(root, BASE, 'config.json');
+            fs.mkdirSync(path.dirname(configPath), { recursive: true });
+            fs.writeFileSync(configPath, JSON.stringify({
+                customButtons: [{ id: 'cb_1', name: '旧按钮', script: 'echo keep', scriptSource: 'master', args: '', placement: 'iteration' }],
+                aiQuickChatButtons: [],
+                baseBranch: 'main',
+                aiProvider: 'copilot-chat',
+            }, null, 2), 'utf8');
+
+            const result = service.saveAiQuickChatButtons([
+                { label: '复述', content: '请帮我总结当前任务' },
+                { label: '  规范检查  ', content: '检查命名、日志和回归' },
+            ]);
+
+            assert.equal(result.ok, true);
+            assert.equal(result.buttons.length, 2);
+
+            const saved = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            assert.equal(saved.customButtons.length, 1);
+            assert.equal(saved.customButtons[0].name, '旧按钮');
+            assert.equal(saved.aiQuickChatButtons.length, 2);
+            assert.equal(saved.aiQuickChatButtons[0].label, '复述');
+            assert.equal(saved.aiQuickChatButtons[1].content, '检查命名、日志和回归');
+            assert.equal(saved.baseBranch, 'main');
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('syncAiQuickChatButtonsToWorktrees writes valid rows into existing worktree snapshot configs', () => {
+        const root = makeTempDir();
+        try {
+            const worktreeDir = path.join(root, 'worktrees', 'task-demo');
+            const cfgPath = path.join(worktreeDir, BASE, 'config.json');
+            fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+            fs.writeFileSync(cfgPath, JSON.stringify({
+                customButtons: [],
+                aiQuickChatButtons: [],
+                baseBranch: 'main',
+            }, null, 2), 'utf8');
+
+            const service = new FeatureStoreService(root);
+            service.syncAiQuickChatButtonsToWorktrees([
+                { label: '重试', content: '再次执行同一任务' },
+                { label: '总结', content: '总结当前变更和风险' },
+            ]);
+
+            const snapshot = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+            assert.equal(snapshot.aiQuickChatButtons.length, 2);
+            assert.equal(snapshot.aiQuickChatButtons[0].label, '重试');
+            assert.equal(snapshot.aiQuickChatButtons[1].content, '总结当前变更和风险');
+            assert.equal(snapshot.customButtons.length, 0);
+        } finally {
+            cleanup(root);
+        }
+    });
+});

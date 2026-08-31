@@ -162,4 +162,47 @@ describe('最终执行门禁回归覆盖基线', () => {
         assert.equal(calls.onPass, 1);
         assert.equal(sink.errors.length, 0);
     });
+
+    test('AI 快捷对话按钮按当前任务上下文派发，并保留原始 content', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+
+        const feature = {
+            id: 'feature-aqc',
+            name: 'feature-aqc',
+            desc: 'desc',
+            stage: STAGE.DEVELOPING,
+            aiProvider: 'copilot-chat',
+        };
+
+        const sink = { errors: [], infos: [] };
+        const calls = [];
+        const HarnessActionsService = loadHarnessActionsService(createVscodeMock(sink));
+        const service = new HarnessActionsService({
+            getFeatures: () => [feature],
+            getConfig: () => ({ ...DEFAULT_CONFIG, aiQuickChatButtons: [{ id: 'aqc_1', label: '复述', content: '请告诉我\n当前状态', order: 0 }] }),
+            getMasterRoot: () => tmpDir,
+            getIterationDir: () => tmpDir,
+            ensureIterationDir: () => {},
+            saveAndRender: () => {},
+            gitService: {},
+            getScheduler: () => ({ parseSubFeaturesMd: () => [] }),
+            stopScheduler: () => {},
+            onPass: () => {},
+            isWorktreeSubview: () => false,
+            dispatchAi: async (query, iterDir, source, providerOverride) => {
+                calls.push({ query, iterDir, source, providerOverride });
+            },
+            copyProjectStructureToIteration: () => {},
+            renderAgentPrompt: () => ({ content: '', source: 'none', path: '' }),
+        });
+
+        const result = await service.runAiQuickChatButtonByFeatureId(feature.id, 'aqc_1');
+
+        assert.equal(result.accepted, true);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].query, '请告诉我\n当前状态');
+        assert.equal(calls[0].source, 'quick-chat-button');
+        assert.equal(calls[0].providerOverride, 'copilot-chat');
+    });
 });

@@ -123,6 +123,8 @@ export type HarnessMessage =
     | { type: 'pushAndNextStage'; id: string }
     | { type: 'commitToBaseline'; id: string }
     | { type: 'saveCustomButtons'; buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string }[] }
+    | { type: 'saveAiQuickChatButtons'; taskId: string; buttons: import('./models').AiQuickChatButtonInput[] }
+    | { type: 'runAiQuickChatButton'; taskId: string; buttonId: string }
     | { type: 'saveLifecycleHooks'; hooks: { script: string; scriptSource?: string; args?: string }[] }
     | { type: 'runCustomButton'; id: string; buttonId: string }
     | { type: 'openScriptDir' }
