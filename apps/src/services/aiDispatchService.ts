@@ -5,7 +5,7 @@ import { execSync, spawn } from 'child_process';
 import { BASE, Config, AiProviderDefinition, getAiProvider } from '../models';
 import { appendHarnessLog } from './harnessLog';
 
-type DispatchSource = 'stage-agent' | 'dev-subtask';
+type DispatchSource = 'stage-agent' | 'dev-subtask' | 'quick-chat-button';
 
 export class AiDispatchService {
     /** Keep the latest chat scope per provider so dev subtasks can reuse one chat per batch (1.x / 2.x). */
@@ -253,6 +253,9 @@ export class AiDispatchService {
         conversationScope: string | null,
         previousScope: string | undefined,
     ): boolean {
+        if (source === 'quick-chat-button') {
+            return false;
+        }
         if (source !== 'dev-subtask') {
             return true;
         }

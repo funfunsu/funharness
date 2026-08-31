@@ -84,4 +84,14 @@ describe('AiDispatchService 会话复用覆盖基线', () => {
         assert.equal(shouldOpenSame, false);
         assert.equal(shouldOpenCross, true);
     });
+
+    test('quick-chat dispatch never opens a new VS Code chat and keeps the raw query untouched', () => {
+        const AiDispatchService = loadAiDispatchService();
+        const service = new AiDispatchService(() => buildConfig());
+        const shouldOpen = service.shouldOpenNewVscodeChat('quick-chat-button', '请按\n当前任务总览', 'previous-scope');
+        const scope = service.resolveConversationScope('quick-chat-button', '/tmp/task', '请按\n当前任务总览');
+
+        assert.equal(shouldOpen, false);
+        assert.equal(scope, null);
+    });
 });

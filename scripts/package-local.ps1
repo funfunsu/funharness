@@ -23,11 +23,24 @@ if (-not (Test-Path $appsDir)) {
 
 Push-Location $appsDir
 try {
-    # 0. 检查依赖是否已安装
-    if (-not (Test-Path (Join-Path $appsDir 'node_modules'))) {
+    # 0. 检查依赖并确保本地 tsc 可用
+    $nodeModulesDir = Join-Path $appsDir 'node_modules'
+    $tscCmd = Join-Path $appsDir 'node_modules/.bin/tsc.cmd'
+
+    if (-not (Test-Path $nodeModulesDir)) {
         Write-Host "==> 安装依赖 (npm install)" -ForegroundColor Cyan
         npm install
         if ($LASTEXITCODE -ne 0) { throw "npm install 失败 (exit $LASTEXITCODE)" }
+    }
+
+    if (-not (Test-Path $tscCmd)) {
+        Write-Host "==> 未检测到 tsc，补装开发依赖 (npm install --include=dev)" -ForegroundColor Yellow
+        npm install --include=dev
+        if ($LASTEXITCODE -ne 0) { throw "安装开发依赖失败 (exit $LASTEXITCODE)" }
+    }
+
+    if (-not (Test-Path $tscCmd)) {
+        throw "未找到 tsc：$tscCmd。请检查 npm 配置（例如 NODE_ENV / npm_config_production）后重试。"
     }
 
     # 1. 清理输出目录下已有的 vsix

@@ -462,12 +462,16 @@ function getReviewStageLabel(stage: 'requirements' | 'design' | 'testcase' | 'ta
 export function buildMainPageHtml(
     taskViews: MainFeatureViewModel[],
     dashboard: Record<string, never>,
-    config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; autoPollEnabled: boolean; autoPoll?: AutoPollStatus }
+    config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; aiQuickChatButtons?: import('./models').AiQuickChatButton[]; autoPollEnabled: boolean; autoPoll?: AutoPollStatus }
 ): string {
     const customButtons = config.customButtons || [];
     // 'main' buttons render in a dedicated main-panel area belonging to no iteration;
     // everything else (incl. legacy buttons without a placement) stays on task cards.
     const iterationButtons = customButtons;
+    // Only valid buttons (non-blank label and content) are eligible for rendering (INV-4).
+    const validAiQuickChatButtons = (config.aiQuickChatButtons || []).filter(
+        b => b.label.trim().length > 0 && b.content.trim().length > 0
+    );
     const isWorktreeSubview = config.isWorktreeSubview === true;
     const visibleTaskViews = isWorktreeSubview
         ? taskViews.slice(0, 1)
@@ -735,6 +739,12 @@ ${visibleTaskViews.map(view => {
     if ((isWorktreeSubview || hasWorktree) && iterationButtons.length > 0) {
         for (const b of iterationButtons) {
             sideActions.push(`<button class="action-btn action-btn--neutral" onclick="runCustomButton('${t.id}','${b.id}')">${escapeHtml(b.name)}</button>`);
+        }
+    }
+    // AI quick-chat buttons: rendered in the same side-action container (INV-9).
+    if ((isWorktreeSubview || hasWorktree) && validAiQuickChatButtons.length > 0) {
+        for (const b of validAiQuickChatButtons) {
+            sideActions.push(`<button class="action-btn action-btn--neutral" onclick="runAiQuickChatButton('${t.id}','${b.id}')">${escapeHtml(b.label)}</button>`);
         }
     }
 
@@ -1784,6 +1794,31 @@ function retry(subId,id){v.postMessage({type:'retryFeature',subId,id})}
 function syncMainCode(id){v.postMessage({type:'syncMainCode',id})}
 function openMasterWorkspace(){v.postMessage({type:'openMasterWorkspace'})}
 function runCustomButton(id,buttonId){v.postMessage({type:'runCustomButton',id,buttonId})}
+/** Send an AI quick-chat button click to the extension for dispatch. */
+function ensureAiQuickChatNoticeBox(){
+    var box=document.getElementById('aiQuickChatNotice');
+    if(box){return box;}
+    box=document.createElement('div');
+    box.id='aiQuickChatNotice';
+    box.style.cssText='display:none;position:fixed;right:16px;bottom:16px;max-width:320px;padding:10px 12px;border-radius:10px;background:#2b1010;border:1px solid #7a2000;color:#ffb4b4;font-size:12px;line-height:1.5;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.25)';
+    document.body.appendChild(box);
+    return box;
+}
+/** Show a transient in-page warning when the quick-chat request cannot be posted from the webview. */
+function showAiQuickChatNotice(message){
+    var box=ensureAiQuickChatNoticeBox();
+    if(!box){return;}
+    box.textContent=String(message||'AI 快捷对话发送失败');
+    box.style.display='block';
+    clearTimeout(showAiQuickChatNotice._timer);
+    showAiQuickChatNotice._timer=setTimeout(function(){box.style.display='none';},2600);
+}
+/** Send an AI quick-chat button click to the extension for dispatch. */
+function runAiQuickChatButton(taskId,buttonId){
+    if(!taskId||!buttonId){showAiQuickChatNotice('AI 快捷对话按钮参数缺失，无法发送');return;}
+    try{v.postMessage({type:'runAiQuickChatButton',taskId,buttonId});}
+    catch(error){showAiQuickChatNotice('AI 快捷对话发送请求失败：'+String(error&&error.message?error.message:error||'unknown'));}
+}
 
 function toggleAutoPoll(enable){v.postMessage({type:'toggleAutoPoll',enable})}
 function setSubStatus(id,subId,status){v.postMessage({type:'setSubFeatureStatus',id,subId,status})}
@@ -2000,6 +2035,17 @@ button{width:100%;padding:10px;border-radius:8px;border:none;color:white;margin-
 .hook-source{flex:1 1 100px}
 .hook-args{flex:2 1 150px}
 .hook-del{width:auto;flex:0 0 auto;margin:0;padding:10px 14px;background:#ff3b30}
+.aqc-row{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #2c2c30}
+.aqc-row:last-child{border-bottom:none}
+.aqc-row input,.aqc-row textarea{margin:0;min-width:0;box-sizing:border-box}
+.aqc-field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.aqc-field--label{flex:1 1 120px}
+.aqc-field--content{flex:2 1 220px}
+.aqc-label{width:100%}
+.aqc-content{width:100%;resize:vertical;min-height:72px}
+.aqc-input--invalid{outline:1px solid #ff6b6b;border-color:#ff6b6b}
+.aqc-del{width:auto;flex:0 0 auto;margin:0;padding:10px 14px;background:#ff3b30;align-self:flex-start}
+.aqc-error{font-size:11px;color:#ff6b6b;margin-top:2px;flex-basis:100%}
 </style>
 </head>
 <body>
@@ -2142,6 +2188,18 @@ ${inv.dirs.repoBackend ? `<div class="kv">后端迭代脚本(候选)：<b>${esca
 </div>
 
 <div class="section">
+<div class="section-title">⚡ AI 快捷对话按钮</div>
+<div class="hint">配置可一键发送给 AI 的快捷对话内容。每个按钮需填写<b>名称</b>（最长 64 字符）与<b>对话内容</b>（最长 4000 字符）。点击任务卡片旁路区中对应按钮后，内容将原文发送到当前会话的 AI。</div>
+${readOnly ? '<div class="meta-box readonly" style="margin-bottom:8px">当前窗口为只读快照，AI 快捷对话按钮配置无法修改。</div>' : ''}
+<div id="aqcList"></div>
+<div id="aqcSaveError" style="display:none;margin:6px 0;padding:8px;background:#2b1010;border:1px solid #7a2000;border-radius:8px;color:#ff9090;font-size:12px"></div>
+<div class="inline-actions">
+<button onclick="addAiQuickChatButton()" style="background:#3a3a3f" ${disabled}>➕ 添加按钮</button>
+<button onclick="saveAiQuickChatButtons()" style="background:#007aff" ${disabled}>💾 保存 AI 快捷对话按钮</button>
+</div>
+</div>
+
+<div class="section">
 <div class="section-title">⚡ 生命周期 Hook</div>
 <div class="sub-title">Worktree 初始化后（worktree-open）</div>
 <div class="hint">脚本在 Worktree 首次初始化完成后自动执行（仅首次，不重复触发）。每条 Hook 按顺序执行，若某条失败，后续仍继续执行。</div>
@@ -2235,6 +2293,7 @@ function createPollScriptTemplate(){v.postMessage({type:'createPollScriptTemplat
 const INV=${JSON.stringify(inv).replace(/</g, '\\u003c')};
 const INIT_BTNS=${JSON.stringify(initialButtons).replace(/</g, '\\u003c')};
 const INIT_HOOKS=${JSON.stringify(initialHooks).replace(/</g, '\\u003c')};
+const INIT_AQC_BTNS=${JSON.stringify((config.aiQuickChatButtons || []).map(b => ({ label: b.label, content: b.content }))).replace(/</g, '\\u003c')};
 const CB_READONLY=${readOnly ? 'true' : 'false'};
 function cbEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function cbListFor(source){
@@ -2408,8 +2467,110 @@ function saveLifecycleHooks(){
   });
   v.postMessage({type:'saveLifecycleHooks',hooks:hooks});
 }
+// ── AI 快捷对话按钮 ──────────────────────────────────────────────────
+function aqcRowHtml(b){
+  b=b||{};
+  var dis=CB_READONLY?' disabled':'';
+  return '<div class="aqc-row">'+
+        '<div class="aqc-field aqc-field--label">'+
+            '<input class="aqc-label" placeholder="按钮名称（最长 64 字符）" maxlength="64" value="'+cbEsc(b.label||'')+'"'+dis+'>'+
+            '<div class="aqc-error aqc-error--label" style="display:none"></div>'+
+        '</div>'+
+        '<div class="aqc-field aqc-field--content">'+
+            '<textarea class="aqc-content" placeholder="对话内容（最长 4000 字符）" maxlength="4000"'+dis+'>'+cbEsc(b.content||'')+'</textarea>'+
+            '<div class="aqc-error aqc-error--content" style="display:none"></div>'+
+        '</div>'+
+    '<button class="aqc-del" onclick="removeAiQuickChatButton(this)"'+dis+'>✕</button>'+
+    '</div>';
+}
+/** Reset summary banner and field-level validation state before each save attempt. */
+function clearAiQuickChatValidationState(){
+    [].slice.call(document.querySelectorAll('#aqcList .aqc-label,#aqcList .aqc-content')).forEach(function(field){
+        field.classList.remove('aqc-input--invalid');
+    });
+    [].slice.call(document.querySelectorAll('#aqcList .aqc-error')).forEach(function(box){
+        box.style.display='none';
+        box.textContent='';
+    });
+}
+/** Render one field-level validation error next to its owning control. */
+function setAiQuickChatFieldError(field,message){
+    if(!field){return;}
+    field.classList.add('aqc-input--invalid');
+    var wrap=field.parentElement;
+    var errorBox=wrap?wrap.querySelector('.aqc-error'):null;
+    if(errorBox){errorBox.style.display='block';errorBox.textContent=message;}
+}
+/** Update the shared save banner for quick-chat validation or request failures. */
+function setAiQuickChatSaveError(message){
+    var errBox=document.getElementById('aqcSaveError');
+    if(!errBox){return;}
+    if(message){errBox.style.display='block';errBox.textContent=message;return;}
+    errBox.style.display='none';
+    errBox.textContent='';
+}
+function renderAiQuickChatButtons(){
+  var list=document.getElementById('aqcList');
+  if(!list)return;
+  list.innerHTML='';
+  (INIT_AQC_BTNS||[]).forEach(function(b){list.insertAdjacentHTML('beforeend',aqcRowHtml(b));});
+    setAiQuickChatSaveError('');
+}
+function addAiQuickChatButton(){
+  var list=document.getElementById('aqcList');
+    setAiQuickChatSaveError('');
+  if(list){list.insertAdjacentHTML('beforeend',aqcRowHtml({}));}
+}
+function removeAiQuickChatButton(btn){
+  var r=btn.closest('.aqc-row');
+    setAiQuickChatSaveError('');
+  if(r)r.remove();
+}
+/** Validate rows client-side and send saveAiQuickChatButtons message if all pass. */
+function saveAiQuickChatButtons(){
+  var rows=[].slice.call(document.querySelectorAll('#aqcList .aqc-row'));
+  var errors=[];
+  var buttons=[];
+    clearAiQuickChatValidationState();
+  rows.forEach(function(r,i){
+        var labelField=r.querySelector('.aqc-label');
+        var contentField=r.querySelector('.aqc-content');
+        var label=labelField.value;
+        var content=contentField.value;
+    var labelTrim=label.trim();
+    var contentTrim=content.trim();
+    var rowOk=true;
+        if(labelTrim.length===0){
+            errors.push('第'+(i+1)+'项名称不能为空白');
+            setAiQuickChatFieldError(labelField,'名称不能为空白');
+            rowOk=false;
+        }else if(labelTrim.length>64){
+            errors.push('第'+(i+1)+'项名称超过上限 64 字符');
+            setAiQuickChatFieldError(labelField,'名称超过上限 64 字符');
+            rowOk=false;
+        }
+        if(contentTrim.length===0){
+            errors.push('第'+(i+1)+'项对话内容不能为空白');
+            setAiQuickChatFieldError(contentField,'对话内容不能为空白');
+            rowOk=false;
+        }else if(contentTrim.length>4000){
+            errors.push('第'+(i+1)+'项对话内容超过上限 4000 字符');
+            setAiQuickChatFieldError(contentField,'对话内容超过上限 4000 字符');
+            rowOk=false;
+        }
+    if(rowOk){buttons.push({label:label,content:content});}
+  });
+  if(errors.length>0){
+        setAiQuickChatSaveError(errors.join('；'));
+    return;
+  }
+    setAiQuickChatSaveError('');
+    try{v.postMessage({type:'saveAiQuickChatButtons',taskId:'',buttons:buttons});}
+    catch(error){setAiQuickChatSaveError('AI 快捷对话按钮保存请求失败：'+String(error&&error.message?error.message:error||'unknown'));}
+}
 cbRenderAll();
 renderLifecycleHooks();
+renderAiQuickChatButtons();
 </script>
 </body>
 </html>`;

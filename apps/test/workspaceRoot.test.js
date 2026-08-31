@@ -77,4 +77,24 @@ describe('workspaceRoot 解析覆盖基线', () => {
             cleanup(root);
         }
     });
+
+    test('worktree snapshot config keeps aiQuickChatButtons readable without crossing the worktree boundary', () => {
+        const root = makeTempDir();
+        try {
+            const worktreeRoot = path.join(root, 'worktrees', 'task-c');
+            const cfgDir = path.join(worktreeRoot, '.harness');
+            fs.mkdirSync(cfgDir, { recursive: true });
+            fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({
+                aiQuickChatButtons: [{ id: 'aqc_1', label: '回顾', content: '请回顾本次修改', order: 0 }],
+                customButtons: [],
+            }, null, 2), 'utf8');
+
+            const resolved = resolveHarnessWorkspaceRoot(worktreeRoot);
+            const raw = JSON.parse(fs.readFileSync(path.join(cfgDir, 'config.json'), 'utf8'));
+            assert.equal(resolved.workspaceRoot, worktreeRoot);
+            assert.equal(raw.aiQuickChatButtons[0].content, '请回顾本次修改');
+        } finally {
+            cleanup(root);
+        }
+    });
 });

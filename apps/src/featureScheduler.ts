@@ -57,6 +57,64 @@ export class FeatureScheduler {
             .filter(Boolean);
     }
 
+    private stripCommonPathWrappers(value: string): string {
+        let normalized = String(value || '').trim();
+        if (!normalized) {
+            return '';
+        }
+
+        const wrappers: Array<[string, string]> = [
+            ['`', '`'],
+            ['"', '"'],
+            ["'", "'"],
+            ['[', ']'],
+            ['(', ')'],
+            ['（', '）'],
+            ['【', '】'],
+            ['{', '}'],
+        ];
+
+        for (let i = 0; i < 4; i += 1) {
+            const before = normalized;
+            for (const [left, right] of wrappers) {
+                if (normalized.startsWith(left) && normalized.endsWith(right) && normalized.length > left.length + right.length) {
+                    normalized = normalized.slice(left.length, normalized.length - right.length).trim();
+                    break;
+                }
+            }
+            if (normalized === before) {
+                break;
+            }
+        }
+
+        return normalized;
+    }
+
+    private stripPathBoundaryNoise(value: string): string {
+        let normalized = String(value || '').trim();
+        if (!normalized) {
+            return '';
+        }
+
+        const leadingWrappers = new Set(['`', '"', "'", '[', '(', '（', '【', '{', '<']);
+        const trailingWrappers = new Set(['`', '"', "'", ']', ')', '）', '】', '}', '>']);
+
+        for (let i = 0; i < 6; i += 1) {
+            const before = normalized;
+            if (normalized.length > 1 && leadingWrappers.has(normalized[0])) {
+                normalized = normalized.slice(1).trim();
+            }
+            if (normalized.length > 1 && trailingWrappers.has(normalized[normalized.length - 1])) {
+                normalized = normalized.slice(0, -1).trim();
+            }
+            if (normalized === before) {
+                break;
+            }
+        }
+
+        return normalized;
+    }
+
     private parseDependencyEntries(raw: string): string[] {
         const text = String(raw || '').trim();
         if (!text) {
@@ -925,12 +983,13 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
 
         const hasOtherDoingTask = currentTasks.some(t => t.id !== taskId && t.status === 'doing');
         const canRecoverFromAlreadyDone = currentTask.status === 'done' && !hasOtherDoingTask;
+        const canRecoverFromFailed = currentTask.status === 'failed' && !hasOtherDoingTask;
 
         // Skip signals for non-active subtasks to avoid replaying old files.
         // Expected lifecycle: a subtask becomes 'doing' before its done signal is emitted.
         // Recovery case: if the task is already marked done in tasks.md and no later task is
         // currently doing, still accept the signal so auto execution can resume after a stall.
-        if (currentTask.status !== 'doing' && !canRecoverFromAlreadyDone) {
+        if (currentTask.status !== 'doing' && !canRecoverFromAlreadyDone && !canRecoverFromFailed) {
             this.handledSignals.add(taskId);
             this.writeLog(taskId, `ℹ 忽略非进行中任务信号: done-${taskId}（status=${currentTask.status}）`);
             return;
@@ -940,6 +999,8 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         this.clearTimeout();
         if (canRecoverFromAlreadyDone) {
             this.writeLog(taskId, `♻️ 接受已完成任务信号: done-${taskId}（tasks.md 已为 done，继续恢复自动执行）`);
+        } else if (canRecoverFromFailed) {
+            this.writeLog(taskId, `♻️ 接受失败任务重试信号: done-${taskId}（tasks.md 已为 failed，重新执行输出校验）`);
         }
         this.writeLog(taskId, `信号文件检测到: done-${taskId}`);
 
@@ -1188,22 +1249,26 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             return '';
         }
 
-        let normalized = raw;
+        let normalized = raw
+            .replace(/^[-*]\s+/, '')
+            .replace(/^\d+[.)]\s+/, '')
+            .replace(/^(?:file|path|filepath|output|outputs|文件|路径)\s*[：:]\s*/i, '')
+            .trim();
 
-        // Strip one surrounding markdown inline-code wrapper: `path/to/file`
-        if (/^`[^`]+`$/.test(normalized)) {
-            normalized = normalized.slice(1, -1).trim();
+        const markdownLinkMatch = normalized.match(/^\[[^\]]+\]\(([^)]+)\)$/);
+        if (markdownLinkMatch?.[1]) {
+            normalized = markdownLinkMatch[1].trim();
         }
 
-        // Strip one surrounding quote pair: "path/to/file" or 'path/to/file'
-        if ((/^"[^"]+"$/.test(normalized)) || (/^'[^']+'$/.test(normalized))) {
-            normalized = normalized.slice(1, -1).trim();
-        }
+        normalized = this.stripCommonPathWrappers(normalized);
+        normalized = this.stripPathBoundaryNoise(normalized);
 
         // Strip one trailing annotation in parentheses.
         // Example: apps/risk-control-api/db/migration（含 up/rollback）
         //      -> apps/risk-control-api/db/migration
         normalized = this.stripTrailingPathAnnotation(normalized);
+        normalized = this.stripCommonPathWrappers(normalized);
+        normalized = this.stripPathBoundaryNoise(normalized);
 
         return normalized;
     }

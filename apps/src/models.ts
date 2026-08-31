@@ -280,6 +280,107 @@ export interface ScriptInventory {
     };
 }
 
+/** API-1: A single AI quick-chat button configured by the user. */
+export interface AiQuickChatButton {
+    id: string;
+    label: string;
+    content: string;
+    order: number;
+}
+
+/** API-2: Unsaved UI input for a single AI quick-chat button row. */
+export interface AiQuickChatButtonInput {
+    label: string;
+    content: string;
+}
+
+/** API-3: Persisted AI quick-chat button shape written to the harness config file. */
+export interface PersistedAiQuickChatButton extends AiQuickChatButton {
+}
+
+export const AI_QUICK_CHAT_LABEL_MAX_LENGTH = 64;
+export const AI_QUICK_CHAT_CONTENT_MAX_LENGTH = 4000;
+
+/** API-4: Validation issue emitted when a quick-chat button fails the blank/length rules. */
+export interface AiQuickChatValidationIssue {
+    index: number;
+    field: 'label' | 'content';
+    code: 'blank' | 'too_long';
+    limit?: number;
+}
+
+/** API-5: Context needed to resolve the current session when dispatching a quick-chat prompt. */
+export interface AiQuickChatDispatchContext {
+    taskId: string;
+    iterationDir: string;
+    provider: string;
+}
+
+/** Result returned when persisting a full quick-chat button set. */
+export type AiQuickChatButtonsSaveResult =
+    | { ok: true; buttons: AiQuickChatButton[] }
+    | { ok: false; validationErrors: AiQuickChatValidationIssue[] };
+
+/** Normalize one quick-chat button while preserving the user-entered label/content text. */
+export function normalizeAiQuickChatButton(
+    button: Partial<AiQuickChatButtonInput & PersistedAiQuickChatButton> | null | undefined,
+    index: number,
+): AiQuickChatButton {
+    const rawId = typeof button?.id === 'string' ? button.id.trim() : '';
+    const label = typeof button?.label === 'string' ? button.label : '';
+    const content = typeof button?.content === 'string' ? button.content : '';
+    return {
+        id: rawId || `aqc_${index}`,
+        label,
+        content,
+        order: index,
+    };
+}
+
+/** Normalize a quick-chat button list into a stable persisted order. */
+export function normalizeAiQuickChatButtons(
+    buttons: readonly (Partial<AiQuickChatButtonInput & PersistedAiQuickChatButton> | null | undefined)[],
+): AiQuickChatButton[] {
+    return Array.isArray(buttons)
+        ? buttons.map((button, index) => normalizeAiQuickChatButton(button, index))
+        : [];
+}
+
+/** Check whether a normalized quick-chat button satisfies the blank/length rules. */
+export function isAiQuickChatButtonValid(button: Pick<AiQuickChatButton, 'label' | 'content'>): boolean {
+    const trimmedLabel = (button.label || '').trim();
+    const trimmedContent = (button.content || '').trim();
+    return trimmedLabel.length >= 1
+        && trimmedLabel.length <= AI_QUICK_CHAT_LABEL_MAX_LENGTH
+        && trimmedContent.length >= 1
+        && trimmedContent.length <= AI_QUICK_CHAT_CONTENT_MAX_LENGTH;
+}
+
+/** Collect field-level validation issues for a quick-chat button list. */
+export function validateAiQuickChatButtons(
+    buttons: readonly (Partial<AiQuickChatButtonInput & PersistedAiQuickChatButton> | null | undefined)[],
+): AiQuickChatValidationIssue[] {
+    return normalizeAiQuickChatButtons(buttons).flatMap((button, index) => {
+        const issues: AiQuickChatValidationIssue[] = [];
+        const trimmedLabel = button.label.trim();
+        const trimmedContent = button.content.trim();
+
+        if (!trimmedLabel) {
+            issues.push({ index, field: 'label', code: 'blank' });
+        } else if (trimmedLabel.length > AI_QUICK_CHAT_LABEL_MAX_LENGTH) {
+            issues.push({ index, field: 'label', code: 'too_long', limit: AI_QUICK_CHAT_LABEL_MAX_LENGTH });
+        }
+
+        if (!trimmedContent) {
+            issues.push({ index, field: 'content', code: 'blank' });
+        } else if (trimmedContent.length > AI_QUICK_CHAT_CONTENT_MAX_LENGTH) {
+            issues.push({ index, field: 'content', code: 'too_long', limit: AI_QUICK_CHAT_CONTENT_MAX_LENGTH });
+        }
+
+        return issues;
+    });
+}
+
 /** True when a file name is a runnable script for the CURRENT OS (plus cross-platform .js). */
 export function isOsScriptFile(name: string): boolean {
     const lower = name.toLowerCase();
@@ -388,6 +489,8 @@ export interface Config {
     gateLevel: 'relaxed' | 'standard' | 'strict';
     /** User-defined buttons rendered on task cards (main panel + worktree subview). */
     customButtons: CustomButton[];
+    /** AI quick-chat buttons persisted alongside config and rendered in the task side-action rail. */
+    aiQuickChatButtons: AiQuickChatButton[];
     /** Master toggle for auto-poll config. When off, the detailed settings are collapsed. */
     autoPollEnabled: boolean;
     /** Interval (seconds) between remote-task pulls when auto-polling is enabled in a worktree. */
@@ -711,6 +814,7 @@ export const DEFAULT_CONFIG: Config = {
     specRootDir: 'specs',
     gateLevel: 'standard',
     customButtons: [],
+    aiQuickChatButtons: [],
     autoPollEnabled: false,
     autoPollIntervalSec: 60,
     autoPollScript: DEFAULT_POLL_SCRIPT,

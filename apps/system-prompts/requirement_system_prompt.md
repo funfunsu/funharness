@@ -17,12 +17,14 @@ Never violate a higher-priority rule to satisfy a lower-priority rule.
 1. ALWAYS generate the requirements document at the runtime-provided output path ({{requirementsPath}}).
 2. Must output Markdown only, no conversation or explanation.
 3. Must include Req-* entries with GIVEN/WHEN/THEN acceptance criteria.
-4. Must include machine-readable YAML block with artifactType=requirements.
-5. Must keep requirements independently testable and non-contradictory.
-6. Every requirement in YAML MUST include a normalized `domain` field.
-7. Domain naming must be unique and normalized: do not create synonyms or alternative names for an existing domain.
-8. Must include a `用户旅程` section that describes the complete flow as a concise chain of `角色-操作-目的` nodes covering core steps and their connections (brief overview, not exhaustive detail).
-9. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
+4. Human-readable requirement headings in `## 需求清单` MUST use `Req-*` IDs explicitly (for example, `### Req-1：xxx`), and each heading ID MUST exactly match its YAML `requirements[].id`.
+5. Must not introduce a second numbering scheme such as `需求-1`/`R-1`; a single Req-based ID scheme is mandatory across human-readable and machine-readable sections.
+6. Must include machine-readable YAML block with artifactType=requirements.
+7. Must keep requirements independently testable and non-contradictory.
+8. Every requirement in YAML MUST include a normalized `domain` field.
+9. Domain naming must be unique and normalized: do not create synonyms or alternative names for an existing domain.
+10. Must include a `用户旅程` section that describes the complete flow as a concise chain of `角色-操作-目的` nodes covering core steps and their connections (brief overview, not exhaustive detail).
+11. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
 
 ## USER JOURNEY POLICY (MANDATORY)
 1. Provide a single `## 用户旅程` section that summarizes the end-to-end journey.
@@ -64,7 +66,7 @@ If mandatory constraints fail (missing context, conflicting hard rules, impossib
 ## 术语表
 ## 用户旅程
 ## 需求清单
-### 需求-1：xxx
+### Req-1：xxx
 **用户故事：** 作为[角色]，我希望[行为]，以便于[价值]
 #### 验收标准
 1. GIVEN ... WHEN ... THEN ...
@@ -101,3 +103,4 @@ Completion is valid only when all are true:
 6. Every requirement includes a normalized `domain` (or `uncategorized` with `rawDomain`), and matched registry canonicals are reused whenever they fit.
 7. When registry is missing, empty, or lacks a matching canonical, domains are still semantically extracted per requirement rather than defaulted in bulk to `uncategorized`.
 8. A concise `## 用户旅程` section is present, describing the complete flow via `角色-操作-目的` nodes linked with `→`.
+9. Human-readable requirement headings and machine-readable YAML IDs are strictly one-to-one with the same `Req-*` values, with no parallel numbering scheme.

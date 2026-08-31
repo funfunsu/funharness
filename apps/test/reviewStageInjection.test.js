@@ -253,6 +253,51 @@ describe('TEST-5: 四阶段通用模板内容可区分 (Req-2, INV-5)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // TEST-6 / Req-3 / INV-6: 自定义覆盖生效（custom > default）
 // ─────────────────────────────────────────────────────────────────────────────
+describe('AI 快捷对话渲染覆盖基线', () => {
+    test('GIVEN 快捷按钮混合有效与无效数据 WHEN 渲染任务卡片 THEN 仅有效项输出且复用同一按钮样式', () => {
+        const { buildMainPageHtml } = require('../out/webviewTemplates');
+        const html = buildMainPageHtml([
+            {
+                task: { id: 't-1', name: '任务', desc: 'desc', stage: 'writing_requirement', worktreePath: '/tmp/demo', autoAdvanceEnabled: true, autoRepairEnabled: true },
+                stats: { total: 1, todo: 1, doing: 0, done: 0, failed: 0 },
+                subTasks: [],
+                isAuto: false,
+                artifacts: { requirements: true, design: true, testcase: true, tasks: true, testScript: false },
+                health: {
+                    severity: 'good',
+                    summary: '正常',
+                    worktreeExists: true,
+                    frontendExists: false,
+                    backendExists: false,
+                    mainFrontendExists: false,
+                    mainBackendExists: false,
+                    branchRouteReady: true,
+                    mergeRouteReady: true,
+                },
+                taskOutputPathWarnings: [],
+            },
+        ], {}, {
+            compactTaskDecomposition: false,
+            isWorktreeSubview: false,
+            aiProvider: 'copilot-chat',
+            customButtons: [],
+            aiQuickChatButtons: [
+                { id: 'aqc_1', label: '  ', content: '必须过滤' },
+                { id: 'aqc_2', label: '紧急问询', content: '   ' },
+                { id: 'aqc_3', label: '总结', content: '请给我总结' },
+            ],
+            autoPollEnabled: false,
+        });
+
+        assert.ok(html.includes('runAiQuickChatButton'));
+        assert.ok(html.includes('总结'));
+        assert.ok(html.includes("runAiQuickChatButton('t-1','aqc_3')"));
+        assert.ok(!html.includes('必须过滤'));
+        assert.ok(!html.includes('紧急问询'));
+        assert.ok(html.includes('action-btn--neutral'));
+    });
+});
+
 describe('TEST-6: 自定义模板覆盖默认模板 (Req-3, INV-6)', () => {
     let tmpDir;
     let promptService;

@@ -265,6 +265,49 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         scheduler.stopWatching();
     });
 
+    test('accepts done-* when tasks.md is failed for the same subtask to support recovery', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        const taskPlanPath = writeTaskPlan(tmpDir, 'failed');
+        const signalsDir = path.join(tmpDir, 'signals');
+        fs.mkdirSync(signalsDir, { recursive: true });
+        const signalPath = path.join(signalsDir, 'done-1.5');
+        const outputPath = path.join(tmpDir, 'specs', 'task-5-checkpoint-review.md');
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        fs.writeFileSync(outputPath, '# checkpoint', 'utf8');
+
+        const { vscodeMock, watchers } = createVscodeMock();
+        const FeatureScheduler = loadFeatureScheduler(vscodeMock);
+        const dispatched = [];
+        const scheduler = new FeatureScheduler(
+            tmpDir,
+            tmpDir,
+            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: false, devConversationMode: 'single', specRootDir: 'specs' },
+            async (query) => {
+                dispatched.push(query);
+            },
+            () => {},
+            () => 'dev system prompt'
+        );
+
+        await scheduler.startAuto(createFeature());
+
+        fs.writeFileSync(signalPath, [
+            'taskId: 1.5',
+            'status: done',
+            'timestamp: 2026-08-05T00:00:00Z',
+            'files:',
+            '  - specs/task-5-checkpoint-review.md',
+        ].join('\n'), 'utf8');
+        await triggerSignalCreate(watchers, signalPath);
+
+        assert.equal(scheduler.getCurrentSubFeature()?.id, '2.1');
+        assert.equal(dispatched.length, 1);
+        assert.match(fs.readFileSync(taskPlanPath, 'utf8'), /\[doing\]\s*2\.1/);
+
+        scheduler.stopWatching();
+    });
+
     test('accepts bare file names in done-* when they uniquely match nested outputs', async () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
@@ -374,6 +417,114 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         assert.equal(scheduler.getCurrentSubFeature()?.id, '1.2');
         assert.equal(dispatched.length, 1);
         assert.match(fs.readFileSync(taskPlanPath, 'utf8'), /\[doing\]\s*1\.2/);
+
+        scheduler.stopWatching();
+    });
+
+    test('normalizes bracketed outputs and markdown-wrapped signal file paths', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        const specDir = path.join(tmpDir, 'specs');
+        fs.mkdirSync(specDir, { recursive: true });
+        const taskPlanPath = path.join(specDir, 'tasks.md');
+        fs.writeFileSync(taskPlanPath, [
+            '- [doing] 1.2 检查点-需求与设计冻结',
+            '  - 输出: [.harness/process/checkpoint-1.2-requirements-design-freeze.md]',
+            '',
+            '- [ ] 2.1 后续任务',
+            '  - 输出: specs/next.md',
+            '',
+        ].join('\n'), 'utf8');
+
+        const processDir = path.join(tmpDir, '.harness', 'process');
+        fs.mkdirSync(processDir, { recursive: true });
+        fs.writeFileSync(path.join(processDir, 'checkpoint-1.2-requirements-design-freeze.md'), '# freeze', 'utf8');
+
+        const signalsDir = path.join(tmpDir, 'signals');
+        fs.mkdirSync(signalsDir, { recursive: true });
+        const signalPath = path.join(signalsDir, 'done-1.2');
+        fs.writeFileSync(signalPath, [
+            'taskId: 1.2',
+            'status: done',
+            'files:',
+            '  - [.harness/process/checkpoint-1.2-requirements-design-freeze.md](.harness/process/checkpoint-1.2-requirements-design-freeze.md)',
+        ].join('\n'), 'utf8');
+
+        const { vscodeMock, watchers } = createVscodeMock();
+        const FeatureScheduler = loadFeatureScheduler(vscodeMock);
+        const dispatched = [];
+        const scheduler = new FeatureScheduler(
+            tmpDir,
+            tmpDir,
+            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: false, devConversationMode: 'single', specRootDir: 'specs' },
+            async (query) => {
+                dispatched.push(query);
+            },
+            () => {},
+            () => 'dev system prompt'
+        );
+
+        await scheduler.startAuto(createFeature());
+        await triggerSignalCreate(watchers, signalPath);
+
+        assert.equal(scheduler.getCurrentSubFeature()?.id, '2.1');
+        assert.equal(dispatched.length, 1);
+        assert.match(fs.readFileSync(taskPlanPath, 'utf8'), /\[doing\]\s*2\.1/);
+
+        scheduler.stopWatching();
+    });
+
+    test('accepts bracketed multi-output lists after split (handles dangling [ and ])', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        const specDir = path.join(tmpDir, 'specs');
+        fs.mkdirSync(specDir, { recursive: true });
+        const taskPlanPath = path.join(specDir, 'tasks.md');
+        fs.writeFileSync(taskPlanPath, [
+            '- [doing] 2.1 扩展消息契约与类型模型',
+            '  - 输出: [apps/src/harnessMessages.ts, apps/src/models.ts]',
+            '',
+            '- [ ] 2.2 后续任务',
+            '  - 输出: specs/next.md',
+            '',
+        ].join('\n'), 'utf8');
+
+        const srcDir = path.join(tmpDir, 'apps', 'src');
+        fs.mkdirSync(srcDir, { recursive: true });
+        fs.writeFileSync(path.join(srcDir, 'harnessMessages.ts'), 'export {}', 'utf8');
+        fs.writeFileSync(path.join(srcDir, 'models.ts'), 'export {}', 'utf8');
+
+        const signalsDir = path.join(tmpDir, 'signals');
+        fs.mkdirSync(signalsDir, { recursive: true });
+        const signalPath = path.join(signalsDir, 'done-2.1');
+        fs.writeFileSync(signalPath, [
+            'taskId: 2.1',
+            'status: done',
+            'files:',
+            '  - apps/src/harnessMessages.ts',
+            '  - apps/src/models.ts',
+        ].join('\n'), 'utf8');
+
+        const { vscodeMock, watchers } = createVscodeMock();
+        const FeatureScheduler = loadFeatureScheduler(vscodeMock);
+        const dispatched = [];
+        const scheduler = new FeatureScheduler(
+            tmpDir,
+            tmpDir,
+            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: false, devConversationMode: 'single', specRootDir: 'specs' },
+            async (query) => {
+                dispatched.push(query);
+            },
+            () => {},
+            () => 'dev system prompt'
+        );
+
+        await scheduler.startAuto(createFeature());
+        await triggerSignalCreate(watchers, signalPath);
+
+        assert.equal(scheduler.getCurrentSubFeature()?.id, '2.2');
+        assert.equal(dispatched.length, 1);
+        assert.match(fs.readFileSync(taskPlanPath, 'utf8'), /\[doing\]\s*2\.2/);
 
         scheduler.stopWatching();
     });

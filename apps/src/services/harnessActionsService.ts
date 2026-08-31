@@ -5,6 +5,7 @@ import { spawn } from 'child_process';
 import { HarnessStep } from '../harnessMessages';
 import {
     BASE,
+    AiQuickChatButton,
     Config,
     CustomButton,
     CUSTOM_SCRIPT_DIR,
@@ -27,12 +28,13 @@ import {
     getDocsRootDirName,
     isMonoMode,
     isOsScriptFile,
+    isAiQuickChatButtonValid,
     normalizeCustomButton,
 } from '../models';
 import { FeatureScheduler } from '../featureScheduler';
 import { GitService } from './gitService';
 import { appendHarnessLog } from './harnessLog';
-import { validateTraceability } from '../specTrace';
+import { extractMachineBlock, validateTraceability } from '../specTrace';
 import { readTextIfExists, safeRemovePath, writeTextAtomic } from './fileOps';
 import { SpecDeltaService } from './specDeltaService';
 import { DomainKnowledgeAggregateService, SuspectedDomainRecord } from './domainKnowledgeAggregateService';
@@ -52,7 +54,7 @@ interface HarnessActionsDeps {
     stopScheduler: (featureId: string) => void;
     onPass: (task: Feature) => void;
     isWorktreeSubview: () => boolean;
-    dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string) => Promise<void>;
+    dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask' | 'quick-chat-button', providerOverride?: string) => Promise<void>;
     runDomainSummaryAiRefiner?: (prompt: string) => string | null;
     copyProjectStructureToIteration: (iterDir: string) => void;
     renderAgentPrompt: (step: HarnessStep, featureName: string, featureDesc: string, iterDir: string) => { content: string; source: string; path: string };
@@ -74,6 +76,8 @@ export class HarnessActionsService {
     /** Keys that exhausted auto-repair and were escalated to a human gate. */
     private readonly escalatedRepairKeys: Set<string> = new Set();
     private static readonly MAX_AUTO_REPAIR_ATTEMPTS = 3;
+    private static readonly DOMAIN_BLOCK_AUTO_FIX = '自动补';
+    private static readonly DOMAIN_BLOCK_MANUAL_FIX = '去处理';
 
     private readonly stageArtifacts = {
         req: 'requirements',
@@ -422,8 +426,8 @@ export class HarnessActionsService {
             desc,
             taskSplitMode: inferredSplitMode,
             stage: STAGE.INITIALIZING,
-            autoAdvanceEnabled: cfg.autoAdvanceEnabled,
-            autoRepairEnabled: cfg.autoRepairEnabled,
+            autoAdvanceEnabled: true,
+            autoRepairEnabled: true,
             quickMode: Boolean(quickMode),
         };
         this.deps.getFeatures().push(newTask);
@@ -465,8 +469,8 @@ export class HarnessActionsService {
             desc: normalizedDesc,
             taskSplitMode: inferredSplitMode,
             stage: STAGE.INITIALIZING,
-            autoAdvanceEnabled: cfg.autoAdvanceEnabled,
-            autoRepairEnabled: cfg.autoRepairEnabled,
+            autoAdvanceEnabled: true,
+            autoRepairEnabled: true,
             quickMode: false,
         };
 
@@ -996,6 +1000,14 @@ export class HarnessActionsService {
         const task = this.getFeatureById(featureId);
         if (!task) return;
 
+        if (step === 'req') {
+            const iterDir = this.deps.getIterationDir(task);
+            const passed = await this.ensureDesignDomainRegistryReady(task, iterDir);
+            if (!passed) {
+                return;
+            }
+        }
+
         if (step === 'tsk') {
             const validation = this.validateStageArtifact(task, 'tsk');
             if (!validation.valid) {
@@ -1059,6 +1071,209 @@ export class HarnessActionsService {
             await this.runAgentByFeatureId(featureId, followupStep);
             vscode.window.showInformationMessage(`已推进到下一阶段，并自动打开 ${followupStep.toUpperCase()} Agent`);
         }
+    }
+
+    /**
+     * Preflight gate for req -> des transition.
+     * Ensures all requirement machine-block domains exist in registry.yaml, so users
+     * can resolve domain governance with one-click actions instead of manual file hunting.
+     */
+    private async ensureDesignDomainRegistryReady(task: Feature, iterDir: string): Promise<boolean> {
+        const cfg = this.deps.getConfig();
+        const requirementsPath = resolveSpecFile(iterDir, cfg, 'requirements.md');
+        if (!fs.existsSync(requirementsPath)) {
+            return true;
+        }
+
+        const requirementsContent = fs.readFileSync(requirementsPath, 'utf8');
+        const requirementDomains = this.collectRequirementDomainSpecs(requirementsContent);
+        if (requirementDomains.length === 0) {
+            return true;
+        }
+
+        // IMPORTANT: design-stage prompt reads registry from the current iteration workspace.
+        // Preflight must validate/fix the same root, otherwise it can "pass" against another
+        // registry file and still be blocked in design generation.
+        const repoRoot = this.resolveDomainBaselineRepoRoot(iterDir);
+        this.ensureDomainRegistrySeed(iterDir, repoRoot);
+        const registryService = this.getDomainRegistryService();
+        const load = registryService.loadRegistry(repoRoot);
+        if (load.validationErrors.length > 0) {
+            vscode.window.showErrorMessage(
+                `领域注册表异常：${load.validationErrors.map(item => item.message).join('；')}`,
+                { modal: true },
+            );
+            return false;
+        }
+
+        const existingCanonicals = new Set(
+            (load.registry.domains || [])
+                .map(item => (item.canonical || '').trim().toLowerCase())
+                .filter(Boolean),
+        );
+        const missing = requirementDomains.filter(item => !existingCanonicals.has(item.domain.toLowerCase()));
+        if (missing.length === 0) {
+            return true;
+        }
+
+        const invalid = missing.filter(item => !this.isValidCanonicalDomainSlug(item.domain));
+        const choice = await vscode.window.showWarningMessage(
+            `领域未登记，无法进入设计（${missing.length}）`,
+            {
+                modal: true,
+                detail: this.buildDomainBlockDetail(requirementsPath, load.filePath, missing, invalid),
+            },
+            HarnessActionsService.DOMAIN_BLOCK_AUTO_FIX,
+            HarnessActionsService.DOMAIN_BLOCK_MANUAL_FIX,
+        );
+
+        if (choice === HarnessActionsService.DOMAIN_BLOCK_AUTO_FIX) {
+            if (invalid.length > 0) {
+                vscode.window.showWarningMessage(`存在非 canonical 领域名，无法自动补齐：${invalid.map(item => item.domain).join('、')}`);
+                await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(load.filePath));
+                return false;
+            }
+
+            const added = this.appendMissingDomainsToRegistry(load.registry, missing);
+            registryService.saveRegistry(repoRoot, load.registry);
+
+            // Re-load and verify persisted canonicals for deterministic user feedback.
+            const verified = registryService.loadRegistry(repoRoot);
+            const finalCanonicals = new Set(
+                (verified.registry.domains || [])
+                    .map(item => (item.canonical || '').trim().toLowerCase())
+                    .filter(Boolean),
+            );
+            const unresolved = missing.filter(item => !finalCanonicals.has(item.domain.toLowerCase()));
+            if (unresolved.length > 0) {
+                vscode.window.showErrorMessage(
+                    `自动补失败：仍有未登记领域（${unresolved.length}）`,
+                    {
+                        modal: true,
+                        detail: this.buildDomainBlockDetail(requirementsPath, verified.filePath, unresolved, []),
+                    },
+                );
+                await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(verified.filePath));
+                return false;
+            }
+
+            await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(verified.filePath));
+            const addedInfo = added.length > 0 ? `新增 ${added.length} 项` : '无新增（已存在）';
+            vscode.window.showInformationMessage(`已补齐领域（${addedInfo}）：${verified.filePath}`);
+            return true;
+        }
+
+        if (choice === HarnessActionsService.DOMAIN_BLOCK_MANUAL_FIX) {
+            await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(load.filePath));
+            return false;
+        }
+
+        return false;
+    }
+
+    private buildDomainBlockDetail(
+        requirementsPath: string,
+        registryPath: string,
+        missing: Array<{ reqId: string; domain: string; rawDomain: string | null }>,
+        invalid: Array<{ reqId: string; domain: string; rawDomain: string | null }>,
+    ): string {
+        const preview = missing
+            .slice(0, 8)
+            .map(item => `${item.reqId}: ${item.domain}${item.rawDomain ? ` (${item.rawDomain})` : ''}`)
+            .join('\n');
+        const lines = [
+            `requirements: ${requirementsPath}`,
+            `registry: ${registryPath}`,
+            '缺失领域：',
+            preview,
+        ];
+        if (missing.length > 8) {
+            lines.push(`... 其余 ${missing.length - 8} 项`);
+        }
+        if (invalid.length > 0) {
+            lines.push(`非 canonical 命名：${invalid.map(item => item.domain).join('、')}`);
+        }
+        return lines.join('\n');
+    }
+
+    private collectRequirementDomainSpecs(content: string): Array<{ reqId: string; domain: string; rawDomain: string | null }> {
+        const block = extractMachineBlock(content) || content;
+        const result: Array<{ reqId: string; domain: string; rawDomain: string | null }> = [];
+        const sections = block.match(/-\s*id\s*:\s*Req-[\w-]+[\s\S]*?(?=\n\s*-\s*id\s*:|$)/g) || [];
+
+        for (const section of sections) {
+            const reqIdMatch = section.match(/-\s*id\s*:\s*(Req-[\w-]+)/i);
+            const domainMatch = section.match(/\n\s*domain\s*:\s*([^\n]+)/i);
+            if (!reqIdMatch || !domainMatch) {
+                continue;
+            }
+
+            const reqId = (reqIdMatch[1] || '').trim();
+            const domain = this.cleanYamlScalar(domainMatch[1]);
+            if (!reqId || !domain || domain.toLowerCase() === 'uncategorized') {
+                continue;
+            }
+
+            const rawDomainMatch = section.match(/\n\s*rawDomain\s*:\s*([^\n]+)/i);
+            const rawDomain = rawDomainMatch ? this.cleanYamlScalar(rawDomainMatch[1]) : '';
+            result.push({ reqId, domain, rawDomain: rawDomain || null });
+        }
+
+        const seen = new Set<string>();
+        return result.filter(item => {
+            const key = `${item.reqId}|${item.domain.toLowerCase()}`;
+            if (seen.has(key)) {
+                return false;
+            }
+            seen.add(key);
+            return true;
+        });
+    }
+
+    private cleanYamlScalar(raw: string): string {
+        const text = String(raw || '').trim();
+        if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+            return text.slice(1, -1).trim();
+        }
+        return text.replace(/\s+#.*$/, '').replace(/^['"]|['"]$/g, '').trim();
+    }
+
+    private isValidCanonicalDomainSlug(domain: string): boolean {
+        return /^[a-z0-9][a-z0-9-]*$/.test((domain || '').trim());
+    }
+
+    private appendMissingDomainsToRegistry(
+        registry: import('../models').DomainRegistry,
+        missing: Array<{ reqId: string; domain: string; rawDomain: string | null }>,
+    ): string[] {
+        const existing = new Set(
+            (registry.domains || [])
+                .map(item => (item.canonical || '').trim().toLowerCase())
+                .filter(Boolean),
+        );
+        const added: string[] = [];
+
+        for (const item of missing) {
+            const canonical = (item.domain || '').trim();
+            if (!canonical) {
+                continue;
+            }
+            const key = canonical.toLowerCase();
+            if (existing.has(key)) {
+                continue;
+            }
+
+            registry.domains.push({
+                canonical,
+                displayName: (item.rawDomain || canonical).trim() || canonical,
+                aliases: [],
+                status: 'active',
+            });
+            existing.add(key);
+            added.push(canonical);
+        }
+
+        return added;
     }
 
     async previousStageByFeatureId(featureId: string, step: HarnessStep): Promise<void> {
@@ -1327,6 +1542,57 @@ export class HarnessActionsService {
 
         // Run the script from the worktree iteration dir.
         this.launchCustomButton(button, iterDir, true, `迭代目录不存在：{dir}`, task.name);
+    }
+
+    /**
+     * Resolve a configured AI quick-chat button for the target task and dispatch its raw content
+     * into the current AI conversation without rewriting the prompt text.
+     */
+    async runAiQuickChatButtonByFeatureId(
+        featureId: string,
+        buttonId: string,
+    ): Promise<{ accepted: boolean; failureReason?: 'not_found_or_invalid' | 'dispatch_failed' }> {
+        const task = this.getFeatureById(featureId);
+        if (!task) {
+            vscode.window.showWarningMessage('未找到当前任务，无法发送 AI 快捷对话');
+            return { accepted: false, failureReason: 'not_found_or_invalid' };
+        }
+
+        const button = this.resolveAiQuickChatButton(buttonId);
+        if (!button) {
+            vscode.window.showWarningMessage('未找到可用的 AI 快捷对话按钮，请在设置中检查配置');
+            return { accepted: false, failureReason: 'not_found_or_invalid' };
+        }
+
+        const iterDir = this.deps.getIterationDir(task);
+        if (!iterDir || !fs.existsSync(iterDir)) {
+            vscode.window.showWarningMessage(`当前任务迭代目录不可用，无法发送 AI 快捷对话：${iterDir || '(empty)'}`);
+            return { accepted: false, failureReason: 'dispatch_failed' };
+        }
+
+        try {
+            await this.deps.dispatchAi(button.content, iterDir, 'quick-chat-button', task.aiProvider || undefined);
+            return { accepted: true };
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error || 'unknown');
+            vscode.window.showWarningMessage(`AI 快捷对话发送失败：${detail}`);
+            return { accepted: false, failureReason: 'dispatch_failed' };
+        }
+    }
+
+    /**
+     * Reload config on demand and return a still-valid quick-chat button, if one exists.
+     */
+    private resolveAiQuickChatButton(buttonId: string): AiQuickChatButton | undefined {
+        let button = (this.deps.getConfig().aiQuickChatButtons || []).find(candidate => candidate.id === buttonId);
+        if (!button || !isAiQuickChatButtonValid(button)) {
+            this.deps.reloadConfig?.();
+            button = (this.deps.getConfig().aiQuickChatButtons || []).find(candidate => candidate.id === buttonId);
+        }
+        if (!button || !isAiQuickChatButtonValid(button)) {
+            return undefined;
+        }
+        return button;
     }
 
     /**
@@ -1976,7 +2242,7 @@ export class HarnessActionsService {
                     continue;
                 }
 
-                if (/\s*\[[^\]]*\]\s*$/.test(token) || /\s*\{[^}]*\}\s*$/.test(token)) {
+                if (/\s+\[[^\]]*\]\s*$/.test(token) || /\s+\{[^}]*\}\s*$/.test(token)) {
                     errors.push(`任务 ${st.id} 输出项包含注释后缀，禁止使用：${raw}`);
                     continue;
                 }
@@ -2009,6 +2275,9 @@ export class HarnessActionsService {
         let token = String(value || '').trim();
         if (!token) {
             return '';
+        }
+        if ((/^\[[^\[\]]+\]$/.test(token)) || (/^\{[^{}]+\}$/.test(token))) {
+            token = token.slice(1, -1).trim();
         }
         if (/^`[^`]+`$/.test(token)) {
             token = token.slice(1, -1).trim();

@@ -74,7 +74,7 @@ If mandatory constraints fail (missing design/requirements context, impossible d
 ## 任务清单（严格按依赖顺序执行）
 - [ ] X.Y [Task Name]
   - Owner: Frontend | Backend | FullStack
-  - 输入: [docs/design.md 对应章节]
+  - 输入: [{{designPath}} 对应章节]
   - 输出: [仓库相对路径列表（仅路径，不含任何说明文字）]
   - 验收: [可验证完成标准]
   - 追踪: Requirements + Properties
@@ -88,7 +88,7 @@ tasks:
     owner: Backend
     domain: auth
     dependsOn: []
-    inputs: [docs/design.md#3.1]
+    inputs: [{{designPath}}#3.1]
     outputs: [api/example.ts]
     requirementIds: [Req-1]
 ```
