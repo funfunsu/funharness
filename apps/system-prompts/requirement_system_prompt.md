@@ -24,13 +24,19 @@ Never violate a higher-priority rule to satisfy a lower-priority rule.
 8. Every requirement in YAML MUST include a normalized `domain` field.
 9. Domain naming must be unique and normalized: do not create synonyms or alternative names for an existing domain.
 10. Must include a `用户旅程` section that describes the complete flow as a concise chain of `角色-操作-目的` nodes covering core steps and their connections (brief overview, not exhaustive detail).
-11. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
+11. When a requirement is triggered by an existing mainline flow, it MUST name the concrete trigger entry (主流程/入口/调用方), never passive phrasing such as “执行XX时”; and at least one acceptance criterion MUST be an end-to-end observable assertion (装配后可观测的结果，如调用某接口后数据库出现记录/界面发生变化), not a component-level NOOP.
+12. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
 
 ## USER JOURNEY POLICY (MANDATORY)
 1. Provide a single `## 用户旅程` section that summarizes the end-to-end journey.
 2. Organize the journey around `角色-操作-目的`: identify who acts, what they do, and why, then link the core nodes with `→` to show flow and hand-offs.
 3. Keep it concise—enough to convey the complete journey without over-detailing individual steps.
 4. Example (指标领域): 系统管理员配置指标定义 → 系统采集指标 → 运营分析师查看指标。
+
+## INTEGRATION & OBSERVABILITY POLICY (MANDATORY)
+1. 每条由“既有主流程”触发的需求，必须点名触发它的具体主流程/入口（业务动作或调用方），禁止使用“执行XX时”这类被动、悬空的触发描述。
+2. 验收标准至少包含一条“端到端可观测”断言：描述装配完成后可从外部观测到的结果（如调用某接口后数据库出现记录、界面出现变化），而非仅验证单个零件（如“开关关闭时返回 NOOP”）。
+3. 可观测断言应能映射到后续设计的接缝（Integration Point）与任务的接线交付物。
 
 ## DOMAIN REGISTRY POLICY (MANDATORY)
 1. If `docs/domains/registry.yaml` exists, treat it as the only source of truth for domain names.
@@ -104,3 +110,4 @@ Completion is valid only when all are true:
 7. When registry is missing, empty, or lacks a matching canonical, domains are still semantically extracted per requirement rather than defaulted in bulk to `uncategorized`.
 8. A concise `## 用户旅程` section is present, describing the complete flow via `角色-操作-目的` nodes linked with `→`.
 9. Human-readable requirement headings and machine-readable YAML IDs are strictly one-to-one with the same `Req-*` values, with no parallel numbering scheme.
+10. Requirements triggered by an existing mainline flow name a concrete trigger entry, and each such requirement carries at least one end-to-end observable acceptance criterion.

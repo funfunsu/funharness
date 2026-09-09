@@ -77,8 +77,6 @@ export class GitService {
 
     private deriveBranchName(task: Feature): string {
         return deriveIterationBranchNameWithOptions(task, {
-            branchPrefix: this.config.iterationBranchPrefix,
-            worktreePrefix: this.config.iterationWorktreePrefix,
             semanticSlug: this.config.iterationNamingSemantic,
             worktreeNameMaxLength: this.config.iterationWorktreeNameMaxLength,
         });

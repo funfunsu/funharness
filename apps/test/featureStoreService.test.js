@@ -47,9 +47,23 @@ describe('worktree 命名覆盖基线', () => {
         const worktreeName = deriveIterationWorktreeName(task);
 
         assert.match(branchName, /^task\/[a-z0-9-]+$/);
-        assert.match(worktreeName, /^task-[a-z0-9-]+$/);
+        assert.match(worktreeName, /^[a-z0-9-]+-\d{8}$/);
         assert.ok(!/[^\x00-\x7F]/.test(branchName), 'branch should be ASCII only');
         assert.ok(!/[^\x00-\x7F]/.test(worktreeName), 'worktree name should be ASCII only');
+    });
+
+    test('worktree naming uses task name and date, not description ascii words', () => {
+        const task = {
+            id: 'task_1756684800000', // 2025-09-01 local date based on timestamp
+            name: '决策处置',
+            desc: 'alpha beta gamma should-not-be-picked',
+            stage: 'writing_requirement',
+        };
+
+        const worktreeName = deriveIterationWorktreeName(task);
+        assert.ok(worktreeName.startsWith('jue-ce-chu-zhi-'), 'worktree should start from task name pinyin');
+        assert.ok(!worktreeName.includes('alpha') && !worktreeName.includes('beta'), 'description tokens should not be used');
+        assert.match(worktreeName, /^jue-ce-chu-zhi-\d{8}$/);
     });
 
     test('uses English-safe worktree path for new tasks even when legacy folder exists', () => {
@@ -65,14 +79,14 @@ describe('worktree 命名覆盖基线', () => {
 
             const defaultPath = service.getIterationDir(task);
             const defaultBase = path.basename(defaultPath);
-            assert.match(defaultBase, /^task-[a-z0-9-]+$/);
+            assert.match(defaultBase, /^[a-z0-9-]+-\d{8}$/);
 
             const legacyPath = path.join(root, 'worktrees', task.name);
             fs.mkdirSync(legacyPath, { recursive: true });
 
             const resolvedPath = service.getIterationDir(task);
             assert.notEqual(resolvedPath, legacyPath);
-            assert.match(path.basename(resolvedPath), /^task-[a-z0-9-]+$/);
+            assert.match(path.basename(resolvedPath), /^[a-z0-9-]+-\d{8}$/);
         } finally {
             cleanup(root);
         }
@@ -100,7 +114,7 @@ describe('worktree 命名覆盖基线', () => {
         }
     });
 
-    test('supports configurable naming prefix and semantic toggle', () => {
+    test('supports semantic toggle and max-length constraints', () => {
         const task = {
             id: 'task_2001',
             name: '统一风控策略中心',
@@ -108,18 +122,14 @@ describe('worktree 命名覆盖基线', () => {
             stage: 'writing_requirement',
         };
 
-        const branchName = deriveIterationBranchNameWithOptions(task, {
-            branchPrefix: 'iter',
-            semanticSlug: false,
-        });
+        const branchName = deriveIterationBranchNameWithOptions(task, { semanticSlug: false });
         const worktreeName = deriveIterationWorktreeNameWithOptions(task, {
-            worktreePrefix: 'wt',
             semanticSlug: false,
             worktreeNameMaxLength: 30,
         });
 
-        assert.match(branchName, /^iter\/[a-z0-9-]+$/);
-        assert.match(worktreeName, /^wt-[a-z0-9-]+$/);
+        assert.match(branchName, /^task\/[a-z0-9-]+$/);
+        assert.match(worktreeName, /^[a-z0-9-]+-\d{8}$/);
         assert.ok(worktreeName.length <= 30, 'worktree name should respect configured max length');
     });
 
@@ -129,8 +139,6 @@ describe('worktree 命名覆盖基线', () => {
             const harnessDir = path.join(root, BASE);
             fs.mkdirSync(harnessDir, { recursive: true });
             fs.writeFileSync(path.join(harnessDir, 'config.json'), JSON.stringify({
-                iterationBranchPrefix: 'iter',
-                iterationWorktreePrefix: 'wt',
                 iterationNamingSemantic: false,
                 iterationWorktreeNameMaxLength: 28,
             }, null, 2), 'utf8');
@@ -145,7 +153,7 @@ describe('worktree 命名覆盖基线', () => {
 
             const dir = service.getIterationDir(task);
             assert.equal(path.dirname(dir), path.join(root, 'worktrees'));
-            assert.match(path.basename(dir), /^wt-[a-z0-9-]+$/);
+            assert.match(path.basename(dir), /^[a-z0-9-]+-\d{8}$/);
             assert.ok(path.basename(dir).length <= 28, 'configured max length should apply');
         } finally {
             cleanup(root);
@@ -166,7 +174,7 @@ describe('worktree 命名覆盖基线', () => {
 
             const migrated = service.getIterationDir(task);
             assert.notEqual(migrated, task.worktreePath);
-            assert.match(path.basename(migrated), /^task-[a-z0-9-]+$/);
+            assert.match(path.basename(migrated), /^[a-z0-9-]+-\d{8}$/);
             assert.equal(path.dirname(migrated), path.join(root, 'worktrees'));
         } finally {
             cleanup(root);

@@ -21,7 +21,9 @@ Never violate a higher-priority rule to satisfy a lower-priority rule.
 5. Must include machine-readable YAML block with artifactType=design.
 6. Domain expressions in design must be derived from requirements canonical domains; do not invent new domain names.
 7. All capability statements must be traceable to structured sources (Req IDs, API contracts, invariants); no speculative features.
-8. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
+8. Every NEW node/component/service introduced in the architecture diagram MUST have at least one inbound edge, and that edge MUST be annotated with a real code coordinate of its caller/reference (existing class+method, or existing `.vue`/component file). A node without an inbound edge (orphan) is a design defect and must not be emitted.
+9. Must produce a `### 2.4 集成接缝清单（Integration Points）` section listing, for each new artifact, its inbound caller coordinate, the trigger point, and bound Req-* IDs.
+10. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
 
 ## DOMAIN CONSISTENCY POLICY (MANDATORY)
 1. Use requirement-stage canonical domain values as the only domain vocabulary in this stage.
@@ -49,6 +51,8 @@ If mandatory constraints fail (missing requirements context, incompatible constr
 ### 2.1 架构图（Mermaid）
 ### 2.2 项目目录结构
 ### 2.3 路由设计
+### 2.4 集成接缝清单（Integration Points）
+<!-- 每个新件一行：新件 -> 入边调用方真实代码坐标（类+方法 / .vue 文件） | 触发点 | Req-* -->
 ## 3. 组件与接口设计
 ### 3.1 API 契约
 ### 3.2 数据模型
@@ -74,6 +78,11 @@ invariants:
     domain: auth
     requirementId: Req-1
     rule: xxx
+integrationPoints:
+  - node: NewComponentOrService
+    inboundFrom: ExistingCaller.vue 或 ExistingClass.method
+    triggerPoint: xxx
+    requirementIds: [Req-1]
 ```
 
 ## INPUT CONTEXT（插件注入变量）
@@ -91,3 +100,4 @@ Completion is valid only when all are true:
 4. No unrelated files are modified.
 5. Execution is idempotent (re-run does not create conflicting design IDs/sections).
 6. Domain usage is canonical and consistent with requirement-stage domain mapping.
+7. Every new node/component has at least one inbound edge annotated with a concrete code coordinate, and the `### 2.4 集成接缝清单（Integration Points）` section is present and complete with no orphan nodes.

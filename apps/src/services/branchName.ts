@@ -88,6 +88,48 @@ function buildSemanticPart(task: Feature): string {
     return 'work-item';
 }
 
+function formatDateYmdLocal(date: Date): string {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}${m}${d}`;
+}
+
+function deriveTaskDateStamp(task: Feature): string {
+    const rawId = String(task.id || '');
+    const match = rawId.match(/(\d{10,13})/);
+    if (match) {
+        const ts = Number(match[1]);
+        if (Number.isFinite(ts)) {
+            const millis = match[1].length >= 13 ? ts : ts * 1000;
+            const parsed = new Date(millis);
+            if (!Number.isNaN(parsed.getTime())) {
+                return formatDateYmdLocal(parsed);
+            }
+        }
+    }
+    return formatDateYmdLocal(new Date());
+}
+
+function buildWorktreeSemanticPart(task: Feature): string {
+    const name = task.name || '';
+    const transliteratedTokens = collectAsciiTokens(transliterateWithTinyPinyin(name));
+    const asciiTokens = [
+        ...transliteratedTokens,
+        ...collectAsciiTokens(name),
+    ];
+
+    if (asciiTokens.length > 0) {
+        return sanitizeAsciiSegment(asciiTokens.join('-'));
+    }
+
+    const unicodeHint = sanitizeAsciiSegment(codePointHint(name || task.desc || ''));
+    if (unicodeHint) {
+        return unicodeHint;
+    }
+    return 'work-item';
+}
+
 function normalizePrefix(value: string | undefined, fallback: string): string {
     const normalized = sanitizeAsciiSegment(value || '');
     return normalized || fallback;
@@ -147,8 +189,6 @@ function clampBranchLength(branch: string, hash: string, fallbackId: string, bra
 }
 
 export interface IterationNameOptions {
-    branchPrefix?: string;
-    worktreePrefix?: string;
     semanticSlug?: boolean;
     worktreeNameMaxLength?: number;
 }
@@ -188,7 +228,7 @@ export function deriveIterationBranchNameWithOptions(task: Feature, options?: It
     }
 
     const semanticSlug = options?.semanticSlug !== false;
-    const branchPrefix = normalizePrefix(options?.branchPrefix, 'task');
+    const branchPrefix = 'task';
     const slug = buildStableTaskSlug(task, MAX_SEMANTIC_PART_LEN + 1 + 6, semanticSlug);
     const hash = buildHashSuffix(task);
     const fallbackId = sanitizeAsciiSegment((task.id || '').replace(/^task_/, 'task-')).slice(0, 18) || 'task';
@@ -205,11 +245,12 @@ export function deriveIterationWorktreeName(task: Feature): string {
 }
 
 export function deriveIterationWorktreeNameWithOptions(task: Feature, options?: IterationNameOptions): string {
-    const semanticSlug = options?.semanticSlug !== false;
-    const worktreePrefix = normalizePrefix(options?.worktreePrefix || options?.branchPrefix, 'task');
     const maxLen = normalizeWorktreeMaxLen(options?.worktreeNameMaxLength);
-    const maxSlugLen = Math.max(8, maxLen - worktreePrefix.length - 1);
-    const slug = buildStableTaskSlug(task, maxSlugLen, semanticSlug);
-    const candidate = sanitizeAsciiSegment(`${worktreePrefix}-${slug}`).slice(0, maxLen);
-    return candidate || `${worktreePrefix}-work-item`;
+    const dateStamp = deriveTaskDateStamp(task);
+    const reservedSuffixLen = dateStamp.length + 1;
+    const maxBodyLen = Math.max(8, maxLen - reservedSuffixLen);
+    const body = buildWorktreeSemanticPart(task).slice(0, maxBodyLen).replace(/-+$/g, '') || 'work-item';
+    const core = sanitizeAsciiSegment(`${body}-${dateStamp}`);
+    const candidate = core.slice(0, maxLen);
+    return candidate || 'work-item';
 }

@@ -453,10 +453,6 @@ export interface Config {
     devConversationMode: 'batch' | 'single';
     compactTaskDecomposition: boolean;
     autoDetectTaskSplitMode: boolean;
-    /** Prefix for generated iteration branch names (ASCII only), e.g. task/foo-bar. */
-    iterationBranchPrefix: string;
-    /** Prefix for generated iteration worktree directory names (ASCII only). */
-    iterationWorktreePrefix: string;
     /** Whether generated branch/worktree names should keep semantic transliteration hints. */
     iterationNamingSemantic: boolean;
     /** Max length for generated iteration worktree directory names. */
@@ -604,6 +600,10 @@ export interface SubFeature {
     depends: string[];
     input: string;
     output: string[];
+    // Newly created files declared by this task.
+    newFiles: string[];
+    // Existing files this task must modify to wire new artifacts into the mainline.
+    modifiedFiles: string[];
     acceptance: string[];
     requirementIds: string[];
     propertyIds: string[];
@@ -798,8 +798,6 @@ export const DEFAULT_CONFIG: Config = {
     devConversationMode: 'batch',
     compactTaskDecomposition: false,
     autoDetectTaskSplitMode: true,
-    iterationBranchPrefix: 'task',
-    iterationWorktreePrefix: 'task',
     iterationNamingSemantic: true,
     iterationWorktreeNameMaxLength: 52,
     simpleTaskKeywords: 'blacklist,whitelist,crud,toggle,config,list,search,管理,增删改查,配置,名单',

@@ -514,6 +514,7 @@ body{background:#111;color:#eee;padding:14px;font-family:-apple-system;padding-b
 .action-stack{display:flex;flex-direction:column;gap:8px;margin-top:10px}
 .action-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .action-group{display:flex;gap:6px;flex-wrap:wrap}
+.ai-interaction-section{display:flex;flex-direction:column;gap:6px}
 .action-label{font-size:11px;color:#8f8f94;text-transform:uppercase;letter-spacing:.04em}
 .action-btn{flex:1;min-width:80px;padding:8px 10px;border-radius:8px;border:1px solid transparent;font-size:11px;font-weight:600;line-height:1;display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;transition:background-color .16s ease,border-color .16s ease,color .16s ease,transform .12s ease}
 .action-btn:hover{transform:translateY(-1px)}
@@ -733,25 +734,29 @@ ${visibleTaskViews.map(view => {
         allSubTasksDone,
         hasWorktree,
     });
+    const aiQuickActions: string[] = [];
+    const canRenderTaskExtraActions = isWorktreeSubview || hasWorktree;
 
     // User-defined buttons: same visibility rule (worktree subview always,
     // main panel only when an iteration worktree exists). Resolved server-side by id.
-    if ((isWorktreeSubview || hasWorktree) && iterationButtons.length > 0) {
+    if (canRenderTaskExtraActions && iterationButtons.length > 0) {
         for (const b of iterationButtons) {
             sideActions.push(`<button class="action-btn action-btn--neutral" onclick="runCustomButton('${t.id}','${b.id}')">${escapeHtml(b.name)}</button>`);
         }
     }
-    // AI quick-chat buttons: rendered in the same side-action container (INV-9).
-    if ((isWorktreeSubview || hasWorktree) && validAiQuickChatButtons.length > 0) {
+    // AI quick-chat buttons: render in a dedicated section.
+    if (canRenderTaskExtraActions && validAiQuickChatButtons.length > 0) {
         for (const b of validAiQuickChatButtons) {
-            sideActions.push(`<button class="action-btn action-btn--neutral" onclick="runAiQuickChatButton('${t.id}','${b.id}')">${escapeHtml(b.label)}</button>`);
+            aiQuickActions.push(`<button class="action-btn action-btn--neutral" onclick="runAiQuickChatButton('${t.id}','${b.id}')">${escapeHtml(b.label)}</button>`);
         }
     }
+    const showAiQuickInteractionSection = aiQuickActions.length > 0;
 
     const actionHtml = `
 <div class="action-stack">
     ${(primaryActions.length > 0 || headerActions.length > 0) ? `<div class="action-header"><div class="action-label">主流程操作</div>${headerActions.length > 0 ? `<div class="action-group">${headerActions.join('')}</div>` : ''}</div>${primaryActions.length > 0 ? `<div class="action-group">${primaryActions.join('')}${t.stage === STAGE.DEVELOPING ? `<!-- STAGE=DEVELOPING, primaryCount=${primaryActions.length} -->` : ''}</div>` : ''}` : ''}
   ${sideActions.length > 0 ? `<div class="action-label">旁路操作</div><div class="action-group">${sideActions.join('')}</div>` : ''}
+  ${showAiQuickInteractionSection ? `<div class="ai-interaction-section"><div class="action-label">AI快捷交互区</div><div class="action-group">${aiQuickActions.join('')}</div></div>` : ''}
 </div>`;
 
     return `
@@ -2116,10 +2121,6 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <span>按需求描述自动判别拆分模式</span>
 <input id="ad" type="checkbox" ${config.autoDetectTaskSplitMode !== false ? 'checked' : ''} ${disabled}>
 </div>
-<h5>迭代分支前缀（ASCII，默认 task）</h5>
-<input id="ibp" value="${config.iterationBranchPrefix || 'task'}" placeholder="task" ${disabled}>
-<h5>迭代目录前缀（ASCII，默认 task）</h5>
-<input id="iwp" value="${config.iterationWorktreePrefix || config.iterationBranchPrefix || 'task'}" placeholder="task" ${disabled}>
 <h5>迭代目录最大长度（24-120，默认 52）</h5>
 <input id="iwl" type="number" min="24" max="120" value="${config.iterationWorktreeNameMaxLength || 52}" ${disabled}>
 <div class="toggle-row">
@@ -2282,7 +2283,7 @@ function switchGitMode(m){
     if(tx)tx.classList.toggle('active',m==='multi');
 }
 switchGitMode(gitMode);
-function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,am:document.getElementById('am').checked,dcm:document.getElementById('dcm').value,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,ibp:document.getElementById('ibp').value,iwp:document.getElementById('iwp').value,ins:document.getElementById('ins').checked,iwl:parseInt(document.getElementById('iwl').value)||52,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
+function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,am:document.getElementById('am').checked,dcm:document.getElementById('dcm').value,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,ins:document.getElementById('ins').checked,iwl:parseInt(document.getElementById('iwl').value)||52,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
 function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
 function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
 function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}

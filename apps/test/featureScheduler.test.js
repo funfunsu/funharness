@@ -560,4 +560,52 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
 
         scheduler.stopWatching();
     });
+
+    test('parses 新建输出/改造输出 into newFiles/modifiedFiles and filters 无 placeholder', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        const specDir = path.join(tmpDir, 'specs');
+        fs.mkdirSync(specDir, { recursive: true });
+        const taskPlanPath = path.join(specDir, 'tasks.md');
+        fs.writeFileSync(taskPlanPath, [
+            '- [doing] 1.1 新增检查点行为表单并接线',
+            '  - Owner: Frontend',
+            '  - 输出: apps/web/src/components/CheckpointBehaviorForm.vue',
+            '  - 新建输出: apps/web/src/components/CheckpointBehaviorForm.vue',
+            '  - 改造输出: apps/web/src/views/CheckpointManagement.vue',
+            '  - 验收: 编辑弹窗表单能记录开发配置',
+            '  - 追踪: Req-1',
+            '',
+            '- [ ] 1.2 纯新建无接线',
+            '  - Owner: Backend',
+            '  - 新建输出: apps/api/src/Foo.java',
+            '  - 改造输出: 无',
+            '',
+        ].join('\n'), 'utf8');
+
+        const { vscodeMock } = createVscodeMock();
+        const FeatureScheduler = loadFeatureScheduler(vscodeMock);
+        const scheduler = new FeatureScheduler(
+            tmpDir,
+            tmpDir,
+            { ...DEFAULT_CONFIG, devConversationMode: 'single', specRootDir: 'specs' },
+            async () => {},
+            () => {},
+            () => 'dev system prompt'
+        );
+
+        const subTasks = scheduler.parseSubFeaturesMd();
+        const t11 = subTasks.find(t => t.id === '1.1');
+        const t12 = subTasks.find(t => t.id === '1.2');
+
+        assert.deepEqual(t11.newFiles, ['apps/web/src/components/CheckpointBehaviorForm.vue']);
+        assert.deepEqual(t11.modifiedFiles, ['apps/web/src/views/CheckpointManagement.vue']);
+        // output is the union used by downstream dispatch/gate.
+        assert.ok(t11.output.includes('apps/web/src/views/CheckpointManagement.vue'));
+
+        assert.deepEqual(t12.newFiles, ['apps/api/src/Foo.java']);
+        // The 无 placeholder must be filtered so it never reaches the path gate.
+        assert.deepEqual(t12.modifiedFiles, []);
+        assert.equal(t12.output.includes('无'), false);
+    });
 });
