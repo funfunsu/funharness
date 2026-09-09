@@ -1,6 +1,6 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-09-09T09:09:58.660Z
+- generatedAt: 2026-09-09T09:15:44.528Z
 - taskId: task_1786002617570
 - taskName: AI快捷对话
 - gateLevel: standard
