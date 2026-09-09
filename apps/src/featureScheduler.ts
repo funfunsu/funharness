@@ -57,6 +57,32 @@ export class FeatureScheduler {
             .filter(Boolean);
     }
 
+    // Drops "none" placeholder tokens (无 / none / - ...) so wiring fields never pollute output paths.
+    private filterWiringEntries(entries: string[]): string[] {
+        return entries.filter(entry => {
+            const token = this.stripCommonPathWrappers(entry).toLowerCase();
+            return !/^(?:\(none\)|none|n\/a|na|无|无新文件|无改造|\(无\)|-|—|\/)$/.test(token);
+        });
+    }
+
+    // Renders the dispatched output list, labelling new files and wiring (modified) files distinctly.
+    private renderOutputFilesSection(subTask: SubFeature): string {
+        const classified = new Set([...subTask.newFiles, ...subTask.modifiedFiles]);
+        const parts: string[] = [];
+        for (const f of subTask.newFiles) {
+            parts.push(`- ${f}（新建）`);
+        }
+        for (const f of subTask.modifiedFiles) {
+            parts.push(`- ${f}（改造/接线：必须接入既有主干，不得留下孤儿新件）`);
+        }
+        for (const f of subTask.output) {
+            if (!classified.has(f)) {
+                parts.push(`- ${f}`);
+            }
+        }
+        return parts.join('\n');
+    }
+
     private stripCommonPathWrappers(value: string): string {
         let normalized = String(value || '').trim();
         if (!normalized) {
@@ -188,6 +214,8 @@ export class FeatureScheduler {
                     depends: [],
                     input: '',
                     output: [],
+                    newFiles: [],
+                    modifiedFiles: [],
                     acceptance: [],
                     requirementIds: [],
                     propertyIds: [],
@@ -215,6 +243,18 @@ export class FeatureScheduler {
                 const val = trimmed.replace(/^- 输出[：:]/, '').trim();
                 if (val) current.output.push(...this.splitOutputEntries(val));
                 currentField = 'output';
+            } else if (trimmed.startsWith('- 新建输出:') || trimmed.startsWith('- 新建输出：')) {
+                const val = trimmed.replace(/^- 新建输出[：:]/, '').trim();
+                const entries = this.filterWiringEntries(val ? this.splitOutputEntries(val) : []);
+                current.newFiles.push(...entries);
+                current.output.push(...entries);
+                currentField = 'newFiles';
+            } else if (trimmed.startsWith('- 改造输出:') || trimmed.startsWith('- 改造输出：')) {
+                const val = trimmed.replace(/^- 改造输出[：:]/, '').trim();
+                const entries = this.filterWiringEntries(val ? this.splitOutputEntries(val) : []);
+                current.modifiedFiles.push(...entries);
+                current.output.push(...entries);
+                currentField = 'modifiedFiles';
             } else if (trimmed.startsWith('- 验收:') || trimmed.startsWith('- 验收：')) {
                 currentField = 'acceptance';
             } else if (trimmed.startsWith('- 追踪:') || trimmed.startsWith('- 追踪：')) {
@@ -229,6 +269,14 @@ export class FeatureScheduler {
                 currentField = 'tracking';
             } else if (trimmed.startsWith('- ') && currentField === 'output') {
                 current.output.push(...this.splitOutputEntries(trimmed.replace(/^- /, '')));
+            } else if (trimmed.startsWith('- ') && currentField === 'newFiles') {
+                const entries = this.filterWiringEntries(this.splitOutputEntries(trimmed.replace(/^- /, '')));
+                current.newFiles.push(...entries);
+                current.output.push(...entries);
+            } else if (trimmed.startsWith('- ') && currentField === 'modifiedFiles') {
+                const entries = this.filterWiringEntries(this.splitOutputEntries(trimmed.replace(/^- /, '')));
+                current.modifiedFiles.push(...entries);
+                current.output.push(...entries);
             } else if (trimmed.startsWith('- ') && currentField === 'acceptance') {
                 current.acceptance.push(trimmed.replace(/^- /, ''));
             } else if (trimmed.startsWith('- Requirements:') && currentField === 'tracking') {
@@ -311,7 +359,7 @@ export class FeatureScheduler {
         const instructionContext = this.buildProjectInstructionContext();
 
         const outputFiles = subTask.output.length > 0
-            ? subTask.output.map(f => `- ${f}`).join('\n')
+            ? this.renderOutputFilesSection(subTask)
             : '- (按任务描述生成对应文件)';
 
         const acceptanceCriteria = subTask.acceptance.length > 0

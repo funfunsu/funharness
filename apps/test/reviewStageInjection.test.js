@@ -290,11 +290,88 @@ describe('AI 快捷对话渲染覆盖基线', () => {
         });
 
         assert.ok(html.includes('runAiQuickChatButton'));
+        assert.ok(html.includes('AI快捷交互区'));
         assert.ok(html.includes('总结'));
         assert.ok(html.includes("runAiQuickChatButton('t-1','aqc_3')"));
         assert.ok(!html.includes('必须过滤'));
         assert.ok(!html.includes('紧急问询'));
         assert.ok(html.includes('action-btn--neutral'));
+    });
+
+    test('GIVEN 未配置 AI 快捷按钮 WHEN 渲染任务卡片 THEN 不显示 AI快捷交互区', () => {
+        const { buildMainPageHtml } = require('../out/webviewTemplates');
+        const html = buildMainPageHtml([
+            {
+                task: { id: 't-1', name: '任务', desc: 'desc', stage: 'writing_requirement', worktreePath: '/tmp/demo', autoAdvanceEnabled: true, autoRepairEnabled: true },
+                stats: { total: 1, todo: 1, doing: 0, done: 0, failed: 0 },
+                subTasks: [],
+                isAuto: false,
+                artifacts: { requirements: true, design: true, testcase: true, tasks: true, testScript: false },
+                health: {
+                    severity: 'good',
+                    summary: '正常',
+                    worktreeExists: true,
+                    frontendExists: false,
+                    backendExists: false,
+                    mainFrontendExists: false,
+                    mainBackendExists: false,
+                    branchRouteReady: true,
+                    mergeRouteReady: true,
+                },
+                taskOutputPathWarnings: [],
+            },
+        ], {}, {
+            compactTaskDecomposition: false,
+            isWorktreeSubview: false,
+            aiProvider: 'copilot-chat',
+            customButtons: [{ id: 'cb_1', name: '脚本按钮', command: 'echo ok' }],
+            aiQuickChatButtons: [],
+            autoPollEnabled: false,
+        });
+
+        assert.ok(!html.includes('AI快捷交互区'));
+        assert.ok(!html.includes("runAiQuickChatButton('t-1'"));
+        assert.ok(html.includes('runCustomButton'));
+    });
+
+    test('GIVEN 旁路与 AI 快捷按钮同时存在 WHEN 渲染任务卡片 THEN AI快捷交互区位于旁路操作区下方', () => {
+        const { buildMainPageHtml } = require('../out/webviewTemplates');
+        const html = buildMainPageHtml([
+            {
+                task: { id: 't-1', name: '任务', desc: 'desc', stage: 'writing_requirement', worktreePath: '/tmp/demo', autoAdvanceEnabled: true, autoRepairEnabled: true },
+                stats: { total: 1, todo: 1, doing: 0, done: 0, failed: 0 },
+                subTasks: [],
+                isAuto: false,
+                artifacts: { requirements: true, design: true, testcase: true, tasks: true, testScript: false },
+                health: {
+                    severity: 'good',
+                    summary: '正常',
+                    worktreeExists: true,
+                    frontendExists: false,
+                    backendExists: false,
+                    mainFrontendExists: false,
+                    mainBackendExists: false,
+                    branchRouteReady: true,
+                    mergeRouteReady: true,
+                },
+                taskOutputPathWarnings: [],
+            },
+        ], {}, {
+            compactTaskDecomposition: false,
+            isWorktreeSubview: false,
+            aiProvider: 'copilot-chat',
+            customButtons: [{ id: 'cb_1', name: '脚本按钮', command: 'echo ok' }],
+            aiQuickChatButtons: [{ id: 'aqc_1', label: '总结', content: '请总结当前任务' }],
+            autoPollEnabled: false,
+        });
+
+        const sideLabelIndex = html.indexOf('旁路操作');
+        const aiLabelIndex = html.indexOf('AI快捷交互区');
+
+        assert.ok(sideLabelIndex >= 0);
+        assert.ok(aiLabelIndex > sideLabelIndex);
+        assert.ok(html.includes("runCustomButton('t-1','cb_1')"));
+        assert.ok(html.includes("runAiQuickChatButton('t-1','aqc_1')"));
     });
 });
 

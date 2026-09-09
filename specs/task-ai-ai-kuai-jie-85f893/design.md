@@ -74,9 +74,11 @@ flowchart LR
      - buttons: AiQuickChatButtonInput[]
    - response:
      - oneOf:
-       - { ok: true }
+       - { ok: true, buttons: AiQuickChatButton[] }
        - { ok: false, readonlyRejected: true, message: string }
        - { ok: false, validationErrors: AiQuickChatValidationIssue[] }
+   - notes:
+     - 成功保存时回传归一化后的按钮集合（含生成的 id 与 order），供 Webview 立即回显；失败分支不含 buttons。
 
 2. API-2
    - domain: ai-quick-chat
@@ -124,9 +126,9 @@ flowchart LR
    - requirementIds: [Req-5]
    - interface: `syncAiQuickChatButtonsToWorktrees`
    - request:
-     - sourceConfig: ConfigSnapshot
+     - buttons: AiQuickChatButtonInput[]
    - response:
-     - syncedWorktreeCount: number
+     - void（逐个 worktree 快照就地写入，失败快照静默跳过，不阻断主保存）
 
 ### 3.2 派发适配契约（Resolution Contract）
 为避免与既有派发主流程冲突，`runAiQuickChatButton` 到 `aiDispatchService.dispatch` 的映射固定如下：
@@ -359,6 +361,7 @@ apiContracts:
     response:
       oneOf:
         - ok: true
+          buttons: AiQuickChatButton[]
         - ok: false
           readonlyRejected: true
           message: string
@@ -410,9 +413,9 @@ apiContracts:
     method: SYNC
     path: syncAiQuickChatButtonsToWorktrees
     request:
-      sourceConfig: ConfigSnapshot
+      buttons: AiQuickChatButtonInput[]
     response:
-      syncedWorktreeCount: number
+      void: true
 models:
   - id: Model-1
     domain: ai-quick-chat

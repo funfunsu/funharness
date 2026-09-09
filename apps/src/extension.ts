@@ -982,8 +982,6 @@ class Harness {
         this.config.devConversationMode = msg.dcm === 'single' ? 'single' : 'batch';
         this.config.compactTaskDecomposition = msg.cm;
         this.config.autoDetectTaskSplitMode = msg.ad;
-        this.config.iterationBranchPrefix = (msg.ibp || '').trim() || 'task';
-        this.config.iterationWorktreePrefix = (msg.iwp || '').trim() || this.config.iterationBranchPrefix || 'task';
         this.config.iterationNamingSemantic = msg.ins !== false;
         this.config.iterationWorktreeNameMaxLength = Math.max(24, Math.min(120, Math.floor(Number(msg.iwl) || 52)));
         this.config.simpleTaskKeywords = msg.sk;

@@ -24,11 +24,18 @@ Never violate a higher-priority rule to satisfy a lower-priority rule.
 8. `{{testcasePath}}` and `{{testManifestPath}}` are OPTIONAL context in this stage; when they are missing, continue normal task planning based on requirements/design and do not treat them as blockers.
 9. Task decomposition must preserve canonical domain mapping from requirements/design; do not create new domain names.
 10. Do not generate tasks that perform AI-based free-form capability summarization in worktree stage.
-11. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
+11. Any task that produces a NEW component/service/file MUST list its caller/reference (接线交付物) in `改造输出`/`modifiedFiles`：新件必须回答“被谁调用/引用”，并把那个既有接入点文件列入 `改造输出`。禁止只产出孤儿新件。
+12. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
 
 ## OPTIONAL TEST INPUT POLICY (MANDATORY)
 1. The workflow must support direct `design -> tasks` planning.
 2.  You may add test-related tasks only when they are logically required by requirements/design, not solely because testcase artifacts are absent.
+
+## INTEGRATION WIRING CONTRACT (MANDATORY)
+1. 每个任务的输出区分两类：`新建输出`（newFiles，本任务新建的文件）与 `改造输出`（modifiedFiles，必须改动的既有文件）。
+2. 凡是产出新组件/新服务/新模块的任务，`改造输出` 不得为空：必须包含将其接入既有主干的调用方/引用方文件（如真实编辑弹窗组件、主流程服务类）。
+3. 接线交付物必须与设计阶段的集成接缝清单（Integration Points）逐条对应；设计中每个新节点的入边坐标，都应在某个任务的 `改造输出` 里出现。
+4. 仅新建文件、无任何改造输出的“新能力”任务，视为缺失接缝，必须补齐接线输出后才能交付。
 
 ## OUTPUT PATH CONTRACT (MANDATORY)
 1. `输出` 字段必须填写“仓库相对路径”（relative path from repo root），不得使用自然语言描述替代路径。
@@ -76,6 +83,8 @@ If mandatory constraints fail (missing design/requirements context, impossible d
   - Owner: Frontend | Backend | FullStack
   - 输入: [{{designPath}} 对应章节]
   - 输出: [仓库相对路径列表（仅路径，不含任何说明文字）]
+  - 新建输出: [本任务新建的文件路径；无则写 无]
+  - 改造输出: [必须改造的既有文件路径（新件的调用方/引用方/接入点）；无则写 无]
   - 验收: [可验证完成标准]
   - 追踪: Requirements + Properties
 ## 机器可读区
@@ -90,6 +99,8 @@ tasks:
     dependsOn: []
     inputs: [{{designPath}}#3.1]
     outputs: [api/example.ts]
+    newFiles: [api/example.ts]
+    modifiedFiles: [src/mainFlow.ts]
     requirementIds: [Req-1]
 ```
 
@@ -113,3 +124,4 @@ Completion is valid only when all are true:
 6. No unrelated files are modified.
 7. Execution is idempotent (re-run does not create conflicting task IDs/states).
 8. Domain fields are canonical and consistent with requirements/design context.
+9. Every task that introduces a new component/service/file carries a non-empty `改造输出`/`modifiedFiles` listing the caller/reference that wires it into the existing mainline; no orphan-producing task is emitted.

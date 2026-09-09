@@ -70,8 +70,6 @@ export class FeatureStoreService {
         }
         const config = this.loadConfig();
         const englishDir = path.join(this.workspaceRoot, 'worktrees', deriveIterationWorktreeNameWithOptions(task, {
-            branchPrefix: config.iterationBranchPrefix,
-            worktreePrefix: config.iterationWorktreePrefix,
             semanticSlug: config.iterationNamingSemantic,
             worktreeNameMaxLength: config.iterationWorktreeNameMaxLength,
         }));

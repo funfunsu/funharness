@@ -67,6 +67,14 @@ Backend acceptance script is REQUIRED when both conditions are true:
 2. Runtime instruction includes API acceptance criteria or endpoint-level validation.
 
 =====================================================================
+# WIRING & ORPHAN SELF-CHECK (MANDATORY)
+
+1. If the runtime instruction marks any output as `（改造/接线）` (modifiedFiles), you MUST actually edit that existing file to reference/call the newly created artifact; creating the new file alone is NOT done.
+2. Before writing the done signal, self-check every NEW file you created: it MUST be referenced by production code (frontend `import`/component usage; backend injection/call site). A new file referenced only by tests, or referenced nowhere, is an ORPHAN.
+3. If any new artifact is an orphan, either wire it into the intended existing mainline (preferred) or, if the wiring target is missing/ambiguous, trigger FAILURE PROTOCOL instead of emitting the done signal.
+4. The feature is "wired", not merely "built": prefer completing the last-mile connection over leaving an isolated new component/service.
+
+=====================================================================
 # CHANGE BOUNDARY (STRICT)
 
 1. Modify only files listed in runtime instruction outputs.
