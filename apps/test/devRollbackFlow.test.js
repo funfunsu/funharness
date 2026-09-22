@@ -156,10 +156,11 @@ describe('开发回退链路覆盖基线', () => {
         const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
         const actionsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'harnessActionsService.ts'), 'utf8');
 
-        assert.equal(html.includes('关闭 Spec 漂移自动修复'), true);
+        assert.equal(html.includes('关闭漂移自动修复'), true);
         assert.equal(html.includes("type:'setSpecDriftRepair'"), true);
         assert.equal(messagesSource.includes("| { type: 'setSpecDriftRepair'; id: string; enabled: boolean }"), true);
         assert.equal(controllerSource.includes("case 'setSpecDriftRepair':"), true);
+        assert.match(controllerSource, /case 'setFeatureAutomation':\r?\n\s+case 'setSpecDriftRepair':/);
         assert.equal(extensionSource.includes('setSpecDriftRepair: (featureId, enabled) => this.actionsService.setSpecDriftRepairByFeatureId(featureId, enabled),'), true);
         assert.equal(actionsSource.includes('setSpecDriftRepairByFeatureId(featureId: string, enabled: boolean): void'), true);
     });

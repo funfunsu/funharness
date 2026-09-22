@@ -432,6 +432,12 @@ export interface Config {
      */
     monorepoGit: string;
     /**
+     * Optional secondary remote URL. When non-empty, every push to the target baseline branch
+     * (main repo, monorepo or multi-repo) is mirrored to this remote as well, best-effort — a
+     * mirror push failure is logged but never fails the primary git operation.
+     */
+    githubMirrorGit: string;
+    /**
      * Subfolder names inside a monorepo checkout, used for "open folder" navigation and structure
      * detection only (NOT injected into AI prompts). Empty values fall back to the defaults.
      */
@@ -787,6 +793,7 @@ export const DEFAULT_CONFIG: Config = {
     frontendGit: '',
     backendGit: '',
     monorepoGit: '',
+    githubMirrorGit: '',
     monorepoDirs: { ...DEFAULT_MONOREPO_DIRS },
     baseBranch: '',
     mergeDryRunEnabled: true,

@@ -313,7 +313,12 @@ export class GitService {
     }
 
     private async ensureMainRepo(remote: string, repoDir: string, baseBranch: string, requireExactBaseBranch: boolean): Promise<{ success: boolean; baseBranch?: string }> {
-        if (fs.existsSync(repoDir) && fs.existsSync(path.join(repoDir, '.git'))) {
+        const isUsableRepo = fs.existsSync(repoDir) && (await this.execCmd('git rev-parse --is-inside-work-tree', repoDir));
+        if (fs.existsSync(repoDir) && fs.existsSync(path.join(repoDir, '.git')) && !isUsableRepo) {
+            this.logGit(`主仓库 Git 元数据损坏或不完整，删除后重新克隆：${repoDir}`);
+            this.safeRemovePath(repoDir, { recursive: true });
+        }
+        if (isUsableRepo) {
             // Verify the configured remote URL matches what is actually cloned here.
             // If it doesn't (e.g., left-over from an old git-init style setup), wipe and re-clone.
             const urlOut = await this.execCmdOutput('git remote get-url origin', repoDir);
@@ -324,7 +329,8 @@ export class GitService {
                 this.safeRemovePath(repoDir, { recursive: true });
             }
         }
-        if (!fs.existsSync(repoDir) || !fs.existsSync(path.join(repoDir, '.git'))) {
+        const repoReady = fs.existsSync(repoDir) && (await this.execCmd('git rev-parse --is-inside-work-tree', repoDir));
+        if (!repoReady) {
             fs.mkdirSync(path.dirname(repoDir), { recursive: true });
             this.logGitToRoot(`正在克隆仓库（可能需要几分钟）：${remote} → ${repoDir}`);
             const cloned = await this.execCmd(`git clone ${remote} "${repoDir}"`, this.workspaceRoot || path.dirname(repoDir));
@@ -846,7 +852,7 @@ export class GitService {
             return { success: false, message: '无法识别迭代分支名' };
         }
 
-        type RepoCtx = { kind: 'frontend' | 'backend' | 'mono'; label: string; mainDir: string; worktreeDir: string };
+        type RepoCtx = { kind: 'frontend' | 'backend' | 'mono'; label: string; remote: string; mainDir: string; worktreeDir: string };
         const repos: RepoCtx[] = this.resolveRepoDescriptors(iterationDir);
 
         // Quick check: skip the entire pipeline when no worktree has uncommitted changes
@@ -910,7 +916,7 @@ export class GitService {
         // the user's work is preserved on origin/<sourceBranch>.
         const sourceShas: Record<string, string> = {};
         for (const repo of repos) {
-            const prep = await this.prepareIterationForMerge(repo.worktreeDir, sourceBranch, task);
+            const prep = await this.prepareIterationForMerge(repo.worktreeDir, repo.remote, sourceBranch, task);
             if (!prep.ok) {
                 return {
                     success: false,
@@ -971,9 +977,17 @@ export class GitService {
      * Returns the verified source SHA so the caller can later assert it is an ancestor of the
      * target branch after merge.
      */
-    private async prepareIterationForMerge(worktreeDir: string, sourceBranch: string, task: Feature): Promise<{ ok: boolean; reason?: string; sha?: string }> {
+    private async prepareIterationForMerge(worktreeDir: string, remoteUrl: string, sourceBranch: string, task: Feature): Promise<{ ok: boolean; reason?: string; sha?: string }> {
         if (!fs.existsSync(worktreeDir)) {
             return { ok: false, reason: `worktree 目录不存在：${worktreeDir}` };
+        }
+
+        const originUrl = await this.execCmdOutput('git remote get-url origin', worktreeDir);
+        if (!originUrl.success) {
+            const addedOrigin = await this.execCmd(`git remote add origin ${remoteUrl}`, worktreeDir);
+            if (!addedOrigin) {
+                return { ok: false, reason: `迭代 worktree 缺少 origin，且无法补充主仓库远程：${this.lastExecError}` };
+            }
         }
 
         const branchErr = await this.assertExpectedBranch(worktreeDir, sourceBranch);
@@ -1147,7 +1161,62 @@ export class GitService {
             };
         }
 
+        // Best-effort mirror push: never fails the primary operation, since origin is already
+        // confirmed pushed and verified above.
+        await this.pushToMirror(repoDir, targetBranch);
+
         return { ok: true };
+    }
+
+    /**
+     * If a secondary mirror remote is configured, ensure it exists and push `branch` to it.
+     * Failures are logged but swallowed — the primary origin push is the source of truth.
+     */
+    private async pushToMirror(repoDir: string, branch: string): Promise<void> {
+        const mirrorUrl = (this.config.githubMirrorGit || '').trim();
+        if (!mirrorUrl) {
+            return;
+        }
+        // Reuse a remote the user may have already added manually (e.g. `git remote add
+        // old-origin <url>`) instead of creating a duplicate "mirror" remote pointing at the
+        // same URL.
+        const remoteName = await this.findRemoteByUrl(repoDir, mirrorUrl) || 'mirror';
+        const existing = await this.execCmdOutput(`git remote get-url ${remoteName}`, repoDir);
+        if (!existing.success || this.normaliseRemoteUrl(existing.stdout) !== this.normaliseRemoteUrl(mirrorUrl)) {
+            const setUp = existing.success
+                ? await this.execCmd(`git remote set-url ${remoteName} ${mirrorUrl}`, repoDir)
+                : await this.execCmd(`git remote add ${remoteName} ${mirrorUrl}`, repoDir);
+            if (!setUp) {
+                this.logGit(`镜像仓库推送跳过：无法配置远端 ${remoteName} -> ${mirrorUrl}：${this.lastExecError}`);
+                return;
+            }
+        }
+        const pushed = await this.execCmd(`git push ${remoteName} ${branch}`, repoDir);
+        if (!pushed) {
+            this.logGit(`镜像仓库推送失败（不影响主流程）：${remoteName}(${mirrorUrl}) ${branch}：${this.lastExecError}`);
+            return;
+        }
+        this.logGit(`镜像仓库推送成功：${remoteName}(${mirrorUrl}) ${branch}`);
+    }
+
+    private normaliseRemoteUrl(u: string): string {
+        return u.trim().replace(/\.git$/, '').replace(/\/$/, '').toLowerCase();
+    }
+
+    /** Returns the name of an existing remote whose URL matches `url`, or null if none does. */
+    private async findRemoteByUrl(repoDir: string, url: string): Promise<string | null> {
+        const list = await this.execCmdOutput('git remote', repoDir);
+        if (!list.success) {
+            return null;
+        }
+        const names = list.stdout.split('\n').map(s => s.trim()).filter(Boolean);
+        for (const name of names) {
+            const urlOut = await this.execCmdOutput(`git remote get-url ${name}`, repoDir);
+            if (urlOut.success && this.normaliseRemoteUrl(urlOut.stdout) === this.normaliseRemoteUrl(url)) {
+                return name;
+            }
+        }
+        return null;
     }
 
     private async cleanupMergedBranch(mainRepoDir: string, worktreeDir: string, sourceBranch: string, targetBranch: string): Promise<{ ok: boolean; reason?: string }> {
