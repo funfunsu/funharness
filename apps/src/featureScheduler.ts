@@ -862,7 +862,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     async dispatchNext(iterTask: Feature, completedTaskId?: string): Promise<boolean> {
         const next = this.getNextSubFeature();
         if (next) {
-            if (await this.shouldPauseAtBatchBoundary(completedTaskId, next.id)) {
+            if (await this.shouldPauseAtBatchBoundary(completedTaskId, next.id, iterTask)) {
                 this.autoMode = false;
                 this.onStatusChange();
                 return false;
@@ -891,7 +891,15 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         return match ? match[1] : null;
     }
 
-    private async shouldPauseAtBatchBoundary(completedTaskId: string | undefined, nextTaskId: string): Promise<boolean> {
+    // Controls whether crossing a batch boundary (e.g. 1.x -> 2.x) needs a manual confirmation dialog.
+    private isBatchAutoAdvanceEnabled(task: Feature): boolean {
+        if (typeof task.autoAdvanceEnabled === 'boolean') {
+            return task.autoAdvanceEnabled;
+        }
+        return this.config.autoAdvanceEnabled;
+    }
+
+    private async shouldPauseAtBatchBoundary(completedTaskId: string | undefined, nextTaskId: string, iterTask: Feature): Promise<boolean> {
         if (this.config.devConversationMode === 'single') {
             return false;
         }
@@ -899,6 +907,11 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         const fromBatch = this.getBatchId(completedTaskId);
         const toBatch = this.getBatchId(nextTaskId);
         if (!fromBatch || !toBatch || fromBatch === toBatch) {
+            return false;
+        }
+
+        if (this.isBatchAutoAdvanceEnabled(iterTask)) {
+            this.writeLog(nextTaskId, `✅ 批次自动推进已开启，自动进入下一批次：${fromBatch}.x -> ${toBatch}.x`);
             return false;
         }
 
@@ -914,7 +927,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         }
 
         this.writeLog(nextTaskId, `⏸ 跨批次等待人工确认：${fromBatch}.x -> ${toBatch}.x`);
-        vscode.window.showInformationMessage(`已暂停在批次边界（${fromBatch}.x -> ${toBatch}.x）。完成 keep 后点击“开始自动执行”继续。`);
+        vscode.window.showInformationMessage(`已暂停在批次边界（${fromBatch}.x -> ${toBatch}.x）。完成 keep 后点击“开始自动执行”继续，或开启“批次自动推进”以跳过该确认。`);
         return true;
     }
 

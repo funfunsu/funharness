@@ -1,23 +1,23 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-09-09T09:15:44.528Z
+- generatedAt: 2026-09-22T10:16:49.046Z
 - taskId: task_1786002617570
 - taskName: AI快捷对话
 - gateLevel: standard
-- totalChanges: 4
-- blockedByGate: 1
+- totalChanges: 6
+- blockedByGate: 2
 
 ## Executive Summary
 
-- highRiskChanges: 1
-- mediumRiskChanges: 3
+- highRiskChanges: 2
+- mediumRiskChanges: 4
 - lowRiskChanges: 0
 
 ## Domain Index
 
 | domain | total | high | medium | low | blocked |
 | --- | --- | --- | --- | --- | --- |
-| uncategorized | 4 | 1 | 3 | 0 | 1 |
+| uncategorized | 6 | 2 | 4 | 0 | 2 |
 
 ## Domain Sections
 
@@ -36,4 +36,12 @@
 - [2026-09-09T09:09:58.656Z] [dev] [medium] Development drift gate passed
   - DEV-DRIFT-003: 检测到测试脚本/测试代码变更，但 testcase.md 未更新
   - changedFiles=21
+- [2026-09-22T03:17:38.703Z] [dev] [high] Development drift gate blocked
+  - DEV-DRIFT-001: 开发验收阶段检测到代码变更，但 requirements/design/testcase/tasks 未同步更新
+  - DEV-DRIFT-002: 检测到契约敏感代码变更（controller/route/dto/schema/model），但 design.md 未更新
+  - DEV-DRIFT-003: 检测到测试脚本/测试代码变更，但 testcase.md 未更新
+  - changedFiles=12
+- [2026-09-22T10:16:49.039Z] [dev] [medium] Development drift gate passed
+  - DEV-DRIFT-003: 检测到测试脚本/测试代码变更，但 testcase.md 未更新
+  - changedFiles=16
 

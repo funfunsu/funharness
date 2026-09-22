@@ -91,8 +91,10 @@ export interface Feature {
     iterationBranch?: string;
     /** The single baseline branch this iteration was created from and merges back into. */
     baseBranchUsed?: string;
+    /** When true, crossing a batch boundary (e.g. 1.x -> 2.x) auto-proceeds without a manual confirmation dialog. */
     autoAdvanceEnabled?: boolean;
-    autoRepairEnabled?: boolean;
+    /** When false, skip Spec Drift validation and repair dispatch before this task is submitted or merged. */
+    specDriftRepairEnabled?: boolean;
     aiProvider?: string;
     /** When true, the task skips requirements/design/testcase/task-split and goes directly to DEVELOPING. */
     quickMode?: boolean;
@@ -446,8 +448,8 @@ export interface Config {
     codingStandards: string;
     projectConventions: string;
     maxConcurrentAutoTasks: number;
+    /** Global default for batch-boundary auto-advance; overridable per-feature via Feature.autoAdvanceEnabled. */
     autoAdvanceEnabled: boolean;
-    autoRepairEnabled: boolean;
     autoContinueAfterManualDone: boolean;
     /** Development conversation scope mode: one session per batch (1.x/2.x) or one session for all subtasks. */
     devConversationMode: 'batch' | 'single';
@@ -793,7 +795,6 @@ export const DEFAULT_CONFIG: Config = {
     projectConventions: '',
     maxConcurrentAutoTasks: 2,
     autoAdvanceEnabled: true,
-    autoRepairEnabled: true,
     autoContinueAfterManualDone: true,
     devConversationMode: 'batch',
     compactTaskDecomposition: false,

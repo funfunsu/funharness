@@ -53,7 +53,7 @@ flowchart LR
 1. Route-MSG-1 `saveAiQuickChatButtons`
    - 方向：Webview -> Extension
    - 目的：提交 AI 快捷对话按钮配置集合。
-   - 绑定需求：Req-1, Req-2, Req-5。
+   - 绑定需求：Req-1, Req-2, Req--5。
 2. Route-MSG-2 `runAiQuickChatButton`
    - 方向：Webview -> Extension
    - 目的：在当前任务会话上下文触发按钮关联对话内容发送。
