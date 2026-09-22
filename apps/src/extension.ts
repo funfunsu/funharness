@@ -349,7 +349,8 @@ class Harness {
                 pauseAuto: (featureId) => this.actionsService.pauseAutoByFeatureId(featureId),
                 nextFeature: async (featureId) => this.actionsService.nextFeatureByFeatureId(featureId),
                 retryFeature: async (featureId, subId) => this.actionsService.retryFeatureByFeatureId(featureId, subId),
-                setFeatureAutomation: (featureId, aa, ar) => this.actionsService.setFeatureAutomationByFeatureId(featureId, aa, ar),
+                setFeatureAutomation: (featureId, aa) => this.actionsService.setFeatureAutomationByFeatureId(featureId, aa),
+                setSpecDriftRepair: (featureId, enabled) => this.actionsService.setSpecDriftRepairByFeatureId(featureId, enabled),
                 setFeatureAiProvider: (featureId, ap) => {
                     const feature = this.features.find(t => t.id === featureId);
                     if (feature) {

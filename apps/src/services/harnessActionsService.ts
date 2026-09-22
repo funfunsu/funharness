@@ -67,15 +67,7 @@ export class HarnessActionsService {
     private domainRegistryService?: DomainRegistryService;
     /** Prevent duplicate prompt dispatch for the same (task, step) while one is in-flight. */
     private readonly inFlightStageDispatchKeys: Set<string> = new Set();
-    private readonly lastAutoRepairAt: Map<string, number> = new Map();
-    private readonly lastAutoRepairSignature: Map<string, string> = new Map();
-    private readonly repairingKeys: Set<string> = new Set();
     private readonly artifactRepairTimers: Map<string, NodeJS.Timeout> = new Map();
-    /** Per (task:step) count of auto-repair attempts, for max-retry + human escalation. */
-    private readonly repairAttempts: Map<string, number> = new Map();
-    /** Keys that exhausted auto-repair and were escalated to a human gate. */
-    private readonly escalatedRepairKeys: Set<string> = new Set();
-    private static readonly MAX_AUTO_REPAIR_ATTEMPTS = 3;
     private static readonly DOMAIN_BLOCK_AUTO_FIX = '自动补';
     private static readonly DOMAIN_BLOCK_MANUAL_FIX = '去处理';
 
@@ -151,10 +143,13 @@ export class HarnessActionsService {
     /**
      * Run the drift gate and:
      * - If passed: show warnings (non-blocking) and return true.
-     * - If blocked and autoRepair on: silently dispatch a repair prompt, then return false.
-     * - If blocked and autoRepair off: show modal error with one-click dispatch option, return false.
+     * - If blocked: show modal error with one-click dispatch option, return false.
      */
     private async runDevDriftGateWithRepair(task: Feature): Promise<boolean> {
+        if (task.specDriftRepairEnabled === false) {
+            return true;
+        }
+
         const iterDir = this.deps.getIterationDir(task);
         const result = this.getSpecDeltaService().evaluateDriftGate(task, iterDir);
 
@@ -165,22 +160,7 @@ export class HarnessActionsService {
             return true;
         }
 
-        const cfg = this.deps.getConfig();
-        const autoRepair = this.isTaskAutoRepairEnabled(task, cfg);
         const repairPrompt = this.buildDriftRepairPrompt(task, iterDir, result.errors);
-
-        if (autoRepair) {
-            vscode.window.showInformationMessage(
-                `Spec Delta 漂移已检测，正在自动派发文档修复 Agent（${result.errors.length} 个问题）…`,
-            );
-            try {
-                await this.deps.dispatchAi(repairPrompt, iterDir, 'stage-agent', task.aiProvider);
-            } catch (error) {
-                const msg = error instanceof Error ? error.message : String(error);
-                vscode.window.showWarningMessage(`自动修复派发失败：${msg}，请手动点击 Spec 评审后修复`);
-            }
-            return false;
-        }
 
         const briefErrors = result.errors.slice(0, 3).join('；');
         const choice = await vscode.window.showErrorMessage(
@@ -427,7 +407,7 @@ export class HarnessActionsService {
             taskSplitMode: inferredSplitMode,
             stage: STAGE.INITIALIZING,
             autoAdvanceEnabled: true,
-            autoRepairEnabled: true,
+            specDriftRepairEnabled: true,
             quickMode: Boolean(quickMode),
         };
         this.deps.getFeatures().push(newTask);
@@ -470,7 +450,7 @@ export class HarnessActionsService {
             taskSplitMode: inferredSplitMode,
             stage: STAGE.INITIALIZING,
             autoAdvanceEnabled: true,
-            autoRepairEnabled: true,
+            specDriftRepairEnabled: true,
             quickMode: false,
         };
 
@@ -604,11 +584,17 @@ export class HarnessActionsService {
         this.updateFeatureDescByFeatureId(featureId, input);
     }
 
-    setFeatureAutomationByFeatureId(featureId: string, aa: boolean, ar: boolean): void {
+    setFeatureAutomationByFeatureId(featureId: string, aa: boolean): void {
         const task = this.getFeatureById(featureId);
         if (!task) return;
         task.autoAdvanceEnabled = aa;
-        task.autoRepairEnabled = ar;
+        this.deps.saveAndRender();
+    }
+
+    setSpecDriftRepairByFeatureId(featureId: string, enabled: boolean): void {
+        const task = this.getFeatureById(featureId);
+        if (!task) return;
+        task.specDriftRepairEnabled = enabled;
         this.deps.saveAndRender();
     }
 
@@ -634,7 +620,7 @@ export class HarnessActionsService {
         }
         const iterDir = this.deps.getIterationDir(task);
         vscode.window.showInformationMessage('正在提交并合并到基线...');
-        const result = await this.deps.gitService.mergeIterationToTarget(task, iterDir, { cleanup: false });
+        const result = await this.deps.gitService.mergeIterationToTarget(task, iterDir, { cleanup: false, operation: 'save' });
         if (!result.success) {
             const lines = (result.message || '未知错误').split('\n');
             const brief = lines[0];
@@ -1377,11 +1363,9 @@ export class HarnessActionsService {
 
             const validation = this.validateStageArtifact(task, step);
             if (!validation.valid) {
-                await this.tryAutoRepair(task, step, validation.errors);
                 continue;
             }
 
-            this.clearRepairState(task, step);
             if (step === 'tcs') task.stage = STAGE.WRITING_TASKS;
             changed = true;
         }
@@ -1419,7 +1403,7 @@ export class HarnessActionsService {
             vscode.window.showInformationMessage(finalGate.summary);
         }
 
-        const mergeResult = await this.deps.gitService.mergeIterationToTarget(task, iterDir);
+        const mergeResult = await this.deps.gitService.mergeIterationToTarget(task, iterDir, { operation: 'complete' });
         if (!mergeResult.success) {
             const detail = mergeResult.message || '未知错误';
             const lines = detail.split('\n');
@@ -1797,34 +1781,20 @@ export class HarnessActionsService {
         await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(review.digestPath));
 
         if (!review.passed) {
-            const cfg = this.deps.getConfig();
-            const autoRepair = this.isTaskAutoRepairEnabled(task, cfg);
             const repairPrompt = this.buildDriftRepairPrompt(task, iterDir, review.errors);
 
-            if (autoRepair) {
-                vscode.window.showInformationMessage(
-                    `Spec 评审发现漂移，正在自动派发文档修复 Agent（${review.errors.length} 个问题）\u2026`,
-                );
+            const choice = await vscode.window.showWarningMessage(
+                `Spec 评审发现漂移问题（${review.errors.length} 个），详情已打开`,
+                { modal: true, detail: review.errors.slice(0, 5).join('\\n') },
+                '派发修复 Agent',
+            );
+            if (choice === '派发修复 Agent') {
                 try {
                     await this.deps.dispatchAi(repairPrompt, iterDir, 'stage-agent', task.aiProvider);
+                    vscode.window.showInformationMessage('已派发 Spec 文档修复 Agent，请在 AI 完成后重新评审');
                 } catch (error) {
                     const msg = error instanceof Error ? error.message : String(error);
-                    vscode.window.showWarningMessage(`自动修复派发失败：${msg}，请手动修复后重试`);
-                }
-            } else {
-                const choice = await vscode.window.showWarningMessage(
-                    `Spec 评审发现漂移问题（${review.errors.length} 个），详情已打开`,
-                    { modal: true, detail: review.errors.slice(0, 5).join('\\n') },
-                    '派发修复 Agent',
-                );
-                if (choice === '派发修复 Agent') {
-                    try {
-                        await this.deps.dispatchAi(repairPrompt, iterDir, 'stage-agent', task.aiProvider);
-                        vscode.window.showInformationMessage('已派发 Spec 文档修复 Agent，请在 AI 完成后重新评审');
-                    } catch (error) {
-                        const msg = error instanceof Error ? error.message : String(error);
-                        vscode.window.showWarningMessage(`修复派发失败：${msg}`);
-                    }
+                    vscode.window.showWarningMessage(`修复派发失败：${msg}`);
                 }
             }
             return;
@@ -2419,90 +2389,6 @@ export class HarnessActionsService {
         return required === true;
     }
 
-    private async tryAutoRepair(task: Feature, step: Exclude<HarnessStep, 'dev'>, errors: string[]): Promise<void> {
-        const cfg = this.deps.getConfig();
-        if (!this.isTaskAutoRepairEnabled(task, cfg)) {
-            return;
-        }
-
-        const key = `${task.id}:${step}`;
-        if (this.repairingKeys.has(key)) {
-            return;
-        }
-
-        // Already escalated to a human gate: stop auto-looping until a human intervenes.
-        if (this.escalatedRepairKeys.has(key)) {
-            return;
-        }
-
-        const signature = this.buildArtifactSignature(task, step, errors);
-        const lastSig = this.lastAutoRepairSignature.get(key);
-        if (lastSig === signature) {
-            return;
-        }
-
-        const now = Date.now();
-        const last = this.lastAutoRepairAt.get(key) || 0;
-        if (now - last < 10000) {
-            return;
-        }
-
-        const attempts = (this.repairAttempts.get(key) || 0) + 1;
-        if (attempts > HarnessActionsService.MAX_AUTO_REPAIR_ATTEMPTS) {
-            this.escalateRepair(task, step, errors);
-            return;
-        }
-        this.repairAttempts.set(key, attempts);
-
-        this.lastAutoRepairAt.set(key, now);
-        this.lastAutoRepairSignature.set(key, signature);
-        this.repairingKeys.add(key);
-
-        try {
-            const feedback = this.buildRepairFeedbackContent(step, attempts, errors);
-            await this.runAgentByFeatureId(task.id, step, feedback);
-            vscode.window.showInformationMessage(
-                `已触发自动回修（第 ${attempts}/${HarnessActionsService.MAX_AUTO_REPAIR_ATTEMPTS} 次）：${task.name} ${step}（${errors.slice(0, 2).join('；')}）`
-            );
-        } finally {
-            this.repairingKeys.delete(key);
-        }
-    }
-
-    /** Escalate to a human gate after exhausting auto-repair attempts (no silent stop). */
-    private escalateRepair(task: Feature, step: Exclude<HarnessStep, 'dev'>, errors: string[]): void {
-        const key = `${task.id}:${step}`;
-        this.escalatedRepairKeys.add(key);
-        const detail = errors.slice(0, 5).map((e) => `• ${e}`).join('\n');
-        vscode.window.showWarningMessage(
-            `自动回修已达上限（${HarnessActionsService.MAX_AUTO_REPAIR_ATTEMPTS} 次），需人工介入：${task.name} ${step.toUpperCase()}`,
-            { modal: false, detail }
-        );
-        appendHarnessLog(
-            this.deps.getIterationDir(task),
-            'auto-repair',
-            `escalated ${key} after ${HarnessActionsService.MAX_AUTO_REPAIR_ATTEMPTS} attempts: ${errors.join(' | ')}`
-        );
-    }
-
-    /** Reset repair bookkeeping once a stage validates cleanly (or a human re-triggers it). */
-    private clearRepairState(task: Feature, step: Exclude<HarnessStep, 'dev'>): void {
-        const key = `${task.id}:${step}`;
-        this.repairAttempts.delete(key);
-        this.escalatedRepairKeys.delete(key);
-        this.lastAutoRepairSignature.delete(key);
-    }
-
-    /** Compose the runtime "回修指令" appended to a regenerated prompt so repair is targeted. */
-    private buildRepairFeedbackContent(step: Exclude<HarnessStep, 'dev'>, attempt: number, errors: string[]): string {
-        const list = errors.map((e, i) => `${i + 1}. ${e}`).join('\n');
-        return [
-            `本次为第 ${attempt} 次自动回修。上一版 ${step.toUpperCase()} 产物未通过机器门禁，请针对以下失败项做最小修正，并保持其余内容稳定：`,
-            list,
-            '要求：只修复上述问题，不要重写无关章节；确保机器可读 YAML 区与追溯 ID 闭环（无悬空引用、无未覆盖需求）。',
-        ].join('\n');
-    }
-
     /** Wrap repair feedback as a clearly-delimited section for injection into the agent query. */
     private buildRepairFeedbackSection(repairFeedback?: string): string {
         const trimmed = (repairFeedback || '').trim();
@@ -2510,21 +2396,6 @@ export class HarnessActionsService {
             return '';
         }
         return `\n\n---\n## 回修指令（最高优先，针对性修复）\n${trimmed}`;
-    }
-
-    private buildArtifactSignature(task: Feature, step: Exclude<HarnessStep, 'dev'>, errors: string[]): string {
-        const fileNameMap = {
-            req: 'requirements.md',
-            des: 'design.md',
-            tcs: 'testcase.md',
-        } as const;
-        const iterDir = this.deps.getIterationDir(task);
-        const file = step === 'tsk'
-            ? this.resolveTaskPlanFile(iterDir)
-            : getSpecFile(iterDir, this.deps.getConfig(), fileNameMap[step]);
-        const statPart = fs.existsSync(file) ? `mtime:${fs.statSync(file).mtimeMs}` : 'missing';
-        const errPart = errors.slice(0, 3).join('|');
-        return `${statPart}|${errPart}`;
     }
 
     private resolveTaskPlanFile(iterDir: string): string {
@@ -2731,13 +2602,6 @@ export class HarnessActionsService {
             return task.autoAdvanceEnabled;
         }
         return this.deps.getConfig().autoAdvanceEnabled;
-    }
-
-    private isTaskAutoRepairEnabled(task: Feature, cfg?: Config): boolean {
-        if (typeof task.autoRepairEnabled === 'boolean') {
-            return task.autoRepairEnabled;
-        }
-        return (cfg || this.deps.getConfig()).autoRepairEnabled;
     }
 
     private resolveFeatureSplitMode(task: Feature): 'standard' | 'compact' {

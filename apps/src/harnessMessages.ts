@@ -110,7 +110,8 @@ export type HarnessMessage =
     | { type: 'nextFeature'; id: string }
     | { type: 'retryFeature'; id: string; subId: string }
     | { type: 'setSubFeatureStatus'; id: string; subId: string; status: 'todo' | 'doing' | 'done' | 'failed' }
-    | { type: 'setFeatureAutomation'; id: string; aa: boolean; ar: boolean }
+    | { type: 'setFeatureAutomation'; id: string; aa: boolean }
+    | { type: 'setSpecDriftRepair'; id: string; enabled: boolean }
     | { type: 'setFeatureAiProvider'; id: string; ap: string }
     | { type: 'openFolderLocation'; id: string; location: 'worktree' | 'frontend' | 'backend' | 'mainFrontend' | 'mainBackend' | 'mono' | 'mainMono' }
     | { type: 'openArtifact'; id: string; artifact: 'requirements' | 'design' | 'testcase' | 'tasks' | 'testScript' }

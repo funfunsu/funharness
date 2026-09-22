@@ -831,16 +831,17 @@ export class GitService {
         return { ok: true };
     }
 
-    async mergeIterationToTarget(task: Feature, iterationDir: string, options: { cleanup?: boolean } = {}): Promise<{ success: boolean; message: string; cleanupComplete?: boolean }> {
+    async mergeIterationToTarget(task: Feature, iterationDir: string, options: { cleanup?: boolean; operation?: 'save' | 'complete' } = {}): Promise<{ success: boolean; message: string; cleanupComplete?: boolean }> {
         this.currentLogDir = iterationDir;
         const cleanup = options.cleanup !== false;
+        const operation = options.operation || (cleanup ? 'complete' : 'save');
         // Single, consistent baseline resolution (task base → config baseline → main). Previously
         // this read only config.baseBranch and silently returned success when empty, which is why
         // "提交代码" sometimes appeared to succeed without merging.
         const target = this.resolveBaseBranch(task);
 
         const sourceBranch = this.deriveBranchName(task);
-        this.logGit(`=== 提交代码/合并到基线 开始：task="${task.name}" source=${sourceBranch} target=${target} cleanup=${cleanup} ===`);
+        this.logGit(`=== 提交代码/合并到基线 开始：task="${task.name}" source=${sourceBranch} target=${target} operation=${operation} cleanup=${cleanup} ===`);
         if (!sourceBranch) {
             return { success: false, message: '无法识别迭代分支名' };
         }
@@ -913,8 +914,7 @@ export class GitService {
             if (!prep.ok) {
                 return {
                     success: false,
-                    message: `[${repo.label}] 迭代分支同步到远程失败：${prep.reason}\n\n` +
-                        `本地 worktree 和迭代分支均未变更，请处理后重试。`,
+                    message: `[${repo.label}] 迭代分支同步到远程失败：${prep.reason}`,
                 };
             }
             sourceShas[repo.kind] = prep.sha || '';

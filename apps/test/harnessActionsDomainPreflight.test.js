@@ -114,7 +114,6 @@ function createServiceHarness(tmpDir, userChoice) {
         stage: STAGE.WRITING_REQUIREMENT,
         quickMode: false,
         autoAdvanceEnabled: true,
-        autoRepairEnabled: false,
         aiProvider: 'copilot-chat',
     };
     const features = [feature];
@@ -209,7 +208,6 @@ describe('领域预检阻断与引导', () => {
             stage: STAGE.DEVELOPING,
             quickMode: false,
             autoAdvanceEnabled: true,
-            autoRepairEnabled: false,
             aiProvider: 'copilot-chat',
         };
 
@@ -264,7 +262,6 @@ describe('领域预检阻断与引导', () => {
             stage: STAGE.WRITING_REQUIREMENT,
             quickMode: false,
             autoAdvanceEnabled: true,
-            autoRepairEnabled: false,
             aiProvider: 'copilot-chat',
         };
         const features = [feature];

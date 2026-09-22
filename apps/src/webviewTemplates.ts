@@ -698,7 +698,7 @@ ${visibleTaskViews.map(view => {
     const artifacts = view.artifacts;
     const health = view.health;
     const taskAutoAdvance = t.autoAdvanceEnabled !== false;
-    const taskAutoRepair = t.autoRepairEnabled === true;
+    const taskSpecDriftRepair = t.specDriftRepairEnabled !== false;
     const effectiveSplitMode = config.compactTaskDecomposition ? 'compact' : (t.taskSplitMode || 'standard');
     const artifactStatus = [
         `REQ:${artifacts.requirements ? 'Y' : 'N'}`,
@@ -792,10 +792,10 @@ ${outputWarningsPreview.length > 0 ? `<div class="task-status" style="color:#ffb
 <div class="task-progress"><div class="progress-bar" style="width:${view.pct}%"></div></div>
 <div style="font-size:12px">进度：${view.pct}%</div>` : ''}
 ${isWorktreeSubview ? `<div class="config-actions" style="margin-top:6px">
-<button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
-<button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
+<button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${!taskAutoAdvance})">${taskAutoAdvance ? '⛔ 关闭批次自动推进' : '▶ 开启批次自动推进'}</button>
+<button class="action-btn action-btn--neutral" onclick="setSpecDriftRepair('${t.id}',${!taskSpecDriftRepair})">${taskSpecDriftRepair ? '⛔ 关闭漂移自动修复' : '▶ 开启漂移自动修复'}</button>
 </div>
-<div class="task-status">任务自动化：推进 ${taskAutoAdvance ? '开' : '关'} / 回修 ${taskAutoRepair ? '开' : '关'}</div>` : ''}
+<div class="task-status">任务自动化：批次自动推进 ${taskAutoAdvance ? '开' : '关'}；Spec 漂移自动修复 ${taskSpecDriftRepair ? '开' : '关'}</div>` : ''}
 <div class="toggle-row" style="margin:6px 0">
 <span style="font-size:12px">AI 执行器</span>
 <select style="width:auto;margin:0;padding:4px 6px;font-size:11px;background:#2c2c2e;color:#fff;border:none;border-radius:6px" onchange="setFeatureAiProvider('${t.id}',this.value)">
@@ -812,10 +812,9 @@ ${!isWorktreeSubview ? `<details class="task-config">
 <div class="task-status">迭代分支：${t.iterationBranch || '-'}</div>
 <div class="health-line"><span class="health-badge ${healthClass}">${healthLabel}</span><span class="task-status">${healthStatus}</span></div>
 <div class="task-status">文档：${artifactStatus}</div>
-<div class="task-status">任务自动化：推进 ${taskAutoAdvance ? '开' : '关'} / 回修 ${taskAutoRepair ? '开' : '关'}</div>
+<div class="task-status">任务自动化：批次自动推进 ${taskAutoAdvance ? '开' : '关'}</div>
 <div class="config-actions">
-<button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${!taskAutoAdvance},${taskAutoRepair})">${taskAutoAdvance ? '⛔ 关闭自动推进' : '▶ 开启自动推进'}</button>
-<button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${taskAutoAdvance},${!taskAutoRepair})">${taskAutoRepair ? '⛔ 关闭自动回修' : '🛠 开启自动回修'}</button>
+<button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${!taskAutoAdvance})">${taskAutoAdvance ? '⛔ 关闭批次自动推进' : '▶ 开启批次自动推进'}</button>
 </div>
 </div>
 </details>` : ''}
@@ -1901,7 +1900,8 @@ function commitFeatureDescEditor(id){
 function resetFeature(id){v.postMessage({type:'resetFeature',id})}
 function openArtifact(id,artifact){v.postMessage({type:'openArtifact',id,artifact})}
 function openFolderLocation(id,location){v.postMessage({type:'openFolderLocation',id,location})}
-function setFeatureAutomation(id,aa,ar){v.postMessage({type:'setFeatureAutomation',id,aa,ar})}
+function setFeatureAutomation(id,aa){v.postMessage({type:'setFeatureAutomation',id,aa})}
+function setSpecDriftRepair(id,enabled){v.postMessage({type:'setSpecDriftRepair',id,enabled})}
 function setFeatureAiProvider(id,ap){v.postMessage({type:'setFeatureAiProvider',id,ap})}
 function pushDev(id){v.postMessage({type:'pushAndNextStage',id})}
 function specReview(id){v.postMessage({type:'specDeltaReview',id})}

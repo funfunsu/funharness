@@ -87,7 +87,8 @@ interface HarnessMessageControllerDeps {
     nextFeature: (featureId: string) => Promise<void>;
     retryFeature: (featureId: string, subId: string) => Promise<void>;
     setSubFeatureStatus: (featureId: string, subId: string, status: 'todo' | 'doing' | 'done' | 'failed') => Promise<void>;
-    setFeatureAutomation: (featureId: string, aa: boolean, ar: boolean) => void;
+    setFeatureAutomation: (featureId: string, aa: boolean) => void;
+    setSpecDriftRepair: (featureId: string, enabled: boolean) => void;
     setFeatureAiProvider: (featureId: string, ap: string) => void;
     openFolderLocation: (featureId: string, location: Extract<HarnessMessage, { type: 'openFolderLocation' }>['location']) => Promise<void>;
     openArtifact: (featureId: string, artifact: Extract<HarnessMessage, { type: 'openArtifact' }>['artifact']) => Promise<void>;
@@ -715,7 +716,10 @@ export class HarnessMessageController {
                 await this.deps.setSubFeatureStatus(msg.id, msg.subId, msg.status);
                 return;
             case 'setFeatureAutomation':
-                this.deps.setFeatureAutomation(msg.id, msg.aa, msg.ar);
+                this.deps.setFeatureAutomation(msg.id, msg.aa);
+                return;
+            case 'setSpecDriftRepair':
+                this.deps.setSpecDriftRepair(msg.id, msg.enabled);
                 return;
             case 'setFeatureAiProvider':
                 this.deps.setFeatureAiProvider(msg.id, msg.ap);

@@ -84,7 +84,6 @@ function buildTaskView() {
             stage: STAGE.DEVELOPING,
             quickMode: false,
             autoAdvanceEnabled: true,
-            autoRepairEnabled: false,
             aiProvider: 'copilot',
         },
         stats: { todo: 0, doing: 0, done: 0, failed: 0, total: 0 },

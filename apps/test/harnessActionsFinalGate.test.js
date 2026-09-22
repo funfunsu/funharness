@@ -74,7 +74,7 @@ function loadHarnessActionsService(vscodeMock) {
     }
 }
 
-function createServiceHarness(tmpDir, overrideConfig = {}, sink = {}) {
+function createServiceHarness(tmpDir, overrideConfig = {}, sink = {}, mergeResult = { success: true, message: '', cleanupComplete: false }) {
     const feature = {
         id: 'feature-1',
         name: 'feature 1',
@@ -85,14 +85,16 @@ function createServiceHarness(tmpDir, overrideConfig = {}, sink = {}) {
 
     const calls = {
         merge: 0,
+        mergeOptions: [],
         onPass: 0,
         saveAndRender: 0,
     };
 
     const gitService = {
-        async mergeIterationToTarget() {
+        async mergeIterationToTarget(_task, _iterDir, options) {
             calls.merge += 1;
-            return { success: true, message: '', cleanupComplete: false };
+            calls.mergeOptions.push(options || {});
+            return mergeResult;
         },
     };
 
@@ -154,6 +156,68 @@ describe('最终执行门禁回归覆盖基线', () => {
 
         const sink = { errors: [], infos: [] };
         const { service, feature, calls } = createServiceHarness(tmpDir, { gateLevel: 'standard' }, sink);
+
+        await service.passByFeatureId(feature.id);
+
+        assert.equal(calls.merge, 1);
+        assert.equal(calls.mergeOptions[0].operation, 'complete');
+        assert.equal(feature.stage, STAGE.DONE);
+        assert.equal(calls.onPass, 1);
+        assert.equal(sink.errors.length, 0);
+    });
+
+    test('keeps task pending and shows the real preparation failure', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+
+        const sink = { errors: [], infos: [] };
+        const { service, feature, calls } = createServiceHarness(
+            tmpDir,
+            { gateLevel: 'standard' },
+            sink,
+            { success: false, message: '[frontend] 迭代分支同步到远程失败：推送失败' },
+        );
+
+        await service.passByFeatureId(feature.id);
+
+        assert.equal(calls.merge, 1);
+        assert.equal(calls.mergeOptions[0].operation, 'complete');
+        assert.equal(feature.stage, STAGE.READY_FOR_REVIEW);
+        assert.equal(calls.onPass, 0);
+        assert.equal(calls.saveAndRender, 0);
+        assert.equal(sink.errors.some(msg => msg.includes('推送失败')), true);
+        assert.equal(sink.errors.some(msg => msg.includes('均未变更')), false);
+    });
+
+    test('uses save operation without cleanup for intermediate baseline commit', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+
+        const sink = { errors: [], infos: [] };
+        const { service, feature, calls } = createServiceHarness(tmpDir, {}, sink);
+
+        await service.commitToBaselineByFeatureId(feature.id);
+
+        assert.equal(calls.merge, 1);
+        assert.deepEqual(calls.mergeOptions[0], { cleanup: false, operation: 'save' });
+        assert.equal(feature.stage, STAGE.READY_FOR_REVIEW);
+        assert.equal(calls.onPass, 0);
+        assert.equal(sink.errors.length, 0);
+    });
+
+    test('skips Spec Drift evaluation and repair when the task toggle is disabled', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+
+        const sink = { errors: [], infos: [] };
+        const { service, feature, calls } = createServiceHarness(tmpDir, {}, sink);
+        feature.specDriftRepairEnabled = false;
+        service.runDevDriftGateWithRepair = require('../out/services/harnessActionsService').HarnessActionsService.prototype.runDevDriftGateWithRepair;
+        service.getSpecDeltaService = () => ({
+            evaluateDriftGate() {
+                throw new Error('Spec Drift evaluation should be skipped');
+            },
+        });
 
         await service.passByFeatureId(feature.id);
 

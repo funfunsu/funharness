@@ -82,7 +82,6 @@ function buildDevelopingTaskView() {
             stage: STAGE.DEVELOPING,
             quickMode: false,
             autoAdvanceEnabled: true,
-            autoRepairEnabled: false,
             aiProvider: 'copilot-chat',
         },
         stats: { todo: 1, doing: 0, done: 1, failed: 0, total: 2 },
@@ -142,6 +141,27 @@ describe('开发回退链路覆盖基线', () => {
 
         assert.equal(html.includes('>回滚</button>'), true);
         assert.equal(html.includes("type:'rollbackDev'"), true);
+    });
+
+    test('worktree task card renders the Spec Drift repair toggle and message chain', () => {
+        const html = buildMainPageHtml([buildDevelopingTaskView()], {}, {
+            compactTaskDecomposition: false,
+            isWorktreeSubview: true,
+            aiProvider: 'copilot-chat',
+            customButtons: [],
+            autoPollEnabled: false,
+        });
+        const messagesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'harnessMessages.ts'), 'utf8');
+        const controllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'harnessMessageController.ts'), 'utf8');
+        const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
+        const actionsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'harnessActionsService.ts'), 'utf8');
+
+        assert.equal(html.includes('关闭 Spec 漂移自动修复'), true);
+        assert.equal(html.includes("type:'setSpecDriftRepair'"), true);
+        assert.equal(messagesSource.includes("| { type: 'setSpecDriftRepair'; id: string; enabled: boolean }"), true);
+        assert.equal(controllerSource.includes("case 'setSpecDriftRepair':"), true);
+        assert.equal(extensionSource.includes('setSpecDriftRepair: (featureId, enabled) => this.actionsService.setSpecDriftRepairByFeatureId(featureId, enabled),'), true);
+        assert.equal(actionsSource.includes('setSpecDriftRepairByFeatureId(featureId: string, enabled: boolean): void'), true);
     });
 
     test('renders output-path warning text when task output has annotation suffix', () => {
@@ -294,7 +314,6 @@ describe('开发回退链路覆盖基线', () => {
             stage: STAGE.WRITING_TASKS,
             quickMode: false,
             autoAdvanceEnabled: true,
-            autoRepairEnabled: true,
             aiProvider: 'copilot-chat',
         };
         const features = [feature];
@@ -304,7 +323,7 @@ describe('开发回退链路覆盖基线', () => {
         const HarnessActionsService = loadHarnessActionsService(vscodeMock);
         const service = new HarnessActionsService({
             getFeatures: () => features,
-            getConfig: () => ({ ...DEFAULT_CONFIG, specRootDir: 'specs', autoAdvanceEnabled: true, autoRepairEnabled: true }),
+            getConfig: () => ({ ...DEFAULT_CONFIG, specRootDir: 'specs', autoAdvanceEnabled: true }),
             getMasterRoot: () => tmpDir,
             getIterationDir: () => tmpDir,
             ensureIterationDir: () => {},

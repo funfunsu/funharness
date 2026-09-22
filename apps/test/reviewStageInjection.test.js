@@ -258,7 +258,7 @@ describe('AI 快捷对话渲染覆盖基线', () => {
         const { buildMainPageHtml } = require('../out/webviewTemplates');
         const html = buildMainPageHtml([
             {
-                task: { id: 't-1', name: '任务', desc: 'desc', stage: 'writing_requirement', worktreePath: '/tmp/demo', autoAdvanceEnabled: true, autoRepairEnabled: true },
+                task: { id: 't-1', name: '任务', desc: 'desc', stage: 'writing_requirement', worktreePath: '/tmp/demo', autoAdvanceEnabled: true },
                 stats: { total: 1, todo: 1, doing: 0, done: 0, failed: 0 },
                 subTasks: [],
                 isAuto: false,
@@ -302,7 +302,7 @@ describe('AI 快捷对话渲染覆盖基线', () => {
         const { buildMainPageHtml } = require('../out/webviewTemplates');
         const html = buildMainPageHtml([
             {
-                task: { id: 't-1', name: '任务', desc: 'desc', stage: 'writing_requirement', worktreePath: '/tmp/demo', autoAdvanceEnabled: true, autoRepairEnabled: true },
+                task: { id: 't-1', name: '任务', desc: 'desc', stage: 'writing_requirement', worktreePath: '/tmp/demo', autoAdvanceEnabled: true },
                 stats: { total: 1, todo: 1, doing: 0, done: 0, failed: 0 },
                 subTasks: [],
                 isAuto: false,
@@ -338,7 +338,7 @@ describe('AI 快捷对话渲染覆盖基线', () => {
         const { buildMainPageHtml } = require('../out/webviewTemplates');
         const html = buildMainPageHtml([
             {
-                task: { id: 't-1', name: '任务', desc: 'desc', stage: 'writing_requirement', worktreePath: '/tmp/demo', autoAdvanceEnabled: true, autoRepairEnabled: true },
+                task: { id: 't-1', name: '任务', desc: 'desc', stage: 'writing_requirement', worktreePath: '/tmp/demo', autoAdvanceEnabled: true },
                 stats: { total: 1, todo: 1, doing: 0, done: 0, failed: 0 },
                 subTasks: [],
                 isAuto: false,

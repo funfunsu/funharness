@@ -539,7 +539,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         const scheduler = new FeatureScheduler(
             tmpDir,
             tmpDir,
-            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: true, devConversationMode: 'batch', specRootDir: 'specs' },
+            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: true, devConversationMode: 'batch', autoAdvanceEnabled: false, specRootDir: 'specs' },
             async (query) => {
                 dispatched.push(query);
             },
@@ -557,6 +557,38 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         assert.equal(scheduler.isAutoMode(), false);
         assert.equal(dispatched.length, 0);
         assert.match(fs.readFileSync(taskPlanPath, 'utf8'), /\[ \]\s*2\.1/);
+
+        scheduler.stopWatching();
+    });
+
+    test('auto-advances across batch boundary without a dialog when batch auto-advance is enabled', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        const taskPlanPath = writeTaskPlan(tmpDir);
+        const { vscodeMock, watchers } = createVscodeMock();
+        const FeatureScheduler = loadFeatureScheduler(vscodeMock);
+        const dispatched = [];
+        const scheduler = new FeatureScheduler(
+            tmpDir,
+            tmpDir,
+            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: true, devConversationMode: 'batch', autoAdvanceEnabled: true, specRootDir: 'specs' },
+            async (query) => {
+                dispatched.push(query);
+            },
+            () => {},
+            () => 'dev system prompt'
+        );
+
+        await scheduler.startAuto(createFeature());
+
+        const updated = fs.readFileSync(taskPlanPath, 'utf8').replace('[doing] 1.5', '[x] 1.5');
+        fs.writeFileSync(taskPlanPath, updated, 'utf8');
+        await triggerTaskPlanChange(watchers, taskPlanPath);
+
+        assert.equal(scheduler.getCurrentSubFeature()?.id, '2.1');
+        assert.equal(scheduler.isAutoMode(), true);
+        assert.equal(dispatched.length, 1);
+        assert.match(fs.readFileSync(taskPlanPath, 'utf8'), /\[doing\]\s*2\.1/);
 
         scheduler.stopWatching();
     });
