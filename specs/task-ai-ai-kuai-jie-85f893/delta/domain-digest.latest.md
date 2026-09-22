@@ -1,15 +1,15 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-09-22T10:35:45.827Z
+- generatedAt: 2026-09-22T10:40:01.562Z
 - taskId: task_1786002617570
 - taskName: AI快捷对话
 - gateLevel: standard
-- totalChanges: 8
-- blockedByGate: 3
+- totalChanges: 9
+- blockedByGate: 4
 
 ## Executive Summary
 
-- highRiskChanges: 3
+- highRiskChanges: 4
 - mediumRiskChanges: 4
 - lowRiskChanges: 1
 
@@ -17,7 +17,7 @@
 
 | domain | total | high | medium | low | blocked |
 | --- | --- | --- | --- | --- | --- |
-| uncategorized | 8 | 3 | 4 | 1 | 3 |
+| uncategorized | 9 | 4 | 4 | 1 | 4 |
 
 ## Domain Sections
 
@@ -50,4 +50,7 @@
   - changedFiles=6
 - [2026-09-22T10:35:45.824Z] [dev] [low] Development drift gate passed
   - changedFiles=11
+- [2026-09-22T10:40:01.559Z] [dev] [high] Development drift gate blocked
+  - DEV-DRIFT-001: 开发验收阶段检测到代码变更，但 requirements/design/testcase/tasks 未同步更新
+  - changedFiles=1
 

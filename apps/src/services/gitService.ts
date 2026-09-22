@@ -846,7 +846,7 @@ export class GitService {
             return { success: false, message: '无法识别迭代分支名' };
         }
 
-        type RepoCtx = { kind: 'frontend' | 'backend' | 'mono'; label: string; mainDir: string; worktreeDir: string };
+        type RepoCtx = { kind: 'frontend' | 'backend' | 'mono'; label: string; remote: string; mainDir: string; worktreeDir: string };
         const repos: RepoCtx[] = this.resolveRepoDescriptors(iterationDir);
 
         // Quick check: skip the entire pipeline when no worktree has uncommitted changes
@@ -910,7 +910,7 @@ export class GitService {
         // the user's work is preserved on origin/<sourceBranch>.
         const sourceShas: Record<string, string> = {};
         for (const repo of repos) {
-            const prep = await this.prepareIterationForMerge(repo.worktreeDir, sourceBranch, task);
+            const prep = await this.prepareIterationForMerge(repo.worktreeDir, repo.remote, sourceBranch, task);
             if (!prep.ok) {
                 return {
                     success: false,
@@ -971,9 +971,17 @@ export class GitService {
      * Returns the verified source SHA so the caller can later assert it is an ancestor of the
      * target branch after merge.
      */
-    private async prepareIterationForMerge(worktreeDir: string, sourceBranch: string, task: Feature): Promise<{ ok: boolean; reason?: string; sha?: string }> {
+    private async prepareIterationForMerge(worktreeDir: string, remoteUrl: string, sourceBranch: string, task: Feature): Promise<{ ok: boolean; reason?: string; sha?: string }> {
         if (!fs.existsSync(worktreeDir)) {
             return { ok: false, reason: `worktree 目录不存在：${worktreeDir}` };
+        }
+
+        const originUrl = await this.execCmdOutput('git remote get-url origin', worktreeDir);
+        if (!originUrl.success) {
+            const addedOrigin = await this.execCmd(`git remote add origin ${remoteUrl}`, worktreeDir);
+            if (!addedOrigin) {
+                return { ok: false, reason: `迭代 worktree 缺少 origin，且无法补充主仓库远程：${this.lastExecError}` };
+            }
         }
 
         const branchErr = await this.assertExpectedBranch(worktreeDir, sourceBranch);
