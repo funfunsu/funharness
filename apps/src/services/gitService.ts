@@ -313,7 +313,12 @@ export class GitService {
     }
 
     private async ensureMainRepo(remote: string, repoDir: string, baseBranch: string, requireExactBaseBranch: boolean): Promise<{ success: boolean; baseBranch?: string }> {
-        if (fs.existsSync(repoDir) && fs.existsSync(path.join(repoDir, '.git'))) {
+        const isUsableRepo = fs.existsSync(repoDir) && (await this.execCmd('git rev-parse --is-inside-work-tree', repoDir));
+        if (fs.existsSync(repoDir) && fs.existsSync(path.join(repoDir, '.git')) && !isUsableRepo) {
+            this.logGit(`主仓库 Git 元数据损坏或不完整，删除后重新克隆：${repoDir}`);
+            this.safeRemovePath(repoDir, { recursive: true });
+        }
+        if (isUsableRepo) {
             // Verify the configured remote URL matches what is actually cloned here.
             // If it doesn't (e.g., left-over from an old git-init style setup), wipe and re-clone.
             const urlOut = await this.execCmdOutput('git remote get-url origin', repoDir);
@@ -324,7 +329,8 @@ export class GitService {
                 this.safeRemovePath(repoDir, { recursive: true });
             }
         }
-        if (!fs.existsSync(repoDir) || !fs.existsSync(path.join(repoDir, '.git'))) {
+        const repoReady = fs.existsSync(repoDir) && (await this.execCmd('git rev-parse --is-inside-work-tree', repoDir));
+        if (!repoReady) {
             fs.mkdirSync(path.dirname(repoDir), { recursive: true });
             this.logGitToRoot(`正在克隆仓库（可能需要几分钟）：${remote} → ${repoDir}`);
             const cloned = await this.execCmd(`git clone ${remote} "${repoDir}"`, this.workspaceRoot || path.dirname(repoDir));

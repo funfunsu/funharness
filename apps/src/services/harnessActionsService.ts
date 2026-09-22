@@ -143,7 +143,7 @@ export class HarnessActionsService {
     /**
      * Run the drift gate and:
      * - If passed: show warnings (non-blocking) and return true.
-     * - If blocked: show modal error with one-click dispatch option, return false.
+     * - If blocked and task-level repair is enabled: auto-dispatch the repair Agent (no confirmation), return false.
      */
     private async runDevDriftGateWithRepair(task: Feature): Promise<boolean> {
         if (task.specDriftRepairEnabled === false) {
@@ -161,21 +161,16 @@ export class HarnessActionsService {
         }
 
         const repairPrompt = this.buildDriftRepairPrompt(task, iterDir, result.errors);
-
         const briefErrors = result.errors.slice(0, 3).join('；');
-        const choice = await vscode.window.showErrorMessage(
-            `Spec Delta 漂移门禁阻断：${briefErrors}`,
-            { modal: true, detail: '代码实现与 Spec 文档不一致，需要先更新文档后才能推进。\n\n点击「派发修复 Agent」让 AI 自动更新文档，或手动修改后重试。' },
-            '派发修复 Agent',
-        );
-        if (choice === '派发修复 Agent') {
-            try {
-                await this.deps.dispatchAi(repairPrompt, iterDir, 'stage-agent', task.aiProvider);
-                vscode.window.showInformationMessage('已派发 Spec 文档修复 Agent，请在 AI 完成后重新触发本操作。');
-            } catch (error) {
-                const msg = error instanceof Error ? error.message : String(error);
-                vscode.window.showWarningMessage(`修复派发失败：${msg}`);
-            }
+
+        // Auto-repair is enabled by default (specDriftRepairEnabled !== false), so dispatch
+        // the repair Agent immediately instead of asking the user to confirm every time.
+        try {
+            await this.deps.dispatchAi(repairPrompt, iterDir, 'stage-agent', task.aiProvider);
+            vscode.window.showInformationMessage(`Spec Delta 漂移门禁阻断：${briefErrors}\n已自动派发 Spec 文档修复 Agent，请在 AI 完成后重新触发本操作。`);
+        } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            vscode.window.showWarningMessage(`Spec Delta 漂移门禁阻断：${briefErrors}\n自动修复派发失败：${msg}`);
         }
         return false;
     }
