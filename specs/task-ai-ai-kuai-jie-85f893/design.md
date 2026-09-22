@@ -46,6 +46,7 @@ flowchart LR
 6. `apps/src/services/harnessActionsService.ts`
 7. `apps/src/services/aiDispatchService.ts`
 8. `apps/src/extension.ts`
+9. `apps/src/services/gitService.ts`（`Config.githubMirrorGit` 镜像仓库推送）
 
 ### 2.3 路由设计
 本能力采用 Webview Message Route（非 HTTP）进行契约交互。
@@ -130,6 +131,34 @@ flowchart LR
    - response:
      - void（逐个 worktree 快照就地写入，失败快照静默跳过，不阻断主保存）
 
+7. API-7
+   - domain: ai-quick-chat
+   - requirementIds: [Req-6]
+   - interface: `saveGit`（扩展 `githubMirrorGit` 字段）
+   - request:
+     - frontendGit: string
+     - backendGit: string
+     - baseBranch: string
+     - dryRun: boolean
+     - monorepoGit?: string
+     - monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }
+     - mode?: `mono` | `multi`
+     - githubMirrorGit?: string
+   - response:
+     - void（保存成功后写入 `Config.githubMirrorGit` 并触发 `gitService.setConfig`）
+   - notes:
+     - `githubMirrorGit` 去除首尾空白后持久化；为空字符串表示不启用镜像推送。
+
+8. API-8
+   - domain: ai-quick-chat
+   - requirementIds: [Req-6]
+   - interface: `gitService.pushToMirror`（既有 push 流程内部调用，非独立消息路由）
+   - request:
+     - repoDir: string
+     - branch: string
+   - response:
+     - void（成功/失败均记录 git 日志，失败不改变主 push 的返回结果）
+
 ### 3.2 派发适配契约（Resolution Contract）
 为避免与既有派发主流程冲突，`runAiQuickChatButton` 到 `aiDispatchService.dispatch` 的映射固定如下：
 
@@ -195,6 +224,14 @@ flowchart LR
      - taskId: string
      - iterationDir: string
      - provider: string
+
+6. Model-6 `Config.githubMirrorGit`
+   - domain: ai-quick-chat
+   - requirementIds: [Req-6]
+   - fields:
+     - githubMirrorGit: string
+   - constraints:
+     - 持久化前 `trim()`；空字符串表示未启用镜像推送。
 
 ### 3.4 组件 Props / Events
 1. Component-1 `AiQuickChatSettingsSection`
@@ -286,6 +323,10 @@ flowchart LR
   - domain: ai-quick-chat
   - 规则：AI 快捷对话按钮必须与自定义按钮并列渲染在同一旁路容器，复用相同按钮样式类与布局容器类，不引入独立占位容器。
 
+10. INV-10（Req-6）
+  - domain: ai-quick-chat
+  - 规则：镜像仓库推送必须是尽力而为（best-effort）；镜像推送失败不得影响或回滚主远端（origin）已确认成功的 push 结果，且必须记录日志。
+
 ## 5. 错误处理
 1. 校验错误（Req-1）
    - 触发条件：名称/内容为空白或超长。
@@ -302,6 +343,10 @@ flowchart LR
 4. 加载兼容（Req-2）
    - 触发条件：历史配置缺失 `aiQuickChatButtons`。
    - 处理策略：按空列表处理，保持系统可用。
+
+5. 镜像推送失败（Req-6）
+   - 触发条件：镜像远端配置或 `git push` 失败。
+   - 处理策略：捕获错误并记录 git 日志，不抛出异常、不影响主远端 push 的返回结果。
 
 ## 6. 安全基线
 1. 输入边界校验（Req-1, Req-4）
@@ -344,6 +389,10 @@ flowchart LR
   - 覆盖按钮名称含 HTML 特殊字符时的转义渲染。
   - 覆盖 `content` 含多行/Unicode/模板样式字符时仍按纯文本逐字符派发。
   - 需求映射：Req-3, Req-4。
+
+7. 镜像推送测试
+  - 覆盖 `githubMirrorGit` 持久化、复用既有同 URL 远端、新建远端、推送失败不影响主流程。
+  - 需求映射：Req-6。
 
 ## 8. 机器可读区
 ```yaml
@@ -416,6 +465,32 @@ apiContracts:
       buttons: AiQuickChatButtonInput[]
     response:
       void: true
+  - id: API-7
+    domain: ai-quick-chat
+    requirementIds: [Req-6]
+    method: MESSAGE
+    path: saveGit
+    request:
+      frontendGit: string
+      backendGit: string
+      baseBranch: string
+      dryRun: boolean
+      monorepoGit: string
+      monorepoDirs: object
+      mode: mono|multi
+      githubMirrorGit: string
+    response:
+      void: true
+  - id: API-8
+    domain: ai-quick-chat
+    requirementIds: [Req-6]
+    method: SERVICE_CALL
+    path: gitService.pushToMirror
+    request:
+      repoDir: string
+      branch: string
+    response:
+      void: true
 models:
   - id: Model-1
     domain: ai-quick-chat
@@ -475,6 +550,13 @@ models:
       - name: iterationDir
         type: string
       - name: provider
+        type: string
+  - id: Model-6
+    domain: ai-quick-chat
+    requirementIds: [Req-6]
+    name: Config.githubMirrorGit
+    fields:
+      - name: githubMirrorGit
         type: string
 components:
   - id: Component-1

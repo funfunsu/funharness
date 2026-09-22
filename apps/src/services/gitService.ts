@@ -1147,7 +1147,62 @@ export class GitService {
             };
         }
 
+        // Best-effort mirror push: never fails the primary operation, since origin is already
+        // confirmed pushed and verified above.
+        await this.pushToMirror(repoDir, targetBranch);
+
         return { ok: true };
+    }
+
+    /**
+     * If a secondary mirror remote is configured, ensure it exists and push `branch` to it.
+     * Failures are logged but swallowed — the primary origin push is the source of truth.
+     */
+    private async pushToMirror(repoDir: string, branch: string): Promise<void> {
+        const mirrorUrl = (this.config.githubMirrorGit || '').trim();
+        if (!mirrorUrl) {
+            return;
+        }
+        // Reuse a remote the user may have already added manually (e.g. `git remote add
+        // old-origin <url>`) instead of creating a duplicate "mirror" remote pointing at the
+        // same URL.
+        const remoteName = await this.findRemoteByUrl(repoDir, mirrorUrl) || 'mirror';
+        const existing = await this.execCmdOutput(`git remote get-url ${remoteName}`, repoDir);
+        if (!existing.success || this.normaliseRemoteUrl(existing.stdout) !== this.normaliseRemoteUrl(mirrorUrl)) {
+            const setUp = existing.success
+                ? await this.execCmd(`git remote set-url ${remoteName} ${mirrorUrl}`, repoDir)
+                : await this.execCmd(`git remote add ${remoteName} ${mirrorUrl}`, repoDir);
+            if (!setUp) {
+                this.logGit(`镜像仓库推送跳过：无法配置远端 ${remoteName} -> ${mirrorUrl}：${this.lastExecError}`);
+                return;
+            }
+        }
+        const pushed = await this.execCmd(`git push ${remoteName} ${branch}`, repoDir);
+        if (!pushed) {
+            this.logGit(`镜像仓库推送失败（不影响主流程）：${remoteName}(${mirrorUrl}) ${branch}：${this.lastExecError}`);
+            return;
+        }
+        this.logGit(`镜像仓库推送成功：${remoteName}(${mirrorUrl}) ${branch}`);
+    }
+
+    private normaliseRemoteUrl(u: string): string {
+        return u.trim().replace(/\.git$/, '').replace(/\/$/, '').toLowerCase();
+    }
+
+    /** Returns the name of an existing remote whose URL matches `url`, or null if none does. */
+    private async findRemoteByUrl(repoDir: string, url: string): Promise<string | null> {
+        const list = await this.execCmdOutput('git remote', repoDir);
+        if (!list.success) {
+            return null;
+        }
+        const names = list.stdout.split('\n').map(s => s.trim()).filter(Boolean);
+        for (const name of names) {
+            const urlOut = await this.execCmdOutput(`git remote get-url ${name}`, repoDir);
+            if (urlOut.success && this.normaliseRemoteUrl(urlOut.stdout) === this.normaliseRemoteUrl(url)) {
+                return name;
+            }
+        }
+        return null;
     }
 
     private async cleanupMergedBranch(mainRepoDir: string, worktreeDir: string, sourceBranch: string, targetBranch: string): Promise<{ ok: boolean; reason?: string }> {

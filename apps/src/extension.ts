@@ -328,7 +328,7 @@ class Harness {
                 runStageReview: async (stage, context) => { await this.handleRunStageReview(stage, context); },
                 getLatestReviewStatus: async (stage) => { await this.handleGetLatestReviewStatus(stage); },
                 openCustomConstitution: () => this.handleOpenCustomConstitution(),
-                saveGit: (frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode) => this.handleSaveGit(frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode),
+                saveGit: (frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode, githubMirrorGit) => this.handleSaveGit(frontendGit, backendGit, baseBranch, dryRun, monorepoGit, monorepoDirs, mode, githubMirrorGit),
                 saveAdvancedConfig: (msg) => this.handleSaveAdvancedConfig(msg),
                 initProjectStructure: () => this.handleInitProjectStructure(),
                 applyProjectStructurePreview: () => this.handleApplyProjectStructurePreview(),
@@ -916,7 +916,7 @@ class Harness {
         webview?.postMessage({ type: 'stageReviewStatus', stage, ...result });
     }
 
-    private async handleSaveGit(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi'): Promise<void> {
+    private async handleSaveGit(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi', githubMirrorGit?: string): Promise<void> {
         if (this.configMeta.readOnly) {
             vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改设置');
             return;
@@ -955,6 +955,7 @@ class Harness {
         this.config.backendGit = backendGit;
         this.config.baseBranch = baseBranch;
         this.config.mergeDryRunEnabled = dryRun;
+        this.config.githubMirrorGit = (githubMirrorGit || '').trim();
         this.saveConfig();
         this.gitService.setConfig(this.config);
 

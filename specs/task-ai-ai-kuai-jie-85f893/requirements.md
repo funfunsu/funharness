@@ -19,6 +19,7 @@
 | 旁路操作区 | 面板任务卡片上用于展示自定义按钮/快捷操作的区域 |
 | 快照窗口 | 使用主窗口配置快照的 worktree 子视图窗口，其中配置为只读 |
 | 有效按钮 | 名称与对话内容在去除首尾空白后均非空，且满足长度约束的按钮配置 |
+| 镜像仓库 | 用户在 Git 配置区额外填写的次要远端仓库地址（`githubMirrorGit`），推送基线分支时会尽力同步推送到该地址 |
 
 ## 用户旅程
 
@@ -75,6 +76,17 @@
 1. GIVEN 当前窗口使用的是主窗口配置快照，WHEN 用户尝试保存 AI 快捷对话按钮配置，THEN 保存被拒绝并给出与自定义按钮一致的只读提示，配置不被写入。
 2. GIVEN 主窗口修改并保存了 AI 快捷对话按钮配置，WHEN 配置同步到各 worktree 快照，THEN 快照中的 AI 快捷对话按钮字段与主窗口保持一致（复用现有自定义按钮的同步路径）。
 
+### Req-6：配置镜像仓库地址并在推送基线分支时同步镜像
+
+**用户故事：** 作为配置者，我希望在 Git 配置区额外填写一个镜像仓库地址，以便于在推送基线分支时自动同步一份到该镜像仓库，无需手动重复推送。
+
+#### 验收标准
+1. GIVEN 用户在 Git 配置区填写「镜像仓库地址」并点击保存，WHEN 保存执行完成，THEN 该地址以独立字段（`githubMirrorGit`）随现有 Git 配置一同持久化，其余既有字段值保持不变。
+2. GIVEN 已配置镜像仓库地址，WHEN 插件推送基线分支到主远端（单仓、monorepo 或多仓模式）成功后，THEN 插件尽力将同一分支推送到镜像仓库地址对应的远端。
+3. GIVEN 镜像仓库地址对应的 git 远端尚未在本地仓库配置，WHEN 执行镜像推送，THEN 插件自动创建或复用同 URL 的现有远端后再推送，不要求用户手动执行 `git remote add`。
+4. GIVEN 镜像仓库推送过程中发生任意失败（远端配置失败或 push 失败），WHEN 该失败发生，THEN 不得影响或回滚已完成的主远端推送结果，仅记录日志。
+5. GIVEN 用户未填写镜像仓库地址（留空），WHEN 推送基线分支，THEN 插件不执行任何镜像推送逻辑。
+
 ## 需求追踪矩阵（如有已有设计/代码）
 
 | 需求 | 关联现有实现参考 | 说明 |
@@ -84,6 +96,7 @@
 | Req-3 | `webviewTemplates.ts`（旁路操作区 `sideActions` 渲染） | 参考自定义按钮在任务卡片的渲染方式 |
 | Req-4 | `aiDispatchService.ts`（`dispatch`）、`harnessActionsService.ts`（按钮点击处理） | 参考 `runCustomButton` 的点击派发，改为向 AI 发送对话内容 |
 | Req-5 | `extension.ts`（`handleSaveCustomButtons` 只读校验）、`featureStoreService.ts`（`syncCustomButtonsToWorktrees`） | 复用自定义按钮的快照只读与同步逻辑，支撑配置治理目标（防误改与主从一致） |
+| Req-6 | `models.ts`（`Config.githubMirrorGit`）、`extension.ts`（`handleSaveGit`）、`services/gitService.ts`（`pushToMirror`/`findRemoteByUrl`）、`webviewTemplates.ts`（Git 配置区镜像仓库输入框） | 在既有 Git 配置保存与推送链路上新增可选镜像仓库字段与尽力推送逻辑 |
 
 ## 机器可读区
 
@@ -138,4 +151,15 @@ requirements:
     acceptanceCriteria:
       - GIVEN 当前窗口使用的是主窗口配置快照 WHEN 用户尝试保存 AI 快捷对话按钮配置 THEN 保存被拒绝并给出与自定义按钮一致的只读提示且配置不被写入
       - GIVEN 主窗口修改并保存了 AI 快捷对话按钮配置 WHEN 配置同步到各 worktree 快照 THEN 快照中的 AI 快捷对话按钮字段与主窗口保持一致
+  - id: Req-6
+    domain: ai-quick-chat
+    rawDomain: AI快捷对话
+    title: 配置镜像仓库地址并在推送基线分支时同步镜像
+    userStory: 作为配置者，我希望在 Git 配置区额外填写一个镜像仓库地址，以便于在推送基线分支时自动同步一份到该镜像仓库，无需手动重复推送
+    acceptanceCriteria:
+      - GIVEN 用户在 Git 配置区填写镜像仓库地址并点击保存 WHEN 保存执行完成 THEN 该地址以独立字段 githubMirrorGit 随现有 Git 配置一同持久化，其余既有字段值保持不变
+      - GIVEN 已配置镜像仓库地址 WHEN 插件推送基线分支到主远端成功后 THEN 插件尽力将同一分支推送到镜像仓库地址对应的远端
+      - GIVEN 镜像仓库地址对应的 git 远端尚未在本地仓库配置 WHEN 执行镜像推送 THEN 插件自动创建或复用同 URL 的现有远端后再推送
+      - GIVEN 镜像仓库推送过程中发生任意失败 WHEN 该失败发生 THEN 不得影响或回滚已完成的主远端推送结果，仅记录日志
+      - GIVEN 用户未填写镜像仓库地址 WHEN 推送基线分支 THEN 插件不执行任何镜像推送逻辑
 ```
