@@ -1191,7 +1191,12 @@ export class GitService {
                 return;
             }
         }
-        const pushed = await this.execCmd(`git push ${remoteName} ${branch}`, repoDir);
+        const fetched = await this.execCmd(`git fetch ${remoteName} ${branch}`, repoDir);
+        if (!fetched) {
+            this.logGit(`镜像仓库推送跳过：无法先获取远端 ${remoteName}/${branch}：${this.lastExecError}`);
+            return;
+        }
+        const pushed = await this.execCmd(`git push --force-with-lease ${remoteName} ${branch}`, repoDir);
         if (!pushed) {
             this.logGit(`镜像仓库推送失败（不影响主流程）：${remoteName}(${mirrorUrl}) ${branch}：${this.lastExecError}`);
             return;
