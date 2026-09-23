@@ -74,7 +74,7 @@ const autoPoll = {
 const config = {
     frontendGit: '', backendGit: '', monorepoGit: 'https://example.com/repo.git',
     monorepoDirs: { frontend: 'apps', backend: 'apps', docs: 'docs', scripts: 'scripts' },
-    baseBranch: 'main', mergeDryRunEnabled: true, techStack: '', codingStandards: '',
+    baseBranch: 'main', techStack: '', codingStandards: '',
     projectConventions: '', maxConcurrentAutoTasks: 2, autoAdvanceEnabled: true,
     autoRepairEnabled: true, autoContinueAfterManualDone: true, compactTaskDecomposition: false,
     autoDetectTaskSplitMode: false, simpleTaskKeywords: '', complexTaskKeywords: '',

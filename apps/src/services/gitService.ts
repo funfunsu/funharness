@@ -1099,17 +1099,17 @@ export class GitService {
             }
         }
 
-        if (this.config.mergeDryRunEnabled) {
-            const dryRunOk = await this.execCmd(`git merge --no-commit --no-ff ${sourceBranch}`, repoDir);
-            if (!dryRunOk) {
-                const dryRunError = this.lastExecError;
-                if (fs.existsSync(path.join(repoDir, '.git', 'MERGE_HEAD'))) {
-                    await this.execCmd('git merge --abort', repoDir);
-                }
-                return { ok: false, reason: `干运行冲突检测失败（与 ${targetBranch} 有冲突），请手动解决：${dryRunError}` };
+        // Always dry-run the merge first so conflicts are detected and cleanly aborted before the
+        // real merge runs (a failed real merge below does not auto-abort, so this keeps the repo clean).
+        const dryRunOk = await this.execCmd(`git merge --no-commit --no-ff ${sourceBranch}`, repoDir);
+        if (!dryRunOk) {
+            const dryRunError = this.lastExecError;
+            if (fs.existsSync(path.join(repoDir, '.git', 'MERGE_HEAD'))) {
+                await this.execCmd('git merge --abort', repoDir);
             }
-            await this.execCmd('git merge --abort', repoDir);
+            return { ok: false, reason: `干运行冲突检测失败（与 ${targetBranch} 有冲突），请手动解决：${dryRunError}` };
         }
+        await this.execCmd('git merge --abort', repoDir);
 
         const merged = await this.execCmd(
             `git merge --no-ff ${sourceBranch} -m "chore: merge ${sourceBranch} into ${targetBranch}"`,

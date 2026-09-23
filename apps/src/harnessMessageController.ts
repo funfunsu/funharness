@@ -66,7 +66,7 @@ interface HarnessMessageControllerDeps {
     runStageReview?: (stage: ReviewStage, context: Extract<HarnessMessage, { type: 'runStageReview' }>['context']) => Promise<void>;
     getLatestReviewStatus?: (stage: ReviewStage) => Promise<void>;
     openCustomConstitution: () => Promise<void>;
-    saveGit:(frontendGit: string, backendGit: string, baseBranch: string, dryRun: boolean, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi', githubMirrorGit?: string) => Promise<void>;
+    saveGit:(frontendGit: string, backendGit: string, baseBranch: string, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi', githubMirrorGit?: string) => Promise<void>;
     saveAdvancedConfig: (msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>) => void;
     initProjectStructure: () => Promise<void>;
     applyProjectStructurePreview: () => Promise<void>;
@@ -652,7 +652,7 @@ export class HarnessMessageController {
                 await this.deps.openCustomConstitution();
                 return;
             case 'saveGit':
-                await this.deps.saveGit(msg.fg, msg.bg, msg.bb, msg.dr, msg.mg, msg.md, msg.mode, msg.gmg);
+                await this.deps.saveGit(msg.fg, msg.bg, msg.bb, msg.mg, msg.md, msg.mode, msg.gmg);
                 return;
             case 'saveAdvancedConfig':
                 this.deps.saveAdvancedConfig(msg);

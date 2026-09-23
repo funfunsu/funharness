@@ -117,8 +117,7 @@ npm run publish:remote   # 编译后通过 vsce 发布到市场
 | 配置 | 说明 |
 | --- | --- |
 | `frontendGit` / `backendGit` | 前端 / 后端 Git 仓库地址 |
-| `baseBranch` | 基线分支（迭代分支从这里 fork，合并回这里） |
-| `mergeDryRunEnabled` | 合并前先做无冲突干运行检测 |
+| `baseBranch` | 基线分支（迭代分支从这里 fork，合并回这里，合并前始终先做一次无冲突干运行检测） |
 | `frontendStartCmd` / `backendStartCmd` | 启动命令 |
 | `aiProvider` | 默认 AI Provider（任务级别可覆盖） |
 | `cliCommandTemplate` | CLI 模式下的命令模板 |

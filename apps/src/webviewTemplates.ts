@@ -2088,12 +2088,10 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 
 <h5>基线分支（如 main、master 或 yourname/integration）</h5>
 <input id="bb" value="${config.baseBranch || ''}" placeholder="如 main 或 yourname/integration" ${disabled}>
-<div class="toggle-row">
-<span>合并前 dry-run 冲突检查</span>
-<input id="dr" type="checkbox" ${config.mergeDryRunEnabled ? 'checked' : ''} ${disabled}>
-</div>
-<h5>多镜像仓库地址（可选，推送基线分支时会同时推送到该仓库）</h5>
+<details class="fold">
+<summary>多镜像仓库地址（可选，推送基线分支时会同时推送到该仓库）</summary>
 <input id="gmg" value="${config.githubMirrorGit || ''}" placeholder="如 https://github.com/yourname/yourrepo.git" ${disabled}>
+</details>
 <button onclick="saveGit()" style="background:#007aff" ${disabled}>💾 保存 Git 配置并初始化代码</button>
 </div>
 
@@ -2271,7 +2269,7 @@ function toggleCustomPromptMore(){
     more.style.display=open?'flex':'none';
     toggle.textContent=open?'收起':'更多';
 }
-function saveGit(){v.postMessage({type:'saveGit',mode:gitMode,fg:document.getElementById('fg').value,bg:document.getElementById('bg').value,bb:document.getElementById('bb').value,dr:document.getElementById('dr').checked,mg:document.getElementById('mg').value,gmg:document.getElementById('gmg').value,md:{frontend:'apps',backend:'apps',docs:'docs',scripts:'scripts'}})}
+function saveGit(){v.postMessage({type:'saveGit',mode:gitMode,fg:document.getElementById('fg').value,bg:document.getElementById('bg').value,bb:document.getElementById('bb').value,mg:document.getElementById('mg').value,gmg:document.getElementById('gmg').value,md:{frontend:'apps',backend:'apps',docs:'docs',scripts:'scripts'}})}
 let gitMode='${initialGitMode}';
 function switchGitMode(m){
     gitMode=m;
