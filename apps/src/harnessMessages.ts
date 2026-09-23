@@ -90,7 +90,7 @@ export type HarnessMessage =
     | { type: 'runStageReview'; stage: ReviewStage; context: StageContext }
     | { type: 'getLatestReviewStatus'; stage: ReviewStage }
     | { type: 'openCustomConstitution' }
-    | { type: 'saveGit'; fg: string; bg: string; bb: string; dr: boolean; mg?: string; gmg?: string; md?: { frontend?: string; backend?: string; docs?: string; scripts?: string }; mode?: 'mono' | 'multi' }
+    | { type: 'saveGit'; fg: string; bg: string; bb: string; mg?: string; gmg?: string; md?: { frontend?: string; backend?: string; docs?: string; scripts?: string }; mode?: 'mono' | 'multi' }
     | { type: 'saveAdvancedConfig'; pc: string; mc: number; am: boolean; dcm: 'batch' | 'single'; cm: boolean; ad: boolean; ins: boolean; iwl: number; sk: string; ck: string; wsd: string; cps: string; prm: 'local' | 'local+ai'; srd: string; gl: 'relaxed' | 'standard' | 'strict'; cct: string; afm: boolean; pas: boolean }
     | { type: 'initProjectStructure' }
     | { type: 'applyProjectStructurePreview' }

@@ -449,7 +449,6 @@ export interface Config {
     };
     /** The single configured baseline branch (e.g. main / yourname/integration). Iterations branch from it and merge back to it. */
     baseBranch: string;
-    mergeDryRunEnabled: boolean;
     techStack: string;
     codingStandards: string;
     projectConventions: string;
@@ -796,7 +795,6 @@ export const DEFAULT_CONFIG: Config = {
     githubMirrorGit: '',
     monorepoDirs: { ...DEFAULT_MONOREPO_DIRS },
     baseBranch: '',
-    mergeDryRunEnabled: true,
     techStack: '',
     codingStandards: '',
     projectConventions: '',
