@@ -125,7 +125,6 @@ describe('开发回退链路覆盖基线', () => {
 
     test('developing stage renders dedicated rollback action', () => {
         const html = buildMainPageHtml([buildDevelopingTaskView()], {}, {
-            compactTaskDecomposition: false,
             isWorktreeSubview: true,
             aiProvider: 'copilot-chat',
             customButtons: [],
@@ -145,7 +144,6 @@ describe('开发回退链路覆盖基线', () => {
 
     test('worktree task card renders the Spec Drift repair toggle and message chain', () => {
         const html = buildMainPageHtml([buildDevelopingTaskView()], {}, {
-            compactTaskDecomposition: false,
             isWorktreeSubview: true,
             aiProvider: 'copilot-chat',
             customButtons: [],
@@ -169,7 +167,6 @@ describe('开发回退链路覆盖基线', () => {
         const view = buildDevelopingTaskView();
         view.taskOutputPathWarnings = ['[1.1] 输出项含括号注释: apps/risk-control-api/db/migration（含 up/rollback）'];
         const html = buildMainPageHtml([view], {}, {
-            compactTaskDecomposition: false,
             isWorktreeSubview: true,
             aiProvider: 'copilot-chat',
             customButtons: [],

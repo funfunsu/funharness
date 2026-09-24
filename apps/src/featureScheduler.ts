@@ -900,10 +900,6 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     }
 
     private async shouldPauseAtBatchBoundary(completedTaskId: string | undefined, nextTaskId: string, iterTask: Feature): Promise<boolean> {
-        if (this.config.devConversationMode === 'single') {
-            return false;
-        }
-
         const fromBatch = this.getBatchId(completedTaskId);
         const toBatch = this.getBatchId(nextTaskId);
         if (!fromBatch || !toBatch || fromBatch === toBatch) {
@@ -987,7 +983,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         this.lastSubTaskStatuses = nextStatuses;
         this.onStatusChange();
 
-        if (!this.autoMode || this.config.autoContinueAfterManualDone === false || manuallyCompletedIds.length === 0) {
+        if (!this.autoMode || manuallyCompletedIds.length === 0) {
             return;
         }
 

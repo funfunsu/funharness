@@ -12,12 +12,9 @@
  * Covered scenarios:
  * 1. tasks.md completion only:
  *    When the current subtask is moved from `doing` to `done` in tasks.md,
- *    the scheduler should continue to the next runnable subtask if
- *    `autoContinueAfterManualDone` is enabled.
- * 2. tasks.md completion with auto-continue disabled:
- *    The same status transition must NOT dispatch the next subtask when the
- *    config toggle is off.
- * 3. done-signal arrives after tasks.md already says done:
+ *    the scheduler continues to the next runnable subtask (auto-continue after
+ *    manual completion is always on).
+ * 2. done-signal arrives after tasks.md already says done:
  *    If the agent first writes `[x]` in tasks.md and only then creates
  *    `signals/done-*`, the scheduler must still accept that signal and resume.
  *
@@ -178,7 +175,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         const scheduler = new FeatureScheduler(
             tmpDir,
             tmpDir,
-            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: true, devConversationMode: 'single', specRootDir: 'specs' },
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' },
             async (query) => {
                 dispatched.push(query);
             },
@@ -199,37 +196,6 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         scheduler.stopWatching();
     });
 
-    test('does not continue from tasks.md completion when autoContinueAfterManualDone is disabled', async () => {
-        const tmpDir = makeTempDir();
-        tmpDirs.push(tmpDir);
-        const taskPlanPath = writeTaskPlan(tmpDir);
-        const { vscodeMock, watchers } = createVscodeMock();
-        const FeatureScheduler = loadFeatureScheduler(vscodeMock);
-        const dispatched = [];
-        const scheduler = new FeatureScheduler(
-            tmpDir,
-            tmpDir,
-            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: false, devConversationMode: 'single', specRootDir: 'specs' },
-            async (query) => {
-                dispatched.push(query);
-            },
-            () => {},
-            () => 'dev system prompt'
-        );
-
-        await scheduler.startAuto(createFeature());
-
-        const updated = fs.readFileSync(taskPlanPath, 'utf8').replace('[doing] 1.5', '[x] 1.5');
-        fs.writeFileSync(taskPlanPath, updated, 'utf8');
-        await triggerTaskPlanChange(watchers, taskPlanPath);
-
-        assert.equal(scheduler.getCurrentSubFeature(), null);
-        assert.equal(dispatched.length, 0);
-        assert.match(fs.readFileSync(taskPlanPath, 'utf8'), /\[ \]\s*2\.1/);
-
-        scheduler.stopWatching();
-    });
-
     test('accepts done-* when tasks.md is already done for the same subtask', async () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
@@ -243,7 +209,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         const scheduler = new FeatureScheduler(
             tmpDir,
             tmpDir,
-            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: false, devConversationMode: 'single', specRootDir: 'specs' },
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' },
             async (query) => {
                 dispatched.push(query);
             },
@@ -282,7 +248,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         const scheduler = new FeatureScheduler(
             tmpDir,
             tmpDir,
-            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: false, devConversationMode: 'single', specRootDir: 'specs' },
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' },
             async (query) => {
                 dispatched.push(query);
             },
@@ -328,7 +294,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         const scheduler = new FeatureScheduler(
             tmpDir,
             tmpDir,
-            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: false, devConversationMode: 'single', specRootDir: 'specs' },
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' },
             async (query) => {
                 dispatched.push(query);
             },
@@ -403,7 +369,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         const scheduler = new FeatureScheduler(
             tmpDir,
             tmpDir,
-            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: false, devConversationMode: 'single', specRootDir: 'specs' },
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' },
             async (query) => {
                 dispatched.push(query);
             },
@@ -456,7 +422,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         const scheduler = new FeatureScheduler(
             tmpDir,
             tmpDir,
-            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: false, devConversationMode: 'single', specRootDir: 'specs' },
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' },
             async (query) => {
                 dispatched.push(query);
             },
@@ -511,7 +477,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         const scheduler = new FeatureScheduler(
             tmpDir,
             tmpDir,
-            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: false, devConversationMode: 'single', specRootDir: 'specs' },
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' },
             async (query) => {
                 dispatched.push(query);
             },
@@ -539,7 +505,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         const scheduler = new FeatureScheduler(
             tmpDir,
             tmpDir,
-            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: true, devConversationMode: 'batch', autoAdvanceEnabled: false, specRootDir: 'specs' },
+            { ...DEFAULT_CONFIG, autoAdvanceEnabled: false, specRootDir: 'specs' },
             async (query) => {
                 dispatched.push(query);
             },
@@ -571,7 +537,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         const scheduler = new FeatureScheduler(
             tmpDir,
             tmpDir,
-            { ...DEFAULT_CONFIG, autoContinueAfterManualDone: true, devConversationMode: 'batch', autoAdvanceEnabled: true, specRootDir: 'specs' },
+            { ...DEFAULT_CONFIG, autoAdvanceEnabled: true, specRootDir: 'specs' },
             async (query) => {
                 dispatched.push(query);
             },
@@ -620,7 +586,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         const scheduler = new FeatureScheduler(
             tmpDir,
             tmpDir,
-            { ...DEFAULT_CONFIG, devConversationMode: 'single', specRootDir: 'specs' },
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' },
             async () => {},
             () => {},
             () => 'dev system prompt'

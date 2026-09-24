@@ -277,7 +277,6 @@ describe('AI 快捷对话渲染覆盖基线', () => {
                 taskOutputPathWarnings: [],
             },
         ], {}, {
-            compactTaskDecomposition: false,
             isWorktreeSubview: false,
             aiProvider: 'copilot-chat',
             customButtons: [],
@@ -321,7 +320,6 @@ describe('AI 快捷对话渲染覆盖基线', () => {
                 taskOutputPathWarnings: [],
             },
         ], {}, {
-            compactTaskDecomposition: false,
             isWorktreeSubview: false,
             aiProvider: 'copilot-chat',
             customButtons: [{ id: 'cb_1', name: '脚本按钮', command: 'echo ok' }],
@@ -357,7 +355,6 @@ describe('AI 快捷对话渲染覆盖基线', () => {
                 taskOutputPathWarnings: [],
             },
         ], {}, {
-            compactTaskDecomposition: false,
             isWorktreeSubview: false,
             aiProvider: 'copilot-chat',
             customButtons: [{ id: 'cb_1', name: '脚本按钮', command: 'echo ok' }],

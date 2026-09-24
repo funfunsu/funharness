@@ -3,11 +3,14 @@ import * as path from 'path';
 
 export const BASE = '.harness';
 /** Directory under the master workspace root where shared custom-button scripts live. */
-export const CUSTOM_SCRIPT_DIR = 'script';
+export const CUSTOM_SCRIPT_DIR = 'scripts';
 /** File written into each worktree holding the latest pulled remote-task content. */
 export const TODO_FILE = 'todo.md';
-/** Default pull-task script name (under <masterRoot>/script/). */
+/** Default pull-task script name (under <masterRoot>/scripts/). */
 export const DEFAULT_POLL_SCRIPT = 'pullTask.js';
+/** Default idle-window bounds (HH:mm) used when "仅闲时生效" is enabled on weekdays. */
+export const DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START = '18:00';
+export const DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END = '08:00';
 /**
  * Default prompt prepended to the pulled todo.md content when auto-poll dispatches to the AI
  * executor. The final query sent to the executor is `${autoPollPrompt}\n\n${todo.md content}`.
@@ -191,8 +194,8 @@ export function getAiProvider(id: string): AiProviderDefinition {
 
 /**
  * Where a custom button's script file physically lives. This decouples buttons from the
- * old single hardcoded `<masterRoot>/script/` dir so scripts can be co-located with code:
- * - 'master':   `<masterRoot>/script/` — shared, NOT committed to git (legacy default).
+ * old single hardcoded `<masterRoot>/scripts/` dir so scripts can be co-located with code:
+ * - 'master':   `<masterRoot>/scripts/` — shared, NOT committed to git (legacy default).
  * - 'worktree': the committed scripts dir inside THIS task's iteration worktree (per-iteration).
  *               For 'main'-placement buttons (no worktree) this falls back to the main clone.
  *
@@ -212,7 +215,7 @@ export interface HookEntry {
     script: string;
     /**
      * Where the script file lives.
-     * - 'master' (default): `<masterRoot>/script/` — shared, not committed to git.
+     * - 'master' (default): `<masterRoot>/scripts/` — shared, not committed to git.
      * - 'worktree': committed scripts dir inside the task's iteration worktree.
      */
     scriptSource?: CustomButtonScriptSource;
@@ -246,7 +249,7 @@ export interface CustomButton {
     args?: string;
     /**
      * @deprecated Legacy single-field form `"<scriptFile> [args]"` resolved under
-     * `<masterRoot>/script/`. Retained only so old configs migrate to `script`/`args` on load.
+     * `<masterRoot>/scripts/`. Retained only so old configs migrate to `script`/`args` on load.
      */
     command?: string;
     /**
@@ -262,23 +265,16 @@ export interface CustomButton {
  * settings webview so each button row can offer OS-appropriate scripts in a dropdown.
  */
 export interface ScriptInventory {
-    mode: 'mono' | 'multi';
     /** Committed scripts subfolder name (from monorepoDirs.scripts). */
     scriptsSubdir: string;
-    /** Scripts under `<masterRoot>/script/`. */
+    /** Scripts under `<masterRoot>/scripts/`. */
     master: string[];
-    /** Committed scripts under `repos/mono-main/<scriptsSubdir>/` (monorepo mode). */
+    /** Committed scripts under `repos/mono-main/<scriptsSubdir>/`. */
     repoMono: string[];
-    /** Committed scripts under `repos/frontend-main/<scriptsSubdir>/` (multi-repo mode). */
-    repoFrontend: string[];
-    /** Committed scripts under `repos/backend-main/<scriptsSubdir>/` (multi-repo mode). */
-    repoBackend: string[];
     /** Absolute directories backing each list (for "open dir" and hints). */
     dirs: {
         master: string;
         repoMono?: string;
-        repoFrontend?: string;
-        repoBackend?: string;
     };
 }
 
@@ -423,12 +419,9 @@ export function normalizeCustomButton(b: CustomButton): CustomButton {
 // ── Config ─────────────────────────────────────────────────────────
 
 export interface Config {
-    frontendGit: string;
-    backendGit: string;
     /**
      * Single-repository (monorepo) remote URL. When non-empty, the harness operates in monorepo
-     * mode: it clones ONE repo whose iteration worktree is the iteration dir root, and
-     * `frontendGit`/`backendGit` are ignored. Empty = multi-repo (separate frontend/backend) mode.
+     * mode: it clones ONE repo whose iteration worktree is the iteration dir root.
      */
     monorepoGit: string;
     /**
@@ -451,21 +444,12 @@ export interface Config {
     baseBranch: string;
     techStack: string;
     codingStandards: string;
-    projectConventions: string;
-    maxConcurrentAutoTasks: number;
     /** Global default for batch-boundary auto-advance; overridable per-feature via Feature.autoAdvanceEnabled. */
     autoAdvanceEnabled: boolean;
-    autoContinueAfterManualDone: boolean;
     /** Development conversation scope mode: one session per batch (1.x/2.x) or one session for all subtasks. */
     devConversationMode: 'batch' | 'single';
-    compactTaskDecomposition: boolean;
-    autoDetectTaskSplitMode: boolean;
     /** Whether generated branch/worktree names should keep semantic transliteration hints. */
     iterationNamingSemantic: boolean;
-    /** Max length for generated iteration worktree directory names. */
-    iterationWorktreeNameMaxLength: number;
-    simpleTaskKeywords: string;
-    complexTaskKeywords: string;
     aiProvider: string;
     cliCommandTemplate: string;
     /** @deprecated Use cliCommandTemplate instead */
@@ -474,7 +458,6 @@ export interface Config {
     /** Auto-submit (press Return) after a 'panel' executor pre-fills its prompt via deep link (macOS only). */
     aiPanelAutoSubmit: boolean;
     worktreeSyncPaths: string;
-    customProjectStructure: string;
     projectStructureRefineMode: 'local' | 'local+ai';
     /**
      * Root folder name (under the iteration root) holding per-iteration spec artifacts
@@ -498,12 +481,18 @@ export interface Config {
     autoPollEnabled: boolean;
     /** Interval (seconds) between remote-task pulls when auto-polling is enabled in a worktree. */
     autoPollIntervalSec: number;
-    /** Pull-task script file name, resolved under <masterRoot>/script/. */
+    /** Pull-task script file name, resolved under <masterRoot>/scripts/. */
     autoPollScript: string;
     /** Prompt prepended to the pulled todo.md content when auto-poll dispatches to the AI executor. */
     autoPollPrompt: string;
     /** Newline-separated "no pending task" markers; a matching pull is treated like an empty pull (no overwrite, no dispatch). */
     autoPollSkipMarkers: string;
+    /** When true, ticks outside the idle window (see below) are silently skipped (off-peak pricing, e.g. DeepSeek). */
+    autoPollIdleOnly?: boolean;
+    /** Weekday idle-window start, 'HH:mm'. Weekends are always considered idle. */
+    autoPollIdleWeekdayStart?: string;
+    /** Weekday idle-window end, 'HH:mm'; may be earlier than start to denote an overnight window. */
+    autoPollIdleWeekdayEnd?: string;
     /** Lifecycle hook scripts executed at key pipeline nodes (e.g. worktree first-open). */
     lifecycleHooks: LifecycleHooks;
 }
@@ -789,31 +778,20 @@ export function resolveFeaturePlanFileForIteration(iterDir: string, config: Spec
 }
 
 export const DEFAULT_CONFIG: Config = {
-    frontendGit: '',
-    backendGit: '',
     monorepoGit: '',
     githubMirrorGit: '',
     monorepoDirs: { ...DEFAULT_MONOREPO_DIRS },
     baseBranch: '',
     techStack: '',
     codingStandards: '',
-    projectConventions: '',
-    maxConcurrentAutoTasks: 2,
     autoAdvanceEnabled: true,
-    autoContinueAfterManualDone: true,
     devConversationMode: 'batch',
-    compactTaskDecomposition: false,
-    autoDetectTaskSplitMode: true,
     iterationNamingSemantic: true,
-    iterationWorktreeNameMaxLength: 52,
-    simpleTaskKeywords: 'blacklist,whitelist,crud,toggle,config,list,search,管理,增删改查,配置,名单',
-    complexTaskKeywords: 'workflow,state machine,multi-tenant,distributed,transaction,integration,migration,权限,审批,多角色,并发,分布式,跨系统,联调,多模块,复杂',
     aiProvider: 'copilot-chat',
     cliCommandTemplate: '',
     aiFallbackToManual: true,
     aiPanelAutoSubmit: true,
     worktreeSyncPaths: 'worktree/.github/instructions\nworktree/.spec',
-    customProjectStructure: '',
     projectStructureRefineMode: 'local+ai',
     specRootDir: 'specs',
     gateLevel: 'standard',
@@ -824,6 +802,9 @@ export const DEFAULT_CONFIG: Config = {
     autoPollScript: DEFAULT_POLL_SCRIPT,
     autoPollPrompt: DEFAULT_AUTO_POLL_PROMPT,
     autoPollSkipMarkers: DEFAULT_AUTO_POLL_SKIP_MARKERS,
+    autoPollIdleOnly: false,
+    autoPollIdleWeekdayStart: DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START,
+    autoPollIdleWeekdayEnd: DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END,
     lifecycleHooks: { worktreeOpen: [] },
 };
 

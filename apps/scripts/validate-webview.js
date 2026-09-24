@@ -75,9 +75,8 @@ const config = {
     frontendGit: '', backendGit: '', monorepoGit: 'https://example.com/repo.git',
     monorepoDirs: { frontend: 'apps', backend: 'apps', docs: 'docs', scripts: 'scripts' },
     baseBranch: 'main', techStack: '', codingStandards: '',
-    projectConventions: '', maxConcurrentAutoTasks: 2, autoAdvanceEnabled: true,
-    autoRepairEnabled: true, autoContinueAfterManualDone: true, compactTaskDecomposition: false,
-    autoDetectTaskSplitMode: false, simpleTaskKeywords: '', complexTaskKeywords: '',
+    autoAdvanceEnabled: true,
+    autoRepairEnabled: true,
     aiProvider: 'copilot', cliCommandTemplate: '', aiFallbackToManual: true, aiPanelAutoSubmit: false,
     worktreeSyncPaths: '', projectStructureRefineMode: 'local',
     customButtons, autoPollEnabled: false, autoPollIntervalSec: 30, autoPollScript: 'poll.ps1',
@@ -93,7 +92,7 @@ const scriptInventory = {
 const failures = [];
 
 const mainCfgBase = {
-    compactTaskDecomposition: false, aiProvider: 'copilot', customButtons,
+    aiProvider: 'copilot', customButtons,
 };
 validatePage('main:empty', templates.buildMainPageHtml([], {}, { ...mainCfgBase, isWorktreeSubview: false }), failures);
 validatePage('main:withTask', templates.buildMainPageHtml([sampleTaskView], {}, { ...mainCfgBase, isWorktreeSubview: false }), failures);

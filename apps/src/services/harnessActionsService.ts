@@ -393,13 +393,11 @@ export class HarnessActionsService {
 
     async createFeature(name: string, desc: string, quickMode?: boolean): Promise<void> {
         const id = `task_${Date.now()}`;
-        const cfg = this.deps.getConfig();
-        const inferredSplitMode = this.inferFeatureSplitMode(name, desc, cfg);
         const newTask: Feature = {
             id,
             name,
             desc,
-            taskSplitMode: inferredSplitMode,
+            taskSplitMode: 'standard',
             stage: STAGE.INITIALIZING,
             autoAdvanceEnabled: true,
             specDriftRepairEnabled: true,
@@ -420,7 +418,6 @@ export class HarnessActionsService {
             // Dev Agent runs with only task.desc and project context.
             vscode.window.showInformationMessage('已使用快捷模式：跳过文档生成，直接进入开发');
         } else {
-            vscode.window.showInformationMessage(`任务拆分模式已自动判定：${inferredSplitMode === 'compact' ? '急速模式' : '标准模式'}`);
             vscode.window.showInformationMessage('提示：代码目录将在点击任务的 Worktree 按钮时初始化');
         }
     }
@@ -436,13 +433,11 @@ export class HarnessActionsService {
 
         const normalizedDesc = (description || '').trim();
         const id = `task_${Date.now()}`;
-        const cfg = this.deps.getConfig();
-        const inferredSplitMode = this.inferFeatureSplitMode(normalizedTitle, normalizedDesc, cfg);
         const newTask: Feature = {
             id,
             name: normalizedTitle,
             desc: normalizedDesc,
-            taskSplitMode: inferredSplitMode,
+            taskSplitMode: 'standard',
             stage: STAGE.INITIALIZING,
             autoAdvanceEnabled: true,
             specDriftRepairEnabled: true,
@@ -890,9 +885,7 @@ export class HarnessActionsService {
             // Monorepo: the iteration dir root itself is the single git worktree.
             missing = !fs.existsSync(path.join(iterDir, '.git'));
         } else {
-            const frontendMissing = Boolean(cfg.frontendGit) && !fs.existsSync(path.join(iterDir, 'frontend', '.git'));
-            const backendMissing = Boolean(cfg.backendGit) && !fs.existsSync(path.join(iterDir, 'backend', '.git'));
-            missing = frontendMissing || backendMissing;
+            missing = false;
         }
 
         if (!missing) {
@@ -926,7 +919,7 @@ export class HarnessActionsService {
             .filter(scheduler => scheduler.isAutoMode())
             .length;
         const currentScheduler = this.deps.getScheduler(task);
-        const maxConcurrent = Math.max(1, this.deps.getConfig().maxConcurrentAutoTasks || 1);
+        const maxConcurrent = 2;
         if (!currentScheduler.isAutoMode() && activeAutoCount >= maxConcurrent) {
             vscode.window.showWarningMessage(`自动执行槽位已满（${activeAutoCount}/${maxConcurrent}），请先暂停其他任务`);
             return;
@@ -967,7 +960,7 @@ export class HarnessActionsService {
         scheduler.updateSubFeatureStatus(subId, status);
         this.deps.saveAndRender();
 
-        if (status === 'done' && task.stage === STAGE.DEVELOPING && this.deps.getConfig().autoContinueAfterManualDone) {
+        if (status === 'done' && task.stage === STAGE.DEVELOPING) {
             await scheduler.startAuto(task);
             this.deps.saveAndRender();
             vscode.window.showInformationMessage(`已手动修正子任务 ${subId} 为完成，并自动继续执行下一子任务`);
@@ -2600,53 +2593,7 @@ export class HarnessActionsService {
     }
 
     private resolveFeatureSplitMode(task: Feature): 'standard' | 'compact' {
-        const cfg = this.deps.getConfig();
-        if (cfg.compactTaskDecomposition) {
-            return 'compact';
-        }
-        if (!cfg.autoDetectTaskSplitMode) {
-            return 'standard';
-        }
-        if (task.taskSplitMode) {
-            return task.taskSplitMode;
-        }
-        return this.inferFeatureSplitMode(task.name, task.desc, cfg);
-    }
-
-    private inferFeatureSplitMode(name: string, desc: string, cfg: Config): 'standard' | 'compact' {
-        if (!cfg.autoDetectTaskSplitMode) {
-            return 'standard';
-        }
-        const text = `${name || ''} ${desc || ''}`.trim().toLowerCase();
-        if (!text) {
-            return 'standard';
-        }
-
-        const complexKeywords = this.parseKeywords(cfg.complexTaskKeywords);
-        if (complexKeywords.some(keyword => text.includes(keyword))) {
-            return 'standard';
-        }
-
-        const simpleKeywords = this.parseKeywords(cfg.simpleTaskKeywords);
-        const looksSimpleByKeyword = simpleKeywords.some(keyword => text.includes(keyword));
-        const looksSimpleByLength = text.length <= 80;
-        const sentenceCount = text.split(/[。！？.!?;；\n]/).map(item => item.trim()).filter(Boolean).length;
-
-        if (looksSimpleByKeyword && (looksSimpleByLength || sentenceCount <= 2)) {
-            return 'compact';
-        }
-        if (looksSimpleByLength && sentenceCount <= 1) {
-            return 'compact';
-        }
-
-        return 'standard';
-    }
-
-    private parseKeywords(raw: string): string[] {
-        return (raw || '')
-            .split(',')
-            .map(item => item.trim().toLowerCase())
-            .filter(Boolean);
+        return task.taskSplitMode || 'standard';
     }
 
     /**

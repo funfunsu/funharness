@@ -188,10 +188,8 @@ export class ProjectStructureService {
     }
 
     /**
-     * Whether the harness operates in monorepo (single-repo) mode. Only in this
-     * mode does detection treat the configured dir as an apps container that may
-     * hold multiple sub-applications. Multi-repo mode keeps the frontend/backend
-     * split intact.
+     * Whether the harness operates in monorepo mode. Only in this mode does detection treat the
+     * configured dir as an apps container that may hold multiple sub-applications.
      */
     setMonorepoMode(isMono: boolean): void {
         this.monorepoMode = isMono;
@@ -682,7 +680,7 @@ export class ProjectStructureService {
             }
         }
 
-        // Multi-repo mode (and monorepo fallback): keep the frontend/backend split.
+        // Keep the frontend/backend split only for the configured monorepo subfolders.
         const frontend = this.findFrontendProject();
         const backend = this.findBackendProject();
 
@@ -741,7 +739,7 @@ export class ProjectStructureService {
 
     /**
      * Supported sample-profile folders under current repo/worktree.
-     * Keep repo-root-relative to satisfy monorepo and multi-repo topologies.
+     * Keep repo-root-relative to satisfy the monorepo topology.
      */
     private getSampleProfileDirectoryCandidates(): string[] {
         const roots = [this.workspaceRoot];

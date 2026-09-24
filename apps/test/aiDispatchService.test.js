@@ -57,7 +57,6 @@ function loadAiDispatchService() {
 function buildConfig() {
     return {
         aiProvider: 'copilot-chat',
-        devConversationMode: 'batch',
     };
 }
 

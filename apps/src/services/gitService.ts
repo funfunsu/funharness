@@ -7,12 +7,11 @@ import { clearDirChildrenPreserving, safeRemovePath } from './fileOps';
 import { deriveIterationBranchNameWithOptions } from './branchName';
 
 /**
- * Describes one git repository the harness manages for an iteration. In multi-repo mode there is
- * one descriptor per configured side (frontend/backend), each checked out into an `iterationDir`
- * subfolder. In monorepo mode there is a single descriptor whose worktree IS the iteration dir root.
+ * Describes the single git repository the harness manages for an iteration. In monorepo mode,
+ * the worktree root IS the iteration dir; there are no frontend/backend split repos.
  */
 interface RepoDescriptor {
-    kind: 'frontend' | 'backend' | 'mono';
+    kind: 'mono';
     /** Human-friendly label used in user-facing messages. */
     label: string;
     remote: string;
@@ -78,7 +77,6 @@ export class GitService {
     private deriveBranchName(task: Feature): string {
         return deriveIterationBranchNameWithOptions(task, {
             semanticSlug: this.config.iterationNamingSemantic,
-            worktreeNameMaxLength: this.config.iterationWorktreeNameMaxLength,
         });
     }
 
@@ -88,43 +86,24 @@ export class GitService {
     }
 
     /**
-     * Single source of truth for which repositories an iteration spans. Monorepo mode yields one
-     * descriptor whose worktree is the iteration dir root; multi-repo mode yields one descriptor
-     * per configured frontend/backend, each checked out into an `iterationDir` subfolder.
+     * Single source of truth for the repository an iteration spans. The monorepo flow yields one
+     * descriptor whose worktree is the iteration directory root.
      * Pass '' for `iterationDir` when only main-repo info is needed (e.g. initializeRepos).
      */
     private resolveRepoDescriptors(iterationDir: string): RepoDescriptor[] {
-        if (this.isMonorepo()) {
-            return [{
-                kind: 'mono',
-                label: '仓库',
-                remote: this.config.monorepoGit.trim(),
-                // Monorepo: a dedicated main clone under repos/mono-main; iterations are git
-                // worktrees whose root IS the iteration dir (front/back live in configured subfolders).
-                mainDir: this.getMainRepoDir('mono'),
-                worktreeDir: iterationDir,
-            }];
+        if (!this.isMonorepo()) {
+            return [];
         }
-        const descriptors: RepoDescriptor[] = [];
-        if (this.config.frontendGit) {
-            descriptors.push({
-                kind: 'frontend',
-                label: '前端',
-                remote: this.config.frontendGit,
-                mainDir: this.getMainRepoDir('frontend'),
-                worktreeDir: path.join(iterationDir, 'frontend'),
-            });
-        }
-        if (this.config.backendGit) {
-            descriptors.push({
-                kind: 'backend',
-                label: '后端',
-                remote: this.config.backendGit,
-                mainDir: this.getMainRepoDir('backend'),
-                worktreeDir: path.join(iterationDir, 'backend'),
-            });
-        }
-        return descriptors;
+
+        return [{
+            kind: 'mono',
+            label: '仓库',
+            remote: this.config.monorepoGit.trim(),
+            // Monorepo: a dedicated main clone under repos/mono-main; iterations are git
+            // worktrees whose root IS the iteration dir (front/back live in configured subfolders).
+            mainDir: this.getMainRepoDir('mono'),
+            worktreeDir: iterationDir,
+        }];
     }
 
     /**
@@ -156,7 +135,7 @@ export class GitService {
         this.clearOperationNotices();
         const descriptors = this.resolveRepoDescriptors('');
         if (descriptors.length === 0) {
-            return { success: false, message: '请至少填写一个 Git 地址（前端/后端或单一仓库）' };
+            return { success: false, message: '请填写单一仓库 Git 地址' };
         }
 
         const baseBranch = (this.config.baseBranch || 'main').trim();
