@@ -392,11 +392,6 @@ export class AiDispatchService {
             return null;
         }
 
-        const mode = this.getConfig().devConversationMode === 'single' ? 'single' : 'batch';
-        if (mode === 'single') {
-            return `dev-single:${iterDir}`;
-        }
-
         const batch = this.extractSubTaskBatch(query);
         if (!batch) {
             return null;

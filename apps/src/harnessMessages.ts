@@ -90,8 +90,8 @@ export type HarnessMessage =
     | { type: 'runStageReview'; stage: ReviewStage; context: StageContext }
     | { type: 'getLatestReviewStatus'; stage: ReviewStage }
     | { type: 'openCustomConstitution' }
-    | { type: 'saveGit'; fg: string; bg: string; bb: string; mg?: string; gmg?: string; md?: { frontend?: string; backend?: string; docs?: string; scripts?: string }; mode?: 'mono' | 'multi' }
-    | { type: 'saveAdvancedConfig'; pc: string; mc: number; am: boolean; dcm: 'batch' | 'single'; cm: boolean; ad: boolean; ins: boolean; iwl: number; sk: string; ck: string; wsd: string; cps: string; prm: 'local' | 'local+ai'; srd: string; gl: 'relaxed' | 'standard' | 'strict'; cct: string; afm: boolean; pas: boolean }
+    | { type: 'saveGit'; bb: string; mg?: string; gmg?: string }
+    | { type: 'saveAdvancedConfig'; dcm: 'batch' | 'single'; ins: boolean; wsd: string; prm: 'local' | 'local+ai'; srd: string; gl: 'relaxed' | 'standard' | 'strict'; cct: string; afm: boolean; pas: boolean }
     | { type: 'initProjectStructure' }
     | { type: 'applyProjectStructurePreview' }
     | { type: 'openArtifactsIndex' }
@@ -130,7 +130,7 @@ export type HarnessMessage =
     | { type: 'runCustomButton'; id: string; buttonId: string }
     | { type: 'openScriptDir' }
     | { type: 'openHarnessLog' }
-    | { type: 'saveAutoPollConfig'; interval: number; script: string; prompt: string; skipMarkers: string; enabled: boolean }
+    | { type: 'saveAutoPollConfig'; interval: number; script: string; prompt: string; skipMarkers: string; enabled: boolean; idleOnly: boolean; idleWeekdayStart: string; idleWeekdayEnd: string }
     | { type: 'createPollScriptTemplate' }
     | { type: 'toggleAutoPoll'; enable: boolean }
     | { type: 'todo.create'; sourcePanel: TodoSourcePanel; title: string; description: string | null }

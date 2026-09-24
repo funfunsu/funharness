@@ -140,7 +140,6 @@ describe('worktree 命名覆盖基线', () => {
             fs.mkdirSync(harnessDir, { recursive: true });
             fs.writeFileSync(path.join(harnessDir, 'config.json'), JSON.stringify({
                 iterationNamingSemantic: false,
-                iterationWorktreeNameMaxLength: 28,
             }, null, 2), 'utf8');
 
             const service = new FeatureStoreService(root);
@@ -154,7 +153,7 @@ describe('worktree 命名覆盖基线', () => {
             const dir = service.getIterationDir(task);
             assert.equal(path.dirname(dir), path.join(root, 'worktrees'));
             assert.match(path.basename(dir), /^[a-z0-9-]+-\d{8}$/);
-            assert.ok(path.basename(dir).length <= 28, 'configured max length should apply');
+            assert.ok(path.basename(dir).length <= 52, 'default max length should apply');
         } finally {
             cleanup(root);
         }

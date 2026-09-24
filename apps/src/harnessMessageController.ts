@@ -66,7 +66,7 @@ interface HarnessMessageControllerDeps {
     runStageReview?: (stage: ReviewStage, context: Extract<HarnessMessage, { type: 'runStageReview' }>['context']) => Promise<void>;
     getLatestReviewStatus?: (stage: ReviewStage) => Promise<void>;
     openCustomConstitution: () => Promise<void>;
-    saveGit:(frontendGit: string, backendGit: string, baseBranch: string, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi', githubMirrorGit?: string) => Promise<void>;
+    saveGit:(monorepoGit: string, baseBranch: string, githubMirrorGit?: string) => Promise<void>;
     saveAdvancedConfig: (msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>) => void;
     initProjectStructure: () => Promise<void>;
     applyProjectStructurePreview: () => Promise<void>;
@@ -100,7 +100,7 @@ interface HarnessMessageControllerDeps {
     completeDevWithPush: (featureId: string) => Promise<void>;
     pushAndNextStage: (featureId: string) => Promise<void>;
     commitToBaseline: (featureId: string) => Promise<void>;
-    saveCustomButtons: (buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string }[]) => void;
+    saveCustomButtons: (buttons: { name: string; script?: string; args?: string; command?: string }[]) => void;
     saveAiQuickChatButtons: (taskId: string, buttons: AiQuickChatButtonInput[]) => SaveAiQuickChatButtonsRouteResult;
     saveLifecycleHooks: (hooks: { script: string; scriptSource?: string; args?: string }[]) => void;
     runCustomButton: (featureId: string, buttonId: string) => Promise<void>;
@@ -652,7 +652,7 @@ export class HarnessMessageController {
                 await this.deps.openCustomConstitution();
                 return;
             case 'saveGit':
-                await this.deps.saveGit(msg.fg, msg.bg, msg.bb, msg.mg, msg.md, msg.mode, msg.gmg);
+                await this.deps.saveGit(msg.mg ?? '', msg.bb, msg.gmg);
                 return;
             case 'saveAdvancedConfig':
                 this.deps.saveAdvancedConfig(msg);

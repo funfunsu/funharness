@@ -11,6 +11,8 @@ import {
     CustomButton,
     CustomButtonScriptSource,
     DEFAULT_AUTO_POLL_PROMPT,
+    DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START,
+    DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END,
     DEFAULT_CONFIG,
     DEFAULT_MONOREPO_DIRS,
     DEFAULT_POLL_SCRIPT,
@@ -328,7 +330,7 @@ class Harness {
                 runStageReview: async (stage, context) => { await this.handleRunStageReview(stage, context); },
                 getLatestReviewStatus: async (stage) => { await this.handleGetLatestReviewStatus(stage); },
                 openCustomConstitution: () => this.handleOpenCustomConstitution(),
-                saveGit: (frontendGit, backendGit, baseBranch, monorepoGit, monorepoDirs, mode, githubMirrorGit) => this.handleSaveGit(frontendGit, backendGit, baseBranch, monorepoGit, monorepoDirs, mode, githubMirrorGit),
+                saveGit: (monorepoGit, baseBranch, githubMirrorGit) => this.handleSaveGit(monorepoGit, baseBranch, githubMirrorGit),
                 saveAdvancedConfig: (msg) => this.handleSaveAdvancedConfig(msg),
                 initProjectStructure: () => this.handleInitProjectStructure(),
                 applyProjectStructurePreview: () => this.handleApplyProjectStructurePreview(),
@@ -534,30 +536,17 @@ class Harness {
      */
     private buildScriptInventory(): ScriptInventory {
         const masterRoot = this.getMasterRoot();
-        const isMono = Boolean((this.config.monorepoGit || '').trim());
         const scriptsSubdir = getScriptsSubdir(this.config);
         const masterDir = path.join(masterRoot, CUSTOM_SCRIPT_DIR);
         const inventory: ScriptInventory = {
-            mode: isMono ? 'mono' : 'multi',
             scriptsSubdir,
             master: this.scanScriptDir(masterDir),
             repoMono: [],
-            repoFrontend: [],
-            repoBackend: [],
             dirs: { master: masterDir },
         };
-        if (isMono) {
-            const monoDir = path.join(masterRoot, 'repos', 'mono-main', scriptsSubdir);
-            inventory.repoMono = this.scanScriptDir(monoDir);
-            inventory.dirs.repoMono = monoDir;
-        } else {
-            const feDir = path.join(masterRoot, 'repos', 'frontend-main', scriptsSubdir);
-            const beDir = path.join(masterRoot, 'repos', 'backend-main', scriptsSubdir);
-            inventory.repoFrontend = this.scanScriptDir(feDir);
-            inventory.repoBackend = this.scanScriptDir(beDir);
-            inventory.dirs.repoFrontend = feDir;
-            inventory.dirs.repoBackend = beDir;
-        }
+        const monoDir = path.join(masterRoot, 'repos', 'mono-main', scriptsSubdir);
+        inventory.repoMono = this.scanScriptDir(monoDir);
+        inventory.dirs.repoMono = monoDir;
         return inventory;
     }
 
@@ -725,7 +714,6 @@ class Harness {
         });
 
         webview.html = buildMainPageHtml(featureViews, {}, {
-            compactTaskDecomposition: this.config.compactTaskDecomposition,
             isWorktreeSubview: this.isWorktreeSubview(),
             aiProvider: this.config.aiProvider,
             customButtons: this.config.customButtons || [],
@@ -916,43 +904,19 @@ class Harness {
         webview?.postMessage({ type: 'stageReviewStatus', stage, ...result });
     }
 
-    private async handleSaveGit(frontendGit: string, backendGit: string, baseBranch: string, monorepoGit?: string, monorepoDirs?: { frontend?: string; backend?: string; docs?: string; scripts?: string }, mode?: 'mono' | 'multi', githubMirrorGit?: string): Promise<void> {
+    private async handleSaveGit(monorepoGit: string, baseBranch: string, githubMirrorGit?: string): Promise<void> {
         if (this.configMeta.readOnly) {
             vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改设置');
             return;
         }
-        // Resolve the active mode. Older webviews may not send `mode`; fall back to "monorepo when a
-        // single-repo URL is present" to preserve prior behaviour.
-        const activeMode: 'mono' | 'multi' = mode ?? ((monorepoGit || '').trim() ? 'mono' : 'multi');
 
-        let mono = (monorepoGit || '').trim();
-        if (activeMode === 'mono') {
-            // Monorepo: require an explicit URL from the user.
-            if (!mono) {
-                vscode.window.showWarningMessage('单一仓库模式：请填写 Git 地址');
-                return;
-            }
-        } else {
-            // Multi-repo: explicitly disable monorepo mode and require at least one side URL.
-            mono = '';
-            if (!frontendGit && !backendGit) {
-                vscode.window.showWarningMessage('多仓库模式：请至少填写前端或后端 Git 地址');
-                return;
-            }
+        const mono = (monorepoGit || '').trim();
+        if (!mono) {
+            vscode.window.showWarningMessage('单一仓库模式：请填写 Git 地址');
+            return;
         }
+
         this.config.monorepoGit = mono;
-        if (monorepoDirs) {
-            this.config.monorepoDirs = {
-                frontend: DEFAULT_MONOREPO_DIRS.frontend,
-                backend: DEFAULT_MONOREPO_DIRS.backend,
-                docs: DEFAULT_MONOREPO_DIRS.docs,
-                scripts: DEFAULT_MONOREPO_DIRS.scripts,
-            };
-        }
-        // In monorepo mode the separate frontend/backend remotes are ignored; keep them stored so
-        // switching back to multi-repo mode does not lose the previously configured URLs.
-        this.config.frontendGit = frontendGit;
-        this.config.backendGit = backendGit;
         this.config.baseBranch = baseBranch;
         this.config.githubMirrorGit = (githubMirrorGit || '').trim();
         this.saveConfig();
@@ -977,16 +941,8 @@ class Harness {
             return;
         }
 
-        this.config.projectConventions = msg.pc;
-        this.config.maxConcurrentAutoTasks = Math.max(1, msg.mc || 1);
-        this.config.autoContinueAfterManualDone = msg.am;
         this.config.devConversationMode = msg.dcm === 'single' ? 'single' : 'batch';
-        this.config.compactTaskDecomposition = msg.cm;
-        this.config.autoDetectTaskSplitMode = msg.ad;
         this.config.iterationNamingSemantic = msg.ins !== false;
-        this.config.iterationWorktreeNameMaxLength = Math.max(24, Math.min(120, Math.floor(Number(msg.iwl) || 52)));
-        this.config.simpleTaskKeywords = msg.sk;
-        this.config.complexTaskKeywords = msg.ck;
         this.config.worktreeSyncPaths = msg.wsd;
         this.config.projectStructureRefineMode = msg.prm === 'local' ? 'local' : 'local+ai';
         this.config.specRootDir = (msg.srd || '').trim() || 'specs';
@@ -1100,6 +1056,9 @@ class Harness {
         const enabled = msg.enabled === true;
         const interval = Math.max(5, Math.floor(Number(msg.interval) || 0));
         const script = (msg.script || '').trim() || DEFAULT_POLL_SCRIPT;
+        const timePattern = /^([01]\d|2[0-3]):([0-5]\d)$/;
+        const idleWeekdayStart = timePattern.test(msg.idleWeekdayStart || '') ? msg.idleWeekdayStart : DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START;
+        const idleWeekdayEnd = timePattern.test(msg.idleWeekdayEnd || '') ? msg.idleWeekdayEnd : DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END;
         this.config.autoPollEnabled = enabled;
         this.config.autoPollIntervalSec = interval;
         this.config.autoPollScript = script;
@@ -1107,6 +1066,9 @@ class Harness {
         // Keep as-is (incl. an explicit empty string, which disables skip-matching). Markers are
         // matched per-line after trimming, so trailing blank lines are harmless.
         this.config.autoPollSkipMarkers = msg.skipMarkers ?? '';
+        this.config.autoPollIdleOnly = msg.idleOnly === true;
+        this.config.autoPollIdleWeekdayStart = idleWeekdayStart;
+        this.config.autoPollIdleWeekdayEnd = idleWeekdayEnd;
         this.saveConfig();
         // Ensure the shared script dir exists so the user has somewhere to put the script.
         if (enabled) {

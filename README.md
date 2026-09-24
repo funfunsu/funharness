@@ -124,8 +124,6 @@ npm run publish:remote   # 编译后通过 vsce 发布到市场
 | `aiFallbackToManual` | 派发失败时是否自动降级到手工模式 |
 | `autoAdvanceEnabled` | 阶段产物通过校验后是否自动进入下一阶段 |
 | `autoRepairEnabled` | 产物校验失败时是否自动重新调用 Agent |
-| `maxConcurrentAutoTasks` | 子任务调度的最大并发数 |
-| `compactTaskDecomposition` | 启用简化任务拆解（适合简单需求） |
 | `worktreeSyncPaths` | worktree 与主仓共享的目录（例如 instructions） |
 
 ---

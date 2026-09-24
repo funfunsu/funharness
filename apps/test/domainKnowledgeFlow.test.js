@@ -121,7 +121,6 @@ describe('领域知识流转覆盖基线', () => {
         const view = buildTaskView();
 
         const mainHtml = buildMainPageHtml([view], {}, {
-            compactTaskDecomposition: false,
             isWorktreeSubview: false,
             aiProvider: 'copilot',
             customButtons: [],
@@ -135,7 +134,6 @@ describe('领域知识流转覆盖基线', () => {
         assert.equal(mainHtml.includes('data-domain-action="previewDomainBaselineSummary"'), false);
 
         const worktreeHtml = buildMainPageHtml([view], {}, {
-            compactTaskDecomposition: false,
             isWorktreeSubview: true,
             aiProvider: 'copilot',
             customButtons: [],

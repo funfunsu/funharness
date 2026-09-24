@@ -1,4 +1,4 @@
-﻿import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubFeature, Feature, FeatureStats, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, normalizeCustomButton } from './models';
+﻿import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubFeature, Feature, FeatureStats, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, DEFAULT_POLL_SCRIPT, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END, normalizeCustomButton } from './models';
 import { HarnessConfigMeta } from './services/featureStoreService';
 import { AutoPollStatus } from './services/autoPollService';
 
@@ -29,11 +29,15 @@ function buildDeltaBadgeHtml(taskId: string, status: MainFeatureViewModel['specD
 function buildAutoPollPanelHtml(status: AutoPollStatus): string {
     const intervalLabel = `${status.intervalSec}s`;
     const dispatchLine = '<div class="autopoll-hint">🤖 拉取到新内容后会自动把任务派发给当前迭代任务的 AI 执行器（拉取并执行）。</div>';
+    const idleGatedLine = status.idleGated
+        ? '<div class="autopoll-hint">⏸ 当前不在闲时窗口内，本轮轮询已跳过（仅闲时生效已开启）。</div>'
+        : '';
     if (status.enabledHere) {
         return `<div class="autopoll-card on">
 <div class="autopoll-title">🟢 自动轮询远程任务并执行：运行中</div>
 <div class="autopoll-hint">每 ${intervalLabel} 运行 <b>${escapeHtml(status.script)}</b>，拉取到的新内容写入当前 worktree 的 <b>todo.md</b>（内容为空或无变化时不覆盖）。</div>
 ${dispatchLine}
+${idleGatedLine}
 <button class="action-btn action-btn--warning" onclick="toggleAutoPoll(false)">⏸ 关闭自动轮询</button>
 </div>`;
     }
@@ -43,7 +47,7 @@ ${dispatchLine}
         : '';
     const scriptNote = status.scriptExists
         ? ''
-        : `<div class="autopoll-warn">未找到拉取脚本 <b>script/${escapeHtml(status.script)}</b>，请先在主工作区「高级设置 → 自动轮询」中创建脚本。</div>`;
+        : `<div class="autopoll-warn">未找到拉取脚本 <b>scripts/${escapeHtml(status.script)}</b>，请先在主工作区「高级设置 → 自动轮询」中创建脚本。</div>`;
     return `<div class="autopoll-card">
 <div class="autopoll-title">⚪ 自动轮询远程任务并执行：未开启</div>
 <div class="autopoll-hint">开启后，本 worktree 每 ${intervalLabel} 运行 <b>${escapeHtml(status.script)}</b>，将拉取到的新内容写入 <b>todo.md</b>，并自动派发给当前迭代任务的 AI 执行器执行。同一时间只能有一个 worktree 开启。</div>
@@ -462,7 +466,7 @@ function getReviewStageLabel(stage: 'requirements' | 'design' | 'testcase' | 'ta
 export function buildMainPageHtml(
     taskViews: MainFeatureViewModel[],
     dashboard: Record<string, never>,
-    config: { compactTaskDecomposition: boolean; isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; aiQuickChatButtons?: import('./models').AiQuickChatButton[]; autoPollEnabled: boolean; autoPoll?: AutoPollStatus }
+    config: { isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; aiQuickChatButtons?: import('./models').AiQuickChatButton[]; autoPollEnabled: boolean; autoPoll?: AutoPollStatus }
 ): string {
     const customButtons = config.customButtons || [];
     // 'main' buttons render in a dedicated main-panel area belonging to no iteration;
@@ -699,7 +703,7 @@ ${visibleTaskViews.map(view => {
     const health = view.health;
     const taskAutoAdvance = t.autoAdvanceEnabled !== false;
     const taskSpecDriftRepair = t.specDriftRepairEnabled !== false;
-    const effectiveSplitMode = config.compactTaskDecomposition ? 'compact' : (t.taskSplitMode || 'standard');
+    const effectiveSplitMode = t.taskSplitMode || 'standard';
     const artifactStatus = [
         `REQ:${artifacts.requirements ? 'Y' : 'N'}`,
         `DES:${artifacts.design ? 'Y' : 'N'}`,
@@ -807,7 +811,7 @@ ${!isWorktreeSubview ? `<details class="task-config">
 <summary>⚙ 展开配置</summary>
 <div class="task-config-body">
 <div class="task-status">Worktree：${t.worktreePath || '-'}</div>
-<div class="task-status">拆分模式：${effectiveSplitMode === 'compact' ? '急速模式' : '标准模式'}${config.compactTaskDecomposition ? '（全局配置）' : ''}</div>
+<div class="task-status">拆分模式：${effectiveSplitMode === 'compact' ? '急速模式' : '标准模式'}</div>
 <div class="task-status">基线分支：${t.baseBranchUsed || '-'}</div>
 <div class="task-status">迭代分支：${t.iterationBranch || '-'}</div>
 <div class="health-line"><span class="health-badge ${healthClass}">${healthLabel}</span><span class="task-status">${healthStatus}</span></div>
@@ -1965,6 +1969,11 @@ export function buildSettingsPageHtml(
     const osLabel = isWin ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux');
     const scriptExtHint = isWin ? '.ps1 / .bat / .cmd / .js' : '.sh / .bash / .js';
     const scriptsSubdir = inv.scriptsSubdir;
+    const apScriptSelected = config.autoPollScript || DEFAULT_POLL_SCRIPT;
+    const apScriptChoices = inv.master.includes(apScriptSelected) ? inv.master : [...inv.master, apScriptSelected];
+    const apScriptOptions = apScriptChoices.length
+        ? apScriptChoices.map(f => `<option value="${escapeHtml(f)}"${f === apScriptSelected ? ' selected' : ''}>${escapeHtml(f)}${inv.master.includes(f) ? '' : '（缺失）'}</option>`).join('')
+        : '<option value="">（暂无脚本，请先点「创建/打开脚本」）</option>';
     const initialButtons = (config.customButtons || []).map(normalizeCustomButton).map(b => ({
         name: b.name,
         scriptSource: b.scriptSource,
@@ -1978,11 +1987,6 @@ export function buildSettingsPageHtml(
         args: h.args || '',
     }));
     const monorepoGitValue = config.monorepoGit || '';
-    // Initial active Git-mode tab: monorepo when a single-repo URL is configured;
-    // multi-repo only when the user has front/back URLs but no monorepo URL.
-    const initialGitMode = config.monorepoGit
-        ? 'mono'
-        : (config.frontendGit || config.backendGit ? 'multi' : 'mono');
     const originLabel = configMeta.origin === 'worktreeSnapshot'
         ? '子 worktree 快照配置'
         : configMeta.origin === 'master'
@@ -2068,23 +2072,9 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 
 <div class="section">
 <div class="section-title">Git 配置</div>
-<div class="git-tabs">
-<button type="button" class="git-tab" id="gitTabMono" onclick="switchGitMode('mono')" ${disabled}>单一仓库 (Monorepo)</button>
-<button type="button" class="git-tab" id="gitTabMulti" onclick="switchGitMode('multi')" ${disabled}>多仓库 (前后端分离)</button>
-</div>
-
-<div id="gitPaneMono" class="git-pane">
 <h5>单一仓库（Monorepo）Git 地址</h5>
 <input id="mg" value="${monorepoGitValue}" placeholder="代码、文档、脚本位于同一仓库" ${disabled}>
-<div style="font-size:12px;opacity:0.7;margin:4px 0 8px">该模式下，funharness 会将仓库克隆到 <b>repos/mono-main</b> 作为主仓库，并在主仓库与每个迭代 worktree 中按需补齐目录骨架（默认：<b>apps/</b> 代码、<b>docs/</b> 文档、<b>scripts/</b> 项目脚本）。迭代任务以 git worktree 形式生成在 <b>worktrees/&lt;english-slug&gt;/</b>（根即迭代目录，避免中文路径问题）。你可继续在 apps/ 下组织前后端，也可按项目规范调整。若填写了基线分支但远程不存在，系统会在本地主仓库自动创建该分支。</div>
-</div>
-
-<div id="gitPaneMulti" class="git-pane">
-<h5>前端 Git 地址（可选）</h5>
-<input id="fg" value="${config.frontendGit || ''}" ${disabled}>
-<h5>后端 Git 地址（可选）</h5>
-<input id="bg" value="${config.backendGit || ''}" ${disabled}>
-</div>
+<div style="font-size:12px;opacity:0.7;margin:4px 0 8px">funharness 会将该仓库克隆到 <b>repos/mono-main</b> 作为主仓库，并在主仓库与每个迭代 worktree 中按需补齐目录骨架（默认：<b>apps/</b> 代码、<b>docs/</b> 文档、<b>scripts/</b> 项目脚本）。迭代任务以 git worktree 形式生成在 <b>worktrees/&lt;english-slug&gt;/</b>（根即迭代目录，避免中文路径问题）。若填写了基线分支但远程不存在，系统会在本地主仓库自动创建该分支。</div>
 
 <h5>基线分支（如 main、master 或 yourname/integration）</h5>
 <input id="bb" value="${config.baseBranch || ''}" placeholder="如 main 或 yourname/integration" ${disabled}>
@@ -2099,14 +2089,6 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 
 <details class="fold" open>
 <summary>⚙ 高级策略配置</summary>
-<h5>项目自定义约定（多行，完全自定义）</h5>
-<textarea id="pc" rows="6" placeholder="例如：\n1. 前端入口开关必须由后端配置中心下发\n2. 功能入口统一展示在“更多”页\n3. 跳转链接由后端返回并经过白名单校验" ${disabled}>${config.projectConventions || ''}</textarea>
-<h5>最大自动执行并发槽位</h5>
-<input id="mc" type="number" min="1" value="${config.maxConcurrentAutoTasks || 2}" ${disabled}>
-<div class="toggle-row">
-<span>人工修正为完成后自动继续</span>
-<input id="am" type="checkbox" ${config.autoContinueAfterManualDone !== false ? 'checked' : ''} ${disabled}>
-</div>
 <h5>开发会话模式</h5>
 <select id="dcm" ${disabled}>
 <option value="batch" ${config.devConversationMode !== 'single' ? 'selected' : ''}>按批次会话（1.x/2.x，默认）</option>
@@ -2114,23 +2096,9 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 </select>
 <div style="font-size:12px;opacity:0.75;margin:4px 0 8px">按批次模式下，跨批次切换（如 2.x → 3.x）会要求人工确认后才继续。</div>
 <div class="toggle-row">
-<span>任务拆分精简模式</span>
-<input id="cm" type="checkbox" ${config.compactTaskDecomposition ? 'checked' : ''} ${disabled}>
-</div>
-<div class="toggle-row">
-<span>按需求描述自动判别拆分模式</span>
-<input id="ad" type="checkbox" ${config.autoDetectTaskSplitMode !== false ? 'checked' : ''} ${disabled}>
-</div>
-<h5>迭代目录最大长度（24-120，默认 52）</h5>
-<input id="iwl" type="number" min="24" max="120" value="${config.iterationWorktreeNameMaxLength || 52}" ${disabled}>
-<div class="toggle-row">
 <span>命名保留语义（拼音/英文关键词）</span>
 <input id="ins" type="checkbox" ${config.iterationNamingSemantic !== false ? 'checked' : ''} ${disabled}>
 </div>
-<h5>简单需求关键词（逗号分隔）</h5>
-<input id="sk" value="${config.simpleTaskKeywords || ''}" placeholder="如 blacklist,crud,管理,配置" ${disabled}>
-<h5>复杂需求关键词（逗号分隔）</h5>
-<input id="ck" value="${config.complexTaskKeywords || ''}" placeholder="如 workflow,审批,跨系统,并发" ${disabled}>
 <h5>worktree 打开时同步目录（支持多项，按行/逗号/分号分隔）</h5>
 <textarea id="wsd" rows="3" placeholder="例如：worktree/.github/instructions" ${disabled}>${config.worktreeSyncPaths || ''}</textarea>
 <h5>项目结构提炼模式</h5>
@@ -2146,8 +2114,6 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <option value="standard" ${config.gateLevel === 'strict' || config.gateLevel === 'relaxed' ? '' : 'selected'}>standard · 标准（追溯全量闭环，任务阶段需人工确认）</option>
 <option value="strict" ${config.gateLevel === 'strict' ? 'selected' : ''}>strict · 严格（追溯全量 + 更严格执行门禁，任务阶段需人工确认）</option>
 </select>
-<h5>自定义项目目录结构（可选，优先级最高）</h5>
-<textarea id="cps" rows="12" placeholder="填写团队约定的目录结构。留空时：已有项目会自动提炼；新项目回退到默认模板。" ${disabled}>${config.customProjectStructure || ''}</textarea>
 <div class="inline-actions" style="flex-wrap:nowrap">
 <button onclick="initProjectStructure()" style="background:#8e8e93" ${disabled}>🧭 自动检测并初始化项目结构</button>
 <button onclick="applyProjectStructurePreview()" style="background:#5ac8fa" ${disabled}>✅ 应用预览结构</button>
@@ -2173,8 +2139,6 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <div class="hint">显示位置：<b>子面板（迭代）</b>显示在每个迭代任务卡片上，终端 cd 到该任务 worktree 迭代目录再运行脚本；<b>主面板</b>显示在主面板顶部独立区域，终端 cd 到主工作区根目录再运行脚本。脚本内部可自行 cd 到具体子目录（如 frontend/backend）。</div>
 <div class="kv">主目录脚本：<b>${escapeHtml(inv.dirs.master)}</b></div>
 ${inv.dirs.repoMono ? `<div class="kv">迭代脚本(候选，来自主克隆)：<b>${escapeHtml(inv.dirs.repoMono)}</b></div>` : ''}
-${inv.dirs.repoFrontend ? `<div class="kv">前端迭代脚本(候选)：<b>${escapeHtml(inv.dirs.repoFrontend)}</b></div>` : ''}
-${inv.dirs.repoBackend ? `<div class="kv">后端迭代脚本(候选)：<b>${escapeHtml(inv.dirs.repoBackend)}</b></div>` : ''}
 <div class="inline-actions" style="margin-top:8px">
 <button onclick="openScriptDir()" style="background:#6d6d72" ${disabled}>📂 打开主目录 script/</button>
 <button onclick="openHarnessLog()" style="background:#6d6d72" ${disabled}>📋 打开日志</button>
@@ -2219,13 +2183,23 @@ ${readOnly ? '<div class="meta-box readonly" style="margin-bottom:8px">当前窗
 <span>启用自动轮询远程任务</span>
 <input id="ap_enabled" type="checkbox" ${config.autoPollEnabled ? 'checked' : ''} ${disabled} onchange="toggleAutoPollDetails()">
 </div>
-<div class="hint">开启后，到任意 worktree 的<b>子面板</b>即可启动自动轮询（同一时间只能开启一个 worktree）。脚本固定放在主目录的 <b>script/</b> 下，约定把拉取到的任务清单<b>打印到 stdout</b>；插件读取后仅当内容非空且与现有 todo.md 不同才覆盖当前 worktree 的 <b>todo.md</b>。</div>
+<div class="hint">开启后，到任意 worktree 的<b>子面板</b>即可启动自动轮询（同一时间只能开启一个 worktree）。脚本固定放在主目录的 <b>scripts/</b> 下，约定把拉取到的任务清单<b>打印到 stdout</b>；插件读取后仅当内容非空且与现有 todo.md 不同才覆盖当前 worktree 的 <b>todo.md</b>。</div>
 <div id="ap_details" style="display:${config.autoPollEnabled ? 'block' : 'none'}">
 <h5>轮询间隔（秒，最小 5）</h5>
 <input id="ap_int" type="number" min="5" value="${config.autoPollIntervalSec || 60}" ${disabled}>
-<h5>拉取脚本文件名（位于 script/ 下，推荐 Node 脚本 pullTask.js）</h5>
-<input id="ap_script" value="${escapeHtml(config.autoPollScript || 'pullTask.js')}" placeholder="pullTask.js" ${disabled}>
-<div class="kv" style="margin:6px 0">脚本状态：<b>${inv.master.includes(config.autoPollScript || 'pullTask.js') ? '✅ 已存在' : '⚠ 未找到，请点「创建/打开脚本」'}</b></div>
+<h5>拉取脚本（从主目录 scripts/ 下选择，推荐 Node 脚本 pullTask.js）</h5>
+<select id="ap_script" ${disabled}>${apScriptOptions}</select>
+<div class="toggle-row" style="margin-top:10px">
+<span>仅闲时生效（错峰定价，如 DeepSeek）</span>
+<input id="ap_idle_only" type="checkbox" ${config.autoPollIdleOnly ? 'checked' : ''} ${disabled} onchange="toggleAutoPollIdleDetails()">
+</div>
+<div id="ap_idle_details" style="display:${config.autoPollIdleOnly ? 'block' : 'none'}">
+<h5>工作日闲时时间段（可跨零点，默认 18:00–次日 08:00）</h5>
+<input id="ap_idle_start" type="time" value="${escapeHtml(config.autoPollIdleWeekdayStart || DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START)}" ${disabled}>
+至
+<input id="ap_idle_end" type="time" value="${escapeHtml(config.autoPollIdleWeekdayEnd || DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END)}" ${disabled}>
+<div class="hint">周末（周六、周日）全天视为闲时，无需设置；命中窗口外的轮询节拍会被静默跳过，不消耗调用。</div>
+</div>
 <h5>自动任务 Prompt（派发给 AI 执行器时，会以「此 Prompt + 换行 + todo.md 内容」拼接后填入）</h5>
 <textarea id="ap_prompt" rows="5" placeholder="${escapeHtml(DEFAULT_AUTO_POLL_PROMPT)}" ${disabled}>${escapeHtml(config.autoPollPrompt || DEFAULT_AUTO_POLL_PROMPT)}</textarea>
 <div class="hint">留空保存则恢复为默认 Prompt。todo.md 内容会附在此 Prompt 之后一并发送（过长会在深链中截断，但完整内容已复制到剪贴板）。</div>
@@ -2269,27 +2243,15 @@ function toggleCustomPromptMore(){
     more.style.display=open?'flex':'none';
     toggle.textContent=open?'收起':'更多';
 }
-function saveGit(){v.postMessage({type:'saveGit',mode:gitMode,fg:document.getElementById('fg').value,bg:document.getElementById('bg').value,bb:document.getElementById('bb').value,mg:document.getElementById('mg').value,gmg:document.getElementById('gmg').value,md:{frontend:'apps',backend:'apps',docs:'docs',scripts:'scripts'}})}
-let gitMode='${initialGitMode}';
-function switchGitMode(m){
-    gitMode=m;
-    var mono=document.getElementById('gitPaneMono');
-    var multi=document.getElementById('gitPaneMulti');
-    if(mono)mono.style.display=m==='mono'?'block':'none';
-    if(multi)multi.style.display=m==='multi'?'block':'none';
-    var tm=document.getElementById('gitTabMono');
-    var tx=document.getElementById('gitTabMulti');
-    if(tm)tm.classList.toggle('active',m==='mono');
-    if(tx)tx.classList.toggle('active',m==='multi');
-}
-switchGitMode(gitMode);
-function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',pc:document.getElementById('pc').value,mc:parseInt(document.getElementById('mc').value)||2,am:document.getElementById('am').checked,dcm:document.getElementById('dcm').value,cm:document.getElementById('cm').checked,ad:document.getElementById('ad').checked,ins:document.getElementById('ins').checked,iwl:parseInt(document.getElementById('iwl').value)||52,sk:document.getElementById('sk').value,ck:document.getElementById('ck').value,wsd:document.getElementById('wsd').value,cps:document.getElementById('cps').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
+function saveGit(){v.postMessage({type:'saveGit',bb:document.getElementById('bb').value,mg:document.getElementById('mg').value,gmg:document.getElementById('gmg').value})}
+function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',dcm:document.getElementById('dcm').value,ins:document.getElementById('ins').checked,wsd:document.getElementById('wsd').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
 function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
 function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
 function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}
 function testAiProvider(){v.postMessage({type:'testAiProvider'})}
-function saveAutoPollConfig(){v.postMessage({type:'saveAutoPollConfig',enabled:document.getElementById('ap_enabled').checked,interval:parseInt(document.getElementById('ap_int').value)||60,script:document.getElementById('ap_script').value.trim(),prompt:document.getElementById('ap_prompt').value,skipMarkers:document.getElementById('ap_skip').value})}
+function saveAutoPollConfig(){v.postMessage({type:'saveAutoPollConfig',enabled:document.getElementById('ap_enabled').checked,interval:parseInt(document.getElementById('ap_int').value)||60,script:document.getElementById('ap_script').value.trim(),prompt:document.getElementById('ap_prompt').value,skipMarkers:document.getElementById('ap_skip').value,idleOnly:document.getElementById('ap_idle_only').checked,idleWeekdayStart:document.getElementById('ap_idle_start').value,idleWeekdayEnd:document.getElementById('ap_idle_end').value})}
 function toggleAutoPollDetails(){const d=document.getElementById('ap_details');if(d)d.style.display=document.getElementById('ap_enabled').checked?'block':'none'}
+function toggleAutoPollIdleDetails(){const d=document.getElementById('ap_idle_details');if(d)d.style.display=document.getElementById('ap_idle_only').checked?'block':'none'}
 function createPollScriptTemplate(){v.postMessage({type:'createPollScriptTemplate'})}
 const INV=${JSON.stringify(inv).replace(/</g, '\\u003c')};
 const INIT_BTNS=${JSON.stringify(initialButtons).replace(/</g, '\\u003c')};
@@ -2299,12 +2261,10 @@ const CB_READONLY=${readOnly ? 'true' : 'false'};
 function cbEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function cbListFor(source){
   if(source==='master')return INV.master||[];
-  if(INV.mode==='mono')return INV.repoMono||[];
-  var combined=(INV.repoFrontend||[]).concat(INV.repoBackend||[]);
-  var seen={};return combined.filter(function(f){if(seen[f])return false;seen[f]=true;return true;});
+  return INV.repoMono||[];
 }
 function cbSlot(source,script){return source+'::'+script;}
-function cbAllScriptCount(){return (INV.master||[]).length+(INV.repoMono||[]).length+(INV.repoFrontend||[]).length+(INV.repoBackend||[]).length;}
+function cbAllScriptCount(){return (INV.master||[]).length+(INV.repoMono||[]).length;}
 function cbSourceOptions(selected){
   var arr=[['master','主目录(不提交)'],['worktree','迭代脚本(worktree)']];
   var opts='';

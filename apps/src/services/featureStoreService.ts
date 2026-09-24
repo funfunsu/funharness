@@ -71,7 +71,6 @@ export class FeatureStoreService {
         const config = this.loadConfig();
         const englishDir = path.join(this.workspaceRoot, 'worktrees', deriveIterationWorktreeNameWithOptions(task, {
             semanticSlug: config.iterationNamingSemantic,
-            worktreeNameMaxLength: config.iterationWorktreeNameMaxLength,
         }));
         const legacyName = (task.name || '').trim();
         const legacyDir = legacyName

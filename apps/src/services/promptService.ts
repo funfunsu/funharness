@@ -101,14 +101,12 @@ export class PromptService {
             : '';
         const techStack = (config?.techStack || '').trim();
         const codingStandards = (config?.codingStandards || '').trim();
-        const projectConventions = (config?.projectConventions || '').trim();
         const userContent = content
             .replace(/{{taskName}}/g, taskName)
             .replace(/{{taskDesc}}/g, taskDesc)
             .replace(/{{currentWorkSpace}}/g, currentWorkSpace)
             .replace(/{{techStack}}/g, techStack)
-            .replace(/{{codingStandards}}/g, codingStandards)
-            .replace(/{{projectConventions}}/g, projectConventions);
+            .replace(/{{codingStandards}}/g, codingStandards);
 
         let renderedContent = this.composeStagePrompt(
             step,
@@ -116,10 +114,6 @@ export class PromptService {
             { taskName, taskDesc, currentWorkSpace },
             config
         );
-
-        if (projectConventions && !/{{projectConventions}}/g.test(content)) {
-            renderedContent += `\n\n## 项目自定义约定\n${projectConventions}\n`;
-        }
 
         return {
             content: renderedContent,

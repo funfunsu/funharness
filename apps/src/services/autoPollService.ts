@@ -7,6 +7,8 @@ import {
     BASE,
     Config,
     CUSTOM_SCRIPT_DIR,
+    DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END,
+    DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START,
     DEFAULT_AUTO_POLL_PROMPT,
     DEFAULT_AUTO_POLL_SKIP_MARKERS,
     DEFAULT_POLL_SCRIPT,
@@ -40,6 +42,8 @@ export interface AutoPollStatus {
     intervalSec: number;
     script: string;
     scriptExists: boolean;
+    /** True when "仅闲时生效" is on and the current wall-clock time is outside the idle window. */
+    idleGated: boolean;
 }
 
 interface AutoPollDeps {
@@ -65,7 +69,7 @@ export class AutoPollService {
     // ── Public API ─────────────────────────────────────────────────
 
     getStatus(): AutoPollStatus {
-        const { intervalSec, script } = this.resolveSettings();
+        const { intervalSec, script, idleOnly, idleWeekdayStart, idleWeekdayEnd } = this.resolveSettings();
         const scriptPath = path.join(this.deps.getMasterRoot(), CUSTOM_SCRIPT_DIR, script);
         const here = this.deps.getCurrentWorktreePath();
         const lock = this.readLock();
@@ -80,6 +84,7 @@ export class AutoPollService {
             intervalSec,
             script,
             scriptExists: fs.existsSync(scriptPath),
+            idleGated: idleOnly && !this.isIdleNow(idleWeekdayStart, idleWeekdayEnd),
         };
     }
 
@@ -203,7 +208,11 @@ export class AutoPollService {
             }
             this.writeLock({ ...lock, pid: process.pid, heartbeatAt: new Date().toISOString() });
 
-            const { script, prompt, skipMarkers } = this.resolveSettings();
+            const { script, prompt, skipMarkers, idleOnly, idleWeekdayStart, idleWeekdayEnd } = this.resolveSettings();
+            if (idleOnly && !this.isIdleNow(idleWeekdayStart, idleWeekdayEnd)) {
+                this.appendLog(here, '当前非闲时窗口，跳过本次轮询');
+                return;
+            }
             const scriptPath = path.join(this.deps.getMasterRoot(), CUSTOM_SCRIPT_DIR, script);
             if (!fs.existsSync(scriptPath)) {
                 return;
@@ -329,7 +338,15 @@ export class AutoPollService {
 
     // ── Lock helpers ───────────────────────────────────────────────
 
-    private resolveSettings(): { intervalSec: number; script: string; prompt: string; skipMarkers: string[] } {
+    private resolveSettings(): {
+        intervalSec: number;
+        script: string;
+        prompt: string;
+        skipMarkers: string[];
+        idleOnly: boolean;
+        idleWeekdayStart: string;
+        idleWeekdayEnd: string;
+    } {
         // Prefer the master config on disk so worktree windows pick up the latest values
         // (their in-memory snapshot is captured at worktree-creation time).
         const cfg = this.readMasterConfig() ?? this.deps.getConfig();
@@ -341,7 +358,29 @@ export class AutoPollService {
             .split(/\r?\n/)
             .map((s) => s.trim().toLowerCase())
             .filter(Boolean);
-        return { intervalSec, script, prompt, skipMarkers };
+        const idleOnly = cfg.autoPollIdleOnly === true;
+        const idleWeekdayStart = (cfg.autoPollIdleWeekdayStart || '').trim() || DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START;
+        const idleWeekdayEnd = (cfg.autoPollIdleWeekdayEnd || '').trim() || DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END;
+        return { intervalSec, script, prompt, skipMarkers, idleOnly, idleWeekdayStart, idleWeekdayEnd };
+    }
+
+    /** Weekends are always idle; on weekdays, idle iff now falls in [start, end) (wraps past midnight when start > end). */
+    private isIdleNow(weekdayStart: string, weekdayEnd: string): boolean {
+        const now = new Date();
+        const day = now.getDay(); // 0=Sun .. 6=Sat
+        if (day === 0 || day === 6) {
+            return true;
+        }
+        const toMinutes = (hhmm: string): number => {
+            const [h, m] = hhmm.split(':').map(Number);
+            return h * 60 + m;
+        };
+        const start = toMinutes(weekdayStart);
+        const end = toMinutes(weekdayEnd);
+        const nowMin = now.getHours() * 60 + now.getMinutes();
+        return start > end
+            ? (nowMin >= start || nowMin < end) // overnight window, e.g. 18:00 -> 08:00
+            : (nowMin >= start && nowMin < end);
     }
 
     private readMasterConfig(): Config | null {
