@@ -1,6 +1,6 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-09-28T09:41:39.597Z
+- generatedAt: 2026-09-28T09:41:52.747Z
 - taskId: task_1785745439654
 - taskName: 领域聚合优化
 - gateLevel: standard
