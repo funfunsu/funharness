@@ -1,0 +1,14 @@
+{
+  "iterationId": "评审植入",
+  "basedOnBaselineVersion": "v-1fe75d0c3dae",
+  "sourceRevisionSet": {
+    "registryRevision": "45363ca704be198e",
+    "indexRevision": "",
+    "domainDocRevisions": {
+      "domain-knowledge": "",
+      "project-structure-init": ""
+    }
+  },
+  "updatedAt": "2026-08-06T07:41:01.644Z",
+  "domainChanges": []
+}
