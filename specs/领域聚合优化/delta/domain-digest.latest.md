@@ -1,23 +1,23 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-08-04T08:23:45.944Z
+- generatedAt: 2026-09-28T09:41:31.723Z
 - taskId: task_1785745439654
 - taskName: 领域聚合优化
 - gateLevel: standard
-- totalChanges: 2
+- totalChanges: 3
 - blockedByGate: 1
 
 ## Executive Summary
 
 - highRiskChanges: 1
 - mediumRiskChanges: 1
-- lowRiskChanges: 0
+- lowRiskChanges: 1
 
 ## Domain Index
 
 | domain | total | high | medium | low | blocked |
 | --- | --- | --- | --- | --- | --- |
-| uncategorized | 2 | 1 | 1 | 0 | 1 |
+| uncategorized | 3 | 1 | 1 | 1 | 1 |
 
 ## Domain Sections
 
@@ -28,4 +28,6 @@
   - changedFiles=5
 - [2026-08-03T09:15:43.276Z] [tsk] [medium] TSK snapshot updated
   - tsk:initial-snapshot
+- [2026-09-28T09:41:31.720Z] [dev] [low] Development drift gate passed
+  - changedFiles=1
 
