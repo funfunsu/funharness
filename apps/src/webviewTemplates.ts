@@ -183,14 +183,14 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_DESIGN],
-        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="next('des','${ctx.task.id}','tcs')">✅ 确认设计并进入 Testcase</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="next('des','${ctx.task.id}','tcs')">✅ 确认并进入 Testcase</button>`,
     },
     {
         key: 'des-skip-tsk',
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_DESIGN],
-        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="next('des','${ctx.task.id}','tsk')">✅ 确认设计并进入任务（跳过 Testcase）</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="next('des','${ctx.task.id}','tsk')">✅ 确认并直接进入任务</button>`,
     },
     {
         key: 'des-view',
