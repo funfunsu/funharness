@@ -8,9 +8,10 @@ export class SchedulerRegistry {
         private readonly createIterDir: (task: Feature) => string,
         private readonly workspaceRoot: string,
         private readonly getConfig: () => Config,
-        private readonly dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string) => Promise<void>,
+        private readonly dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string, context?: { stage?: string; taskId?: string }) => Promise<void>,
         private readonly onStatusChange: () => void,
         private readonly getDevSystemPrompt: (task: Feature, subFeatureName?: string) => string,
+        private readonly getLocalRepairPrompt: (task: Feature) => string = () => '',
     ) {}
 
     get(task: Feature): FeatureScheduler {
@@ -22,6 +23,8 @@ export class SchedulerRegistry {
                 this.dispatchAi,
                 this.onStatusChange,
                 (subTask, iterTask) => this.getDevSystemPrompt(iterTask, subTask.name),
+                undefined,
+                (_subTask, iterTask) => this.getLocalRepairPrompt(iterTask),
             );
             this.schedulers.set(task.id, scheduler);
         }

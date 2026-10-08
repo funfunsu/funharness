@@ -3,6 +3,7 @@
 /**
  * Unit tests for PromptService.
  * Coverage: domain summary prompt includes explicit domain context.
+ * 覆盖基线：修复使用独立模板及宪法，缺少模板时不得派发通用开发 Prompt 或绕过 done 信号边界。
  */
 
 const { describe, test } = require('node:test');
@@ -26,6 +27,23 @@ function cleanup(dir) {
 }
 
 describe('PromptService', () => {
+    test('本地修复独立模板注入宪法并保留运行时占位符，缺失模板则返回空', () => {
+        const root = makeTempDir();
+        try {
+            fs.mkdirSync(path.join(root, 'specs'));
+            fs.writeFileSync(path.join(root, 'specs/constitution.md'), 'LOCAL_REPAIR_CONSTITUTION');
+            const service = new PromptService(root, path.join(__dirname, '..'));
+            const prompt = service.getLocalRepairPrompt('验证修复', '描述', root);
+            assert.match(prompt, /Local Validation Repair Agent/);
+            assert.match(prompt, /Never create or overwrite any `done-\*` signal/);
+            assert.match(prompt, /工程宪法/);
+            assert.match(prompt, /LOCAL_REPAIR_CONSTITUTION/);
+            assert.ok(prompt.includes('{{repairSignalContent}}'));
+            assert.ok(prompt.includes(root));
+            assert.equal(new PromptService(root, root).getLocalRepairPrompt('验证', '描述', root), '');
+        } finally { cleanup(root); }
+    });
+
     test('buildDomainSummaryPrompt includes explicit domain context', () => {
         const prompt = PromptService.buildDomainSummaryPrompt({
             canonical: 'billing',

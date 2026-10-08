@@ -54,7 +54,7 @@ interface HarnessActionsDeps {
     stopScheduler: (featureId: string) => void;
     onPass: (task: Feature) => void;
     isWorktreeSubview: () => boolean;
-    dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask' | 'quick-chat-button', providerOverride?: string) => Promise<void>;
+    dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask' | 'quick-chat-button', providerOverride?: string, context?: { stage?: string; taskId?: string }) => Promise<void>;
     runDomainSummaryAiRefiner?: (prompt: string) => string | null;
     copyProjectStructureToIteration: (iterDir: string) => void;
     renderAgentPrompt: (step: HarnessStep, featureName: string, featureDesc: string, iterDir: string) => { content: string; source: string; path: string };
@@ -397,7 +397,7 @@ export class HarnessActionsService {
             id,
             name,
             desc,
-            taskSplitMode: 'standard',
+            taskSplitMode: 'compact',
             stage: STAGE.INITIALIZING,
             autoAdvanceEnabled: true,
             specDriftRepairEnabled: true,
@@ -437,7 +437,7 @@ export class HarnessActionsService {
             id,
             name: normalizedTitle,
             desc: normalizedDesc,
-            taskSplitMode: 'standard',
+            taskSplitMode: 'compact',
             stage: STAGE.INITIALIZING,
             autoAdvanceEnabled: true,
             specDriftRepairEnabled: true,
@@ -661,7 +661,7 @@ export class HarnessActionsService {
             const promptContent = step === 'dev' ? this.renderQuickDevPrompt(rendered.content, task, iterDir) : rendered.content;
             const repairSection = this.buildRepairFeedbackSection(repairFeedback);
             const query = `${promptContent}${repairSection}\n\n---\n运行参数：taskSplitMode=${splitMode}`;
-            await this.deps.dispatchAi(query, iterDir, 'stage-agent', task.aiProvider);
+            await this.deps.dispatchAi(query, iterDir, 'stage-agent', task.aiProvider, { stage: step, taskId: task.id });
             vscode.window.showInformationMessage(`已派发 ${step.toUpperCase()} Agent（Prompt来源: ${rendered.source}）`);
             this.startArtifactRepairWatch(task, step);
 
@@ -2593,7 +2593,7 @@ export class HarnessActionsService {
     }
 
     private resolveFeatureSplitMode(task: Feature): 'standard' | 'compact' {
-        return task.taskSplitMode || 'standard';
+        return task.taskSplitMode || 'compact';
     }
 
     /**

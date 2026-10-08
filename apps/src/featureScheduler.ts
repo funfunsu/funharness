@@ -1,8 +1,12 @@
 ﻿import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Config, SubFeature, Feature, getSpecDocsDir, resolveFeaturePlanFileForIteration } from './models';
+import { parseDocument } from 'yaml';
+import { Config, SubFeature, Feature, getAiProvider, getSpecDocsDir, resolveFeaturePlanFileForIteration } from './models';
 import { appendHarnessLog } from './services/harnessLog';
+import { LocalProcessTaskService, LocalVerificationError } from './services/localProcessTaskService';
+import { AiUsageService } from './services/aiUsageService';
+import { LocalRepairService, LocalRepairState } from './services/localRepairService';
 
 export class FeatureScheduler {
     private iterDir: string;
@@ -10,23 +14,29 @@ export class FeatureScheduler {
     private readonly docsDir: string;
     private watcher: vscode.FileSystemWatcher | null = null;
     private taskPlanWatcher: vscode.FileSystemWatcher | null = null;
+    private repairWatcher: vscode.FileSystemWatcher | null = null;
+    private repairTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    private readonly localRepairs: LocalRepairService;
     private pollTimer: ReturnType<typeof setInterval> | null = null;
     private autoMode: boolean = false;
     private timeoutTimer: NodeJS.Timeout | null = null;
     private handledSignals: Set<string> = new Set();
+    private readonly executingLocalTasks = new Set<string>();
     private lastSubTaskStatuses: Map<string, SubFeature['status']> = new Map();
     private onStatusChange: () => void;
     private config: Config;
-    private readonly dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string) => Promise<void>;
+    private readonly dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string, context?: { stage?: string; taskId?: string }) => Promise<void>;
     private readonly getDevSystemPrompt: (subFeature: SubFeature, iterFeature: Feature) => string;
 
     constructor(
         iterDir: string,
         workspaceRoot: string,
         config: Config,
-        dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask') => Promise<void>,
+        dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string, context?: { stage?: string; taskId?: string }) => Promise<void>,
         onStatusChange: () => void,
         getDevSystemPrompt: (subFeature: SubFeature, iterFeature: Feature) => string,
+        private readonly localProcessTasks: LocalProcessTaskService = new LocalProcessTaskService(),
+        private readonly getLocalRepairPrompt: (subFeature: SubFeature, iterFeature: Feature) => string = () => '',
     ) {
         this.iterDir = iterDir;
         this.workspaceRoot = workspaceRoot;
@@ -35,13 +45,14 @@ export class FeatureScheduler {
         this.dispatchAi = dispatchAi;
         this.onStatusChange = onStatusChange;
         this.getDevSystemPrompt = getDevSystemPrompt;
+        this.localRepairs = new LocalRepairService(iterDir);
     }
 
     private fillTemplateVars(template: string, vars: Record<string, string>): string {
         let rendered = template;
         for (const [key, value] of Object.entries(vars)) {
             const safeKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            rendered = rendered.replace(new RegExp(`{{\\s*${safeKey}\\s*}}`, 'g'), value);
+            rendered = rendered.replace(new RegExp(`{{\\s*${safeKey}\\s*}}`, 'g'), () => value);
         }
         return rendered;
     }
@@ -170,19 +181,8 @@ export class FeatureScheduler {
             return { requirementIds: [], propertyIds: [] };
         }
 
-        const blocks = Array.from(text.matchAll(/\[([^\]]*)\]/g)).map(match => match[1] || '');
-        if (blocks.length === 0) {
-            return { requirementIds: [], propertyIds: [] };
-        }
-
-        const parseIds = (block: string): string[] => block
-            .split(/[,，]/)
-            .map(item => item.trim())
-            .filter(Boolean);
-
-        const requirementIds = parseIds(blocks[0]).filter(id => /^Req-/i.test(id));
-        const propertyIds = (blocks.length > 1 ? parseIds(blocks[1]) : [])
-            .filter(id => /^INV-/i.test(id));
+        const requirementIds = [...new Set(text.match(/\bReq-[\w.-]+/gi) || [])];
+        const propertyIds = [...new Set(text.match(/\bINV-[\w.-]+/gi) || [])];
 
         return { requirementIds, propertyIds };
     }
@@ -194,10 +194,18 @@ export class FeatureScheduler {
         const content = fs.readFileSync(file, 'utf8');
         const lines = content.split('\n');
         const tasks: SubFeature[] = [];
+        const explicitDependencies = new Set<string>();
         let current: SubFeature | null = null;
         let currentField = '';
+        let inCodeFence = false;
 
         for (const line of lines) {
+            if (/^\s*```/.test(line)) {
+                inCodeFence = !inCodeFence;
+                currentField = '';
+                continue;
+            }
+            if (inCodeFence) continue;
             const taskMatch = line.match(/^\-\s*\[([ xX]|doing|failed)\]\s*(\d+\.\d+)\s+(.+)/i);
             if (taskMatch) {
                 if (current) tasks.push(current);
@@ -232,9 +240,24 @@ export class FeatureScheduler {
             if (trimmed.startsWith('- Owner:')) {
                 current.owner = trimmed.replace('- Owner:', '').trim();
                 currentField = '';
+            } else if (trimmed.startsWith('- 执行方式:') || trimmed.startsWith('- 执行方式：')) {
+                current.execution = trimmed.replace(/^- 执行方式[：:]/, '').trim() as SubFeature['execution'];
+                currentField = '';
+            } else if (trimmed.startsWith('- 本地操作:') || trimmed.startsWith('- 本地操作：')) {
+                current.localAction = trimmed.replace(/^- 本地操作[：:]/, '').trim() as SubFeature['localAction'];
+                currentField = '';
+            } else if (trimmed.startsWith('- 检查项:') || trimmed.startsWith('- 检查项：')) {
+                current.checks = this.parseDependencyEntries(trimmed.replace(/^- 检查项[：:]/, '').trim()) as SubFeature['checks'];
+                currentField = '';
+            } else if (trimmed.startsWith('- 自动修复:') || trimmed.startsWith('- 自动修复：')) {
+                const value = trimmed.replace(/^- 自动修复[：:]/, '').trim();
+                if (value !== 'true' && value !== 'false') current.executionConfigError = 'autoRepair must be true or false';
+                current.autoRepair = value === 'true';
+                currentField = '';
             } else if (trimmed.startsWith('- 依赖:') || trimmed.startsWith('- 依赖：')) {
                 const depStr = trimmed.replace(/^- 依赖[：:]/, '').trim();
                 current.depends = this.parseDependencyEntries(depStr);
+                explicitDependencies.add(current.id);
                 currentField = '';
             } else if (trimmed.startsWith('- 输入:') || trimmed.startsWith('- 输入：')) {
                 current.input = trimmed.replace(/^- 输入[：:]/, '').trim();
@@ -256,6 +279,8 @@ export class FeatureScheduler {
                 current.output.push(...entries);
                 currentField = 'modifiedFiles';
             } else if (trimmed.startsWith('- 验收:') || trimmed.startsWith('- 验收：')) {
+                const acceptance = trimmed.replace(/^- 验收[：:]/, '').trim();
+                if (acceptance) current.acceptance.push(acceptance);
                 currentField = 'acceptance';
             } else if (trimmed.startsWith('- 追踪:') || trimmed.startsWith('- 追踪：')) {
                 const trackingRaw = trimmed.replace(/^- 追踪[：:]/, '').trim();
@@ -297,12 +322,48 @@ export class FeatureScheduler {
         }
 
         if (current) tasks.push(current);
+        for (const fence of content.matchAll(/```ya?ml\s*\r?\n([\s\S]*?)```/gi)) {
+            const document = parseDocument(fence[1], { uniqueKeys: true });
+            if (document.errors.length > 0) {
+                appendHarnessLog(this.iterDir, 'task-plan', `Invalid YAML: ${document.errors.map(error => error.message).join('; ')}`);
+                continue;
+            }
+            const plan = document.toJS();
+            if (plan?.artifactType !== 'tasks' || !Array.isArray(plan.tasks)) continue;
+            for (const entry of plan.tasks) {
+                if (!entry || typeof entry !== 'object') continue;
+                const task = tasks.find(item => item.id === String(entry.id));
+                if (!task) continue;
+                for (const field of ['execution', 'localAction', 'checks', 'autoRepair'] as const) {
+                    if (task[field] !== undefined && entry[field] !== undefined &&
+                        JSON.stringify(task[field]) !== JSON.stringify(entry[field])) {
+                        task.executionConfigError = `Conflicting Markdown/YAML ${field} for task ${task.id}`;
+                    }
+                }
+                task.execution ??= entry.execution;
+                task.localAction ??= entry.localAction;
+                task.checks ??= entry.checks;
+                task.autoRepair ??= entry.autoRepair;
+                if (task.autoRepair !== undefined && typeof task.autoRepair !== 'boolean') {
+                    task.executionConfigError = 'autoRepair must be a boolean';
+                }
+                if (!Array.isArray(entry.dependsOn)) continue;
+                const depends = entry.dependsOn.map((value: unknown) => String(value));
+                if (explicitDependencies.has(task.id)) {
+                    if ([...task.depends].sort().join(',') !== [...depends].sort().join(',')) {
+                        appendHarnessLog(this.iterDir, 'task-plan', `Dependency conflict for ${task.id}: Markdown takes precedence over YAML`);
+                    }
+                } else {
+                    task.depends = depends;
+                }
+            }
+        }
         return tasks;
     }
 
     getNextSubFeature(): SubFeature | null {
         const subTasks = this.parseSubFeaturesMd();
-        const doneIds = new Set(subTasks.filter(t => t.status === 'done').map(t => t.id));
+        const doneIds = new Set(subTasks.filter(t => t.status === 'done' && this.isVerifiedLocalCompletion(t)).map(t => t.id));
         return subTasks.find(t =>
             t.status === 'todo' &&
             t.depends.every(depId => doneIds.has(depId))
@@ -370,6 +431,8 @@ export class FeatureScheduler {
         const codingStandards = this.config.codingStandards || '变量采用小驼峰命名，方法需加注释';
 
         let dependencySection = '';
+        let dependencyCharsRemaining = 6000;
+        const includedDependencyFiles = new Set<string>();
         if (subTask.depends.length > 0) {
             const allTasks = this.parseSubFeaturesMd();
             const depTasks = allTasks.filter(t => subTask.depends.includes(t.id));
@@ -380,24 +443,34 @@ export class FeatureScheduler {
                 const fileContents: string[] = [];
 
                 for (const outputFile of dep.output) {
+                    const normalizedOutput = this.stripPathBoundaryNoise(outputFile);
                     const candidates = [
-                        path.join(this.iterDir, outputFile),
-                        outputFile,
+                        path.resolve(this.iterDir, normalizedOutput),
+                        path.resolve(this.workspaceRoot, normalizedOutput),
                     ];
                     let found = false;
                     for (const candidate of candidates) {
-                        if (fs.existsSync(candidate)) {
+                        if (!fs.existsSync(candidate)) continue;
+                        found = true;
+                        const fileKey = process.platform === 'win32' ? candidate.toLowerCase() : candidate;
+                        if (includedDependencyFiles.has(fileKey)) {
+                            fileContents.push(`\n- \`${normalizedOutput}\` (已列出，不重复注入)`);
+                        } else if (!fs.statSync(candidate).isFile()) {
+                            fileContents.push(`\n- \`${normalizedOutput}\` (目录，按需查找相关文件)`);
+                        } else if (dependencyCharsRemaining === 0) {
+                            fileContents.push(`\n- \`${normalizedOutput}\` (正文未注入；需要时按路径读取)`);
+                        } else {
                             const content = fs.readFileSync(candidate, 'utf8');
-                            const truncated = content.length > 2000
-                                ? content.substring(0, 2000) + '\n... (truncated)'
-                                : content;
-                            fileContents.push(`\n#### 文件: \`${outputFile}\`\n\`\`\`\n${truncated}\n\`\`\``);
-                            found = true;
-                            break;
+                            const limit = Math.min(2000, dependencyCharsRemaining);
+                            const excerpt = content.substring(0, limit);
+                            dependencyCharsRemaining -= excerpt.length;
+                            fileContents.push(`\n#### 文件: \`${normalizedOutput}\`\n\`\`\`\n${excerpt}\n\`\`\`${content.length > excerpt.length ? '\n(仅注入片段；缺失契约请按路径读取，不要推断)' : ''}`);
+                            includedDependencyFiles.add(fileKey);
                         }
+                        break;
                     }
                     if (!found) {
-                        fileContents.push(`\n- \`${outputFile}\` (文件尚未生成，请根据设计文档推断)`);
+                        fileContents.push(`\n- \`${normalizedOutput}\` (文件缺失；必要依赖缺失时遵循 FAILURE PROTOCOL，不要推断接口)`);
                     }
                 }
 
@@ -408,6 +481,9 @@ export class FeatureScheduler {
             dependencySection = `\n## 前置依赖任务及其产出物\n\n**以下是本任务依赖的前置任务。它们的输出文件（如 API 协议、接口定义、数据模型等）是本任务的输入约束，请严格遵循。**\n\n${depParts.join('\n\n')}\n`;
         }
 
+        appendHarnessLog(this.iterDir, 'dev-context',
+            `task=${subTask.id} dependencyBodyChars=${6000 - dependencyCharsRemaining} dependencySectionChars=${dependencySection.length} manifestChars=${manifestContext.length}`);
+
         const devSystemPrompt = this.fillTemplateVars(this.getDevSystemPrompt(subTask, iterFeature), {
             taskName: subTask.name,
             taskDesc: iterFeature.desc || '',
@@ -417,12 +493,12 @@ export class FeatureScheduler {
             currentWorkSpace: this.iterDir,
             docsDir: docsRel,
             signalsDir,
-            designContext: subTask.input || designContext,
+            designContext,
             outputFiles,
             acceptanceCriteria,
             techStack,
             codingStandards,
-            taskSplitMode: iterFeature.taskSplitMode || 'standard',
+            taskSplitMode: iterFeature.taskSplitMode || 'compact',
         }).trim();
         const systemPromptSection = devSystemPrompt
             ? `${devSystemPrompt}\n\n=====================================================================\n# 当前要执行的具体任务（请严格按以下指令完成本次编码）\n\n`
@@ -444,7 +520,7 @@ export class FeatureScheduler {
 ${dependencySection}
 ## 输入依据
 文件路径：\`${designFile}\`
-${subTask.input || designContext}
+${subTask.input ? `任务指定输入：${subTask.input}\n` : ''}${designContext}
 
 ## 需求上下文（裁剪）
 ${requirementsContext}
@@ -734,7 +810,15 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
                 (tc.requirementIds || []).some(id => reqSet.has(id))
             );
             const view = filtered.length > 0 ? filtered : (data.testCases || []).slice(0, 5);
-            return view.length > 0 ? JSON.stringify(view, null, 2) : '(manifest 中无可用测试用例)';
+            if (view.length === 0) return '(manifest 中无可用测试用例)';
+            const selected: typeof view = [];
+            for (const testCase of view) {
+                if (JSON.stringify([...selected, testCase]).length > 1800) continue;
+                selected.push(testCase);
+            }
+            const omitted = view.length - selected.length;
+            return `${JSON.stringify(selected)}${omitted > 0
+                ? `\n(${omitted} 个相关条目未注入；请按 Req ID 从 ${manifestFile} 按需读取)` : ''}`;
         } catch {
             return '(test-manifest.json 解析失败)';
         }
@@ -843,6 +927,14 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     }
 
     async dispatchSubFeature(subTask: SubFeature, iterFeature: Feature): Promise<void> {
+        if (this.pendingRepair()) {
+            vscode.window.showWarningMessage('正在等待 AI 修复完成，不能重复派发或跳过验证。');
+            return;
+        }
+        if (this.executingLocalTasks.size > 0) {
+            vscode.window.showWarningMessage('本地过程任务仍在执行，请等待完成后再派发。');
+            return;
+        }
         fs.mkdirSync(path.join(this.iterDir, 'signals'), { recursive: true });
         fs.mkdirSync(path.join(this.iterDir, 'tests'), { recursive: true });
         fs.mkdirSync(path.join(this.iterDir, 'logs'), { recursive: true });
@@ -853,6 +945,70 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         this.updateSubFeatureStatus(subTask.id, 'doing');
         this.onStatusChange();
 
+        if (subTask.executionConfigError) {
+            this.updateSubFeatureStatus(subTask.id, 'failed');
+            this.autoMode = false;
+            this.writeLog(subTask.id, subTask.executionConfigError);
+            this.onStatusChange();
+            vscode.window.showWarningMessage(subTask.executionConfigError);
+            return;
+        }
+        if (subTask.execution && subTask.execution !== 'ai' && subTask.execution !== 'local') {
+            this.updateSubFeatureStatus(subTask.id, 'failed');
+            this.autoMode = false;
+            this.onStatusChange();
+            throw new Error(`Unsupported task execution: ${subTask.execution}`);
+        }
+        if (subTask.execution === 'local') {
+            this.executingLocalTasks.add(subTask.id);
+            const usage = new AiUsageService();
+            const record = usage.begin('', this.iterDir, 'local-process', 'local', null, null,
+                { stage: 'dev', taskId: subTask.id });
+            const startedAt = Date.now();
+            let failure: unknown;
+            let resumeAuto = this.autoMode;
+            try {
+                const previous = this.localRepairs.read(subTask.id);
+                if (previous?.status === 'verified') {
+                    previous.status = 'verifying';
+                    previous.wasVerified = true;
+                    this.localRepairs.save(previous);
+                }
+                await this.localProcessTasks.execute(subTask, this.parseSubFeaturesMd(), this.iterDir, this.docsDir,
+                    vscode.workspace.isTrusted === true);
+                this.writeLog(subTask.id, `Local process completed: ${subTask.localAction}`);
+                record.status = 'completed';
+                const repair = this.localRepairs.read(subTask.id);
+                if (repair) {
+                    repair.status = 'verified';
+                    delete repair.reason;
+                    repair.wasVerified = false;
+                    repair.signature = this.localRepairs.signature(subTask);
+                    if (!repair.signalFile) repair.signalFile = `signals/repair-${subTask.id}-${repair.requestId}`;
+                    this.localRepairs.save(repair);
+                }
+            } catch (error) {
+                resumeAuto = resumeAuto && this.autoMode;
+                failure = error;
+                record.error = error instanceof Error ? error.message : String(error);
+                this.updateSubFeatureStatus(subTask.id, 'failed');
+                this.autoMode = false;
+                this.writeLog(subTask.id, `Local process failed: ${error instanceof Error ? error.message : String(error)}`);
+                this.onStatusChange();
+            } finally {
+                this.executingLocalTasks.delete(subTask.id);
+                usage.finish(this.iterDir, record, record.status, startedAt);
+            }
+            if (failure) {
+                if (await this.tryLocalRepair(subTask, iterFeature, failure, resumeAuto)) return;
+                const repair = this.localRepairs.read(subTask.id);
+                if (repair?.status === 'verifying' || repair?.status === 'verified') this.localRepairs.block(repair, record.error || 'Local verification failed');
+                vscode.window.showWarningMessage(`本地任务 ${subTask.id} 失败，自动修复不可用或已停止，请查看日志。`);
+                return;
+            }
+            await this.handleSignal(subTask.id, path.join(this.iterDir, 'signals', `done-${subTask.id}`), iterFeature);
+            return;
+        }
         const query = this.buildDispatchQuery(subTask, iterFeature);
         await this.dispatchAi(query, this.iterDir, 'dev-subtask', iterFeature.aiProvider);
 
@@ -860,6 +1016,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     }
 
     async dispatchNext(iterTask: Feature, completedTaskId?: string): Promise<boolean> {
+        if (this.pendingRepair()) return false;
         const next = this.getNextSubFeature();
         if (next) {
             if (await this.shouldPauseAtBatchBoundary(completedTaskId, next.id, iterTask)) {
@@ -875,7 +1032,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         // dispatchNext again on completion. If there are 'failed' or dependency-blocked
         // tasks, also stay silent so the user doesn't get a misleading "全部完成".
         const subTasks = this.parseSubFeaturesMd();
-        const allDone = subTasks.length > 0 && subTasks.every(t => t.status === 'done');
+        const allDone = subTasks.length > 0 && subTasks.every(t => t.status === 'done' && this.isVerifiedLocalCompletion(t));
         if (allDone) {
             vscode.window.showInformationMessage('🎉 所有编码任务已完成！');
             this.autoMode = false;
@@ -942,6 +1099,10 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             const taskId = path.basename(uri.fsPath).replace('done-', '');
             await this.handleSignal(taskId, uri.fsPath, iterTask);
         });
+        this.repairWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(signalsDir, 'repair-*'));
+        this.repairWatcher.onDidCreate(async uri => {
+            await this.handleRepairSignal(uri.fsPath, iterTask);
+        });
 
         const taskPlanFile = this.resolveTaskPlanFile();
         const taskPlanDir = path.dirname(taskPlanFile);
@@ -958,6 +1119,12 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     }
 
     stopWatching(): void {
+        if (this.repairWatcher) {
+            this.repairWatcher.dispose();
+            this.repairWatcher = null;
+        }
+        if (this.repairTimeoutTimer) clearTimeout(this.repairTimeoutTimer);
+        this.repairTimeoutTimer = null;
         if (this.watcher) {
             this.watcher.dispose();
             this.watcher = null;
@@ -977,7 +1144,7 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         const subTasks = this.parseSubFeaturesMd();
         const nextStatuses = this.buildSubTaskStatusMap(subTasks);
         const manuallyCompletedIds = Array.from(this.lastSubTaskStatuses.entries())
-            .filter(([id, status]) => status === 'doing' && nextStatuses.get(id) === 'done' && !this.handledSignals.has(id))
+            .filter(([id, status]) => status === 'doing' && nextStatuses.get(id) === 'done' && !this.handledSignals.has(id) && !this.executingLocalTasks.has(id) && this.localRepairs.read(id)?.status !== 'waiting')
             .map(([id]) => id);
 
         this.lastSubTaskStatuses = nextStatuses;
@@ -1005,11 +1172,15 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             if (!fs.existsSync(signalsDir)) return;
             let entries: string[];
             try {
-                entries = fs.readdirSync(signalsDir).filter(f => f.startsWith('done-'));
+                entries = fs.readdirSync(signalsDir).filter(f => f.startsWith('done-') || f.startsWith('repair-'));
             } catch {
                 return;
             }
             for (const fileName of entries) {
+                if (fileName.startsWith('repair-')) {
+                    await this.handleRepairSignal(path.join(signalsDir, fileName), iterTask);
+                    continue;
+                }
                 const taskId = fileName.replace('done-', '');
                 if (this.handledSignals.has(taskId)) continue;
                 const filePath = path.join(signalsDir, fileName);
@@ -1026,12 +1197,15 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     }
 
     private async handleSignal(taskId: string, signalFilePath: string, iterTask: Feature): Promise<void> {
+        if (this.executingLocalTasks.has(taskId)) return;
         if (this.handledSignals.has(taskId)) return;
 
         // Only handle signals for known subtasks in the current tasks.md.
         // This prevents stale done-* files from previous runs/specs from causing false prompts.
         const currentTasks = this.parseSubFeaturesMd();
         const currentTask = currentTasks.find(t => t.id === taskId);
+        const repair = currentTask?.execution === 'local' ? this.localRepairs.read(taskId) : null;
+        if (repair && repair.status !== 'verified') return;
         if (!currentTask) {
             this.handledSignals.add(taskId);
             this.writeLog(taskId, `ℹ 忽略未知信号: done-${taskId}（当前 tasks.md 不包含该子任务）`);
@@ -1144,10 +1318,49 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     }
 
     async startAuto(iterTask: Feature): Promise<void> {
+        if (this.executingLocalTasks.size > 0) {
+            vscode.window.showWarningMessage('本地过程任务仍在执行，请等待完成。');
+            return;
+        }
         this.autoMode = true;
         this.startWatching(iterTask);
+        for (const task of this.parseSubFeaturesMd()) {
+            const state = this.localRepairs.read(task.id);
+            if (state?.reason === 'Corrupt persisted repair state') {
+                this.updateSubFeatureStatus(task.id, 'failed');
+                this.autoMode = false;
+                this.writeLog(task.id, state.reason);
+                this.onStatusChange();
+                vscode.window.showWarningMessage(`任务 ${task.id} 的修复状态损坏，已阻断；请检查日志后重试本地验证。`);
+                return;
+            }
+            if (task.execution === 'local' && state?.status === 'verifying') {
+                if (task.executionConfigError || this.localRepairs.signature(task) !== state.signature || vscode.workspace.isTrusted !== true) {
+                    this.localRepairs.block(state, 'Interrupted verification contract changed');
+                    this.updateSubFeatureStatus(task.id, 'failed');
+                    this.autoMode = false;
+                    this.onStatusChange();
+                    return;
+                }
+                await this.dispatchSubFeature(task, iterTask);
+                return;
+            }
+        }
+        const pending = this.pendingRepair();
+        if (pending) {
+            pending.resumeAuto = true;
+            this.localRepairs.save(pending);
+            this.autoMode = false;
+            this.armRepairTimeout(pending);
+            await this.handleRepairSignal(path.join(this.iterDir, pending.signalFile), iterTask);
+            return;
+        }
         const currentDoing = this.getCurrentSubFeature();
         if (currentDoing) {
+            if (currentDoing.execution === 'local') {
+                await this.dispatchSubFeature(currentDoing, iterTask);
+                return;
+            }
             this.handledSignals.delete(currentDoing.id);
             this.clearStaleSignal(currentDoing.id);
             vscode.window.showInformationMessage(`⏳ 等待任务 ${currentDoing.id} 完成...`);
@@ -1160,6 +1373,12 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
 
     pause(): void {
         this.autoMode = false;
+        const pending = this.pendingRepair();
+        if (pending) {
+            pending.resumeAuto = false;
+            this.localRepairs.save(pending);
+        }
+        this.autoMode = false;
         this.clearTimeout();
         vscode.window.showInformationMessage('⏸ 自动执行已暂停');
     }
@@ -1169,6 +1388,14 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     }
 
     async manualNext(iterTask: Feature): Promise<void> {
+        if (this.pendingRepair()) {
+            vscode.window.showWarningMessage('等待修复期间不能提前完成本地验证。');
+            return;
+        }
+        if (this.executingLocalTasks.size > 0) {
+            vscode.window.showWarningMessage('本地过程任务仍在执行，不能提前标记完成。');
+            return;
+        }
         const current = this.getCurrentSubFeature();
         if (current) {
             this.updateSubFeatureStatus(current.id, 'done');
@@ -1182,6 +1409,14 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
     }
 
     async retrySubFeature(subFeatureId: string, iterFeature: Feature): Promise<void> {
+        if (this.pendingRepair()) {
+            vscode.window.showWarningMessage('修复请求仍在执行，不能重复重试。');
+            return;
+        }
+        if (this.executingLocalTasks.size > 0) {
+            vscode.window.showWarningMessage('本地过程任务仍在执行，不能重复重试。');
+            return;
+        }
         this.updateSubFeatureStatus(subFeatureId, 'todo');
         // Allow the retried task's new done signal to be consumed again.
         this.handledSignals.delete(subFeatureId);
@@ -1198,6 +1433,91 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
             this.startWatching(iterFeature);
             await this.dispatchSubFeature(subTask, iterFeature);
         }
+    }
+
+    private isVerifiedLocalCompletion(task: SubFeature): boolean {
+        if (task.execution !== 'local') return true;
+        const state = this.localRepairs.read(task.id);
+        return !state || state.status === 'verified';
+    }
+
+    private pendingRepair(): LocalRepairState | null {
+        for (const task of this.parseSubFeaturesMd()) {
+            const state = this.localRepairs.read(task.id);
+            if (state?.status === 'waiting') return state;
+        }
+        return null;
+    }
+
+    private async tryLocalRepair(task: SubFeature, feature: Feature, failure: unknown, resumeAuto: boolean): Promise<boolean> {
+        if (!resumeAuto || task.autoRepair === false || task.localAction !== 'verify' ||
+            !(failure instanceof LocalVerificationError) || !failure.repairable || vscode.workspace.isTrusted !== true ||
+            getAiProvider(feature.aiProvider || this.config.aiProvider || 'copilot-chat').kind === 'manual') return false;
+        let state: LocalRepairState | null = null;
+        try {
+            const template = this.getLocalRepairPrompt(task, feature);
+            if (!template.trim()) return false;
+            state = this.localRepairs.prepare(task, this.parseSubFeaturesMd(), failure, resumeAuto);
+            const query = this.fillTemplateVars(template, {
+                subTaskId: task.id, repairRequestId: state.requestId, repairAttempt: String(state.attempt),
+                currentWorkSpace: this.iterDir, failedCheck: state.check, validationChecks: (task.checks || []).join(', '),
+                requirementIds: task.requirementIds.join(', '), propertyIds: task.propertyIds.join(', '),
+                allowedFiles: state.allowedFiles.map(file => `- ${file}`).join('\n'), failureDetails: state.failureDetails,
+                repairSignalPath: path.join(this.iterDir, state.signalFile),
+                repairSignalContent: JSON.stringify({ taskId: task.id, requestId: state.requestId, status: 'repaired' }),
+            });
+            this.startWatching(feature);
+            this.armRepairTimeout(state);
+            this.writeLog(task.id, `Automatic repair ${state.attempt}/${LocalRepairService.maxAttempts}: ${state.requestId}`);
+            await this.dispatchAi(query, this.iterDir, 'dev-subtask', feature.aiProvider, { stage: 'local-repair', taskId: task.id });
+            this.onStatusChange();
+            return true;
+        } catch (error) {
+            if (state) this.localRepairs.block(state, error instanceof Error ? error.message : String(error));
+            if (this.repairTimeoutTimer) clearTimeout(this.repairTimeoutTimer);
+            this.repairTimeoutTimer = null;
+            this.writeLog(task.id, `Automatic repair stopped: ${error instanceof Error ? error.message : String(error)}`);
+            return false;
+        }
+    }
+
+    private armRepairTimeout(state: LocalRepairState): void {
+        if (this.repairTimeoutTimer) clearTimeout(this.repairTimeoutTimer);
+        const remaining = Math.max(0, state.createdAt + LocalRepairService.timeoutMs - Date.now());
+        this.repairTimeoutTimer = setTimeout(() => {
+            const current = this.localRepairs.read(state.taskId);
+            if (current?.requestId !== state.requestId || current.status !== 'waiting') return;
+            this.localRepairs.block(current, 'Repair acknowledgment timed out');
+            this.updateSubFeatureStatus(current.taskId, 'failed');
+            this.autoMode = false;
+            this.writeLog(current.taskId, 'Automatic repair stopped: acknowledgment timed out');
+            this.onStatusChange();
+            vscode.window.showWarningMessage(`任务 ${current.taskId} 修复超时，已停止自动修复。`);
+        }, remaining);
+    }
+
+    private async handleRepairSignal(signalPath: string, feature: Feature): Promise<void> {
+        const match = path.basename(signalPath).match(/^repair-(\d+\.\d+)-([a-f0-9-]{36})$/);
+        if (!match || this.executingLocalTasks.size > 0) return;
+        const state = this.localRepairs.read(match[1]);
+        if (!state || state.status !== 'waiting' || state.requestId !== match[2]) return;
+        const task = this.parseSubFeaturesMd().find(item => item.id === state.taskId);
+        if (!task || task.execution !== 'local' || task.localAction !== 'verify' || task.executionConfigError ||
+            this.localRepairs.signature(task) !== state.signature || vscode.workspace.isTrusted !== true ||
+            Date.now() > state.createdAt + LocalRepairService.timeoutMs) {
+            this.localRepairs.block(state, 'Repair expired or validation contract changed');
+            this.updateSubFeatureStatus(state.taskId, 'failed');
+            this.autoMode = false;
+            this.writeLog(state.taskId, 'Automatic repair stopped: expired or changed validation contract');
+            this.onStatusChange();
+            return;
+        }
+        if (!this.localRepairs.acknowledge(state)) return;
+        if (this.repairTimeoutTimer) clearTimeout(this.repairTimeoutTimer);
+        this.repairTimeoutTimer = null;
+        this.autoMode = state.resumeAuto;
+        this.writeLog(task.id, `Repair acknowledged; rerunning local validation: ${state.requestId}`);
+        await this.dispatchSubFeature(task, feature);
     }
 
     private startTimeout(taskId: string): void {
