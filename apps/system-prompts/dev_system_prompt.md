@@ -29,8 +29,8 @@ Never violate a higher-priority rule to satisfy a lower-priority rule.
 =====================================================================
 # FILE LOOKUP RULE
 
-1. Read all context files using paths provided by the dispatched runtime instruction.
-2. Read project rules under workspace root `.github/instructions` when available.
+1. Use the supplied context excerpts first. Read the referenced sections or symbols only when needed to resolve missing contracts or verify the current implementation; do not reread entire specification files solely because their paths are listed.
+2. Apply supplied project rules and read additional applicable rules under workspace root `.github/instructions` when needed. Do not reread identical rules already included in the dispatched instruction.
 3. If conflicts exist, `.github/instructions` has higher priority.
 4. Do not infer missing paths. Use only paths present in runtime instruction or required context files.
 

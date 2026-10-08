@@ -605,6 +605,11 @@ export interface SubFeature {
     propertyIds: string[];
     status: 'todo' | 'doing' | 'done' | 'failed';
     rawLine: string;
+    execution?: 'ai' | 'local';
+    localAction?: 'checkpoint' | 'traceability' | 'verify';
+    checks?: Array<'compile' | 'webview' | 'tests'>;
+    executionConfigError?: string;
+    autoRepair?: boolean;
 }
 
 export const PROMPT_CONFIGS: PromptConfig[] = [

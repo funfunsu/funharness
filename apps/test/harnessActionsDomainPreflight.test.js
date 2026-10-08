@@ -7,6 +7,7 @@
  * 1. req->des 前，若 requirements 机器块 domain 未登记到 registry，必须阻断推进。
  * 2. 用户选择“自动补”时，系统自动写入 registry 并继续推进，无需用户手动找文件。
  * 3. 用户选择“去处理”时，系统打开 registry 文件并保持当前阶段不变。
+ * 4. 新建与 TODO 提升默认 compact，旧任务未设置时同样默认 compact；显式 standard 不被覆盖。
  *
  * 这组测试守护“阻断可介入但不要求用户理解目录结构”的回归边界。
  */
@@ -142,7 +143,7 @@ function createServiceHarness(tmpDir, userChoice) {
         calls.runAgent += 1;
     };
 
-    return { service, feature, sink, calls };
+    return { service, feature, features, sink, calls };
 }
 
 function writeRegistry(root, domains) {
@@ -165,6 +166,18 @@ describe('领域预检阻断与引导', () => {
         while (tmpDirs.length > 0) {
             cleanup(tmpDirs.pop());
         }
+    });
+
+    test('新建和 TODO 提升默认 compact，旧任务缺省回退但保留显式 standard', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        const { service, feature, features } = createServiceHarness(tmpDir, '去处理');
+        assert.equal(service.resolveFeatureSplitMode(feature), 'compact');
+        assert.equal(service.resolveFeatureSplitMode({ ...feature, taskSplitMode: 'standard' }), 'standard');
+        await service.createFeature('普通迭代', '描述');
+        assert.equal(features.at(-1).taskSplitMode, 'compact');
+        const promoted = await service.createFeatureFromTodo('待办迭代', '描述');
+        assert.equal(promoted.taskSplitMode, 'compact');
     });
 
     test('选择去处理时阻断推进并打开 registry', async () => {

@@ -83,6 +83,7 @@ export class PromptService {
         tcs: 'testcase_system_prompt.md',
         tsk: 'task_system_prompt.md',
         dev: 'dev_system_prompt.md',
+        'local-repair': 'local_repair_system_prompt.md',
     };
 
     constructor(
@@ -92,6 +93,11 @@ export class PromptService {
 
     getRenderedPrompt(step: string, taskName: string, taskDesc: string, currentWorkSpace: string, config?: Partial<Config>): string {
         return this.getRenderedPromptWithSource(step, taskName, taskDesc, currentWorkSpace, config).content;
+    }
+
+    getLocalRepairPrompt(taskName: string, taskDesc: string, currentWorkSpace: string, config?: Partial<Config>): string {
+        if (!fs.existsSync(path.join(this.extensionPath, this.systemPromptDir, this.systemPromptFiles['local-repair']))) return '';
+        return this.composeStagePrompt('local-repair', '', { taskName, taskDesc, currentWorkSpace }, config);
     }
 
     getRenderedPromptWithSource(step: string, taskName: string, taskDesc: string, currentWorkSpace: string, config?: Partial<Config>): RenderedPrompt {

@@ -215,7 +215,7 @@ class Harness {
                 (task) => this.getIterationDir(task),
                 workspaceRoot,
                 () => this.config,
-                async (query, iterDir, source, providerOverride) => this.aiDispatchService.dispatch(query, iterDir, source, providerOverride),
+                async (query, iterDir, source, providerOverride, context) => this.aiDispatchService.dispatch(query, iterDir, source, providerOverride, context),
                 () => this.render(),
                 (task, subTaskName) => this.promptService.getRenderedPrompt(
                     'dev',
@@ -224,6 +224,7 @@ class Harness {
                     this.getIterationDir(task),
                     this.config,
                 ),
+                (task) => this.promptService.getLocalRepairPrompt(task.name, task.desc, this.getIterationDir(task), this.config),
             );
             this.actionsService = new HarnessActionsService({
                 getFeatures: () => this.features,
@@ -238,7 +239,7 @@ class Harness {
                 stopScheduler: (featureId) => this.schedulerRegistry.stop(featureId),
                 onPass: (task) => vscode.window.showInformationMessage(`✅ ${task.name} 完成`),
                 isWorktreeSubview: () => this.isWorktreeSubview(),
-                dispatchAi: async (query, iterDir, source, providerOverride) => this.aiDispatchService.dispatch(query, iterDir, source, providerOverride),
+                dispatchAi: async (query, iterDir, source, providerOverride, context) => this.aiDispatchService.dispatch(query, iterDir, source, providerOverride, context),
                 runDomainSummaryAiRefiner: (prompt) => this.aiDispatchService.refineToTextSync(prompt, this.getMasterRoot()),
                 copyProjectStructureToIteration: (iterDir) => this.copyProjectStructureToIteration(iterDir),
                 renderAgentPrompt: (step, taskName, taskDesc, iterDir) => this.promptService.getRenderedPromptWithSource(step, taskName, taskDesc, iterDir, this.config),

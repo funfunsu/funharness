@@ -703,7 +703,7 @@ ${visibleTaskViews.map(view => {
     const health = view.health;
     const taskAutoAdvance = t.autoAdvanceEnabled !== false;
     const taskSpecDriftRepair = t.specDriftRepairEnabled !== false;
-    const effectiveSplitMode = t.taskSplitMode || 'standard';
+    const effectiveSplitMode = t.taskSplitMode || 'compact';
     const artifactStatus = [
         `REQ:${artifacts.requirements ? 'Y' : 'N'}`,
         `DES:${artifacts.design ? 'Y' : 'N'}`,

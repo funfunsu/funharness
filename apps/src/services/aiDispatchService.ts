@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { execSync, spawn } from 'child_process';
 import { BASE, Config, AiProviderDefinition, getAiProvider } from '../models';
 import { appendHarnessLog } from './harnessLog';
+import { AiUsageService, AiCallRecord } from './aiUsageService';
 
 type DispatchSource = 'stage-agent' | 'dev-subtask' | 'quick-chat-button';
 
@@ -27,6 +28,9 @@ export class AiDispatchService {
         const promptFile = this.writePromptFile(query, iterDir, 'stage-agent');
         const template = this.resolveCliTemplate(cfg, provider);
         const command = this.buildCliCommand(template, promptFile);
+        const usage = new AiUsageService();
+        const record = usage.begin(query, iterDir, 'inline-refine', provider.id, null, promptFile, { stage: 'refine' });
+        const startedAt = Date.now();
         try {
             const output = execSync(command, {
                 cwd: iterDir,
@@ -35,10 +39,14 @@ export class AiDispatchService {
                 maxBuffer: 1024 * 1024,
                 timeout: 120000,
             }).trim();
+            record.outputChars = output.length;
+            record.status = 'completed';
             return output || null;
         } catch (error) {
             console.warn('[fun-harness] refineToTextSync failed:', error);
             return null;
+        } finally {
+            usage.finish(iterDir, record, record.status, startedAt);
         }
     }
 
@@ -93,6 +101,10 @@ export class AiDispatchService {
             log(`using language model vendor=${model.vendor} family=${model.family} id=${model.id}`);
             const messages = [vscode.LanguageModelChatMessage.User(query)];
             const tokenSource = new vscode.CancellationTokenSource();
+            const usage = new AiUsageService();
+            const record = iterDir ? usage.begin(query, iterDir, 'inline-refine', `${model.vendor}:${model.id}`, null, null,
+                { stage: 'refine' }) : null;
+            const startedAt = Date.now();
             try {
                 const response = await model.sendRequest(messages, {}, tokenSource.token);
                 let text = '';
@@ -100,10 +112,15 @@ export class AiDispatchService {
                     text += fragment;
                 }
                 const trimmed = text.trim();
+                if (record) {
+                    record.status = 'completed';
+                    record.outputChars = trimmed.length;
+                }
                 log(`language model returned ${trimmed.length} chars`);
                 return trimmed || null;
             } finally {
                 tokenSource.dispose();
+                if (record && iterDir) usage.finish(iterDir, record, record.status, startedAt);
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -147,7 +164,8 @@ export class AiDispatchService {
         return nonPremium || models[0];
     }
 
-    async dispatch(query: string, iterDir: string, source: DispatchSource, providerOverride?: string): Promise<void> {
+    async dispatch(query: string, iterDir: string, source: DispatchSource, providerOverride?: string,
+        context?: { stage?: string; taskId?: string }): Promise<void> {
         const cfg = this.getConfig();
         const provider = getAiProvider(providerOverride || cfg.aiProvider || 'copilot-chat');
         const conversationScope = this.resolveConversationScope(source, iterDir, query);
@@ -158,32 +176,37 @@ export class AiDispatchService {
             `source=${source} provider=${provider.label} scope=${conversationScope || 'none'} bytes=${Buffer.byteLength(query, 'utf8')} promptFile=${snapshot || '(write-failed)'}`,
         );
 
-        if (provider.kind === 'manual') {
-            await this.dispatchManual(query, source);
-            return;
-        }
-
-        if (provider.kind === 'vscode-chat') {
-            await this.dispatchVscodeChat(query, provider, source, conversationScope);
-            return;
-        }
-
-        if (provider.kind === 'panel') {
-            await this.dispatchPanel(query, provider, source, conversationScope);
-            return;
-        }
-
-        // provider.kind === 'cli'
+        const usage = new AiUsageService();
+        const record = usage.begin(query, iterDir, source, provider.id, conversationScope, snapshot, context);
+        const startedAt = Date.now();
+        let status: AiCallRecord['status'] = 'failed';
         try {
-            await this.dispatchCli(query, iterDir, cfg, provider, source);
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (cfg.aiFallbackToManual !== false) {
-                vscode.window.showWarningMessage(`${provider.label} 派发失败，已自动降级到手工模式：${message}`);
+            if (provider.kind === 'manual') {
                 await this.dispatchManual(query, source);
-                return;
+                status = 'prepared';
+            } else if (provider.kind === 'vscode-chat') {
+                await this.dispatchVscodeChat(query, provider, source, conversationScope);
+                status = 'dispatched';
+            } else if (provider.kind === 'panel') {
+                await this.dispatchPanel(query, provider, source, conversationScope);
+                status = 'dispatched';
+            } else {
+                try {
+                    await this.dispatchCli(query, iterDir, cfg, provider, source);
+                    status = 'dispatched';
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    if (cfg.aiFallbackToManual === false) throw error;
+                    vscode.window.showWarningMessage(`${provider.label} 派发失败，已自动降级到手工模式：${message}`);
+                    await this.dispatchManual(query, source);
+                    status = 'prepared';
+                }
             }
+        } catch (error) {
+            record.error = error instanceof Error ? error.message : String(error);
             throw error;
+        } finally {
+            usage.finish(iterDir, record, status, startedAt);
         }
     }
 
