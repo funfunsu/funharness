@@ -1,6 +1,6 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-10-14T02:47:35.884Z
+- generatedAt: 2026-10-14T02:47:44.825Z
 - taskId: task_1785483168991
 - taskName: init-enhance
 - gateLevel: standard
