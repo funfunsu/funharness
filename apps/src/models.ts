@@ -457,6 +457,10 @@ export interface Config {
     aiFallbackToManual: boolean;
     /** Auto-submit (press Return) after a 'panel' executor pre-fills its prompt via deep link (macOS only). */
     aiPanelAutoSubmit: boolean;
+    /** Global switch for auto-building CodeGraph when a worktree is first created. */
+    autoCodeGraphEnabled: boolean;
+    /** Whether to auto-attempt non-interactive CodeGraph CLI installation when missing. */
+    autoInstallEnabled: boolean;
     worktreeSyncPaths: string;
     projectStructureRefineMode: 'local' | 'local+ai';
     /**
@@ -495,6 +499,26 @@ export interface Config {
     autoPollIdleWeekdayEnd?: string;
     /** Lifecycle hook scripts executed at key pipeline nodes (e.g. worktree first-open). */
     lifecycleHooks: LifecycleHooks;
+}
+
+export type CodeGraphEvidenceStage = 'req' | 'des' | 'tsk' | 'dev';
+
+export type CodeGraphEvidenceFreshness = 'fresh' | 'stale' | 'missing';
+
+export interface CodeGraphEvidenceSeam {
+    caller: string;
+    callee: string;
+    relation: string;
+}
+
+export interface CodeGraphEvidenceBundle {
+    usable: boolean;
+    freshness: CodeGraphEvidenceFreshness;
+    anchors: string[];
+    seams: CodeGraphEvidenceSeam[];
+    impactSet: string[];
+    bundlePath: string;
+    warning?: string;
 }
 
 export interface FeatureStats {
@@ -796,6 +820,8 @@ export const DEFAULT_CONFIG: Config = {
     cliCommandTemplate: '',
     aiFallbackToManual: true,
     aiPanelAutoSubmit: true,
+    autoCodeGraphEnabled: true,
+    autoInstallEnabled: true,
     worktreeSyncPaths: 'worktree/.github/instructions\nworktree/.spec',
     projectStructureRefineMode: 'local+ai',
     specRootDir: 'specs',

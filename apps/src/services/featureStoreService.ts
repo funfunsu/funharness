@@ -260,6 +260,13 @@ export class FeatureStoreService {
             const merged = { ...DEFAULT_CONFIG, ...loaded };
             merged.monorepoGit = typeof loaded.monorepoGit === 'string' ? loaded.monorepoGit : '';
             merged.monorepoDirs = { ...DEFAULT_CONFIG.monorepoDirs, ...(loaded.monorepoDirs || {}) };
+            // Keep policy booleans stable for legacy/malformed configs.
+            merged.autoCodeGraphEnabled = typeof loaded.autoCodeGraphEnabled === 'boolean'
+                ? loaded.autoCodeGraphEnabled
+                : DEFAULT_CONFIG.autoCodeGraphEnabled;
+            merged.autoInstallEnabled = typeof loaded.autoInstallEnabled === 'boolean'
+                ? loaded.autoInstallEnabled
+                : DEFAULT_CONFIG.autoInstallEnabled;
             // Migrate legacy single-field buttons (command) to the {scriptSource, script, args} form.
             merged.customButtons = Array.isArray(loaded.customButtons)
                 ? (loaded.customButtons as CustomButton[]).map(normalizeCustomButton)
@@ -359,6 +366,12 @@ export class FeatureStoreService {
         fs.mkdirSync(path.dirname(file), { recursive: true });
         const normalizedConfig: Config = {
             ...config,
+            autoCodeGraphEnabled: typeof config.autoCodeGraphEnabled === 'boolean'
+                ? config.autoCodeGraphEnabled
+                : DEFAULT_CONFIG.autoCodeGraphEnabled,
+            autoInstallEnabled: typeof config.autoInstallEnabled === 'boolean'
+                ? config.autoInstallEnabled
+                : DEFAULT_CONFIG.autoInstallEnabled,
             customButtons: Array.isArray(config.customButtons)
                 ? config.customButtons.map(normalizeCustomButton)
                 : [],

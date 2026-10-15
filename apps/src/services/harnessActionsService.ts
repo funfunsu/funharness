@@ -1,7 +1,7 @@
 ﻿import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { HarnessStep } from '../harnessMessages';
 import {
     BASE,
@@ -39,6 +39,7 @@ import { readTextIfExists, safeRemovePath, writeTextAtomic } from './fileOps';
 import { SpecDeltaService } from './specDeltaService';
 import { DomainKnowledgeAggregateService, SuspectedDomainRecord } from './domainKnowledgeAggregateService';
 import { DomainAdjudicationDecision, DomainRegistryService } from './domainRegistryService';
+import { CodeGraphEvidenceSnapshotWriter } from './codegraph/codeGraphEvidenceSnapshotWriter';
 
 interface HarnessActionsDeps {
     getFeatures: () => Feature[];
@@ -58,6 +59,12 @@ interface HarnessActionsDeps {
     runDomainSummaryAiRefiner?: (prompt: string) => string | null;
     copyProjectStructureToIteration: (iterDir: string) => void;
     renderAgentPrompt: (step: HarnessStep, featureName: string, featureDesc: string, iterDir: string) => { content: string; source: string; path: string };
+    runCodeGraphInitOnFirstCreate?: (input: {
+        featureId: string;
+        taskName: string;
+        worktreePath: string;
+        entryPoint: 'openFolderLocationByFeatureId' | 'runCustomButtonByFeatureId' | 'syncCodeGraphByFeatureId';
+    }) => Promise<void>;
 }
 
 export class HarnessActionsService {
@@ -68,6 +75,7 @@ export class HarnessActionsService {
     /** Prevent duplicate prompt dispatch for the same (task, step) while one is in-flight. */
     private readonly inFlightStageDispatchKeys: Set<string> = new Set();
     private readonly artifactRepairTimers: Map<string, NodeJS.Timeout> = new Map();
+    private readonly codeGraphEvidenceSnapshotWriter = new CodeGraphEvidenceSnapshotWriter();
     private static readonly DOMAIN_BLOCK_AUTO_FIX = '自动补';
     private static readonly DOMAIN_BLOCK_MANUAL_FIX = '去处理';
 
@@ -384,6 +392,16 @@ export class HarnessActionsService {
         return rendered.replace(/{{\s*([^{}]+?)\s*}}/g, (_m, key) => vars[String(key).trim()] ?? '');
     }
 
+    /**
+     * Add explicit stage marker so downstream prompt consumers can audit stage-aware evidence injection.
+     */
+    private buildStageRuntimeSection(step: HarnessStep): string {
+        return [
+            '---',
+            `运行时阶段标识：${step}`,
+        ].join('\n');
+    }
+
     private hasTaskPlan(iterDir: string): boolean {
         const canonical = resolveFeaturePlanFileForIteration(iterDir, this.deps.getConfig());
         const legacyFlat = path.join(iterDir, ...FEATURE_PLAN_PRIMARY_REL_PATH.split('/'));
@@ -660,7 +678,8 @@ export class HarnessActionsService {
             const splitMode = this.resolveFeatureSplitMode(task);
             const promptContent = step === 'dev' ? this.renderQuickDevPrompt(rendered.content, task, iterDir) : rendered.content;
             const repairSection = this.buildRepairFeedbackSection(repairFeedback);
-            const query = `${promptContent}${repairSection}\n\n---\n运行参数：taskSplitMode=${splitMode}`;
+            const stageRuntimeSection = this.buildStageRuntimeSection(step);
+            const query = `${promptContent}${repairSection}\n\n${stageRuntimeSection}\n运行参数：taskSplitMode=${splitMode}`;
             await this.deps.dispatchAi(query, iterDir, 'stage-agent', task.aiProvider, { stage: step, taskId: task.id });
             vscode.window.showInformationMessage(`已派发 ${step.toUpperCase()} Agent（Prompt来源: ${rendered.source}）`);
             this.startArtifactRepairWatch(task, step);
@@ -743,6 +762,8 @@ export class HarnessActionsService {
                 return;
             }
 
+            await this.runCodeGraphInitOnFirstCreate(task, iterDir, initResult.wasNewlyCreated, 'openFolderLocationByFeatureId');
+
             // When newly initialized (first time), run worktree-open hooks before opening the window.
             // This keeps first-open behavior consistent for worktree/mono/frontend/backend entries.
             if (initResult.wasNewlyCreated) {
@@ -764,6 +785,85 @@ export class HarnessActionsService {
         await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(targetPath), {
             forceNewWindow: true,
         });
+    }
+
+    async syncCodeGraphByFeatureId(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
+        if (!task) {
+            return;
+        }
+
+        const iterDir = this.deps.getIterationDir(task);
+        const initResult = await this.ensureIterationCodeBeforeOpen(task, iterDir);
+        if (!initResult.ok) {
+            return;
+        }
+
+        if (!fs.existsSync(path.join(iterDir, '.codegraph'))) {
+            await this.runCodeGraphInitOnFirstCreate(task, iterDir, initResult.wasNewlyCreated, 'syncCodeGraphByFeatureId');
+        }
+
+        if (!fs.existsSync(path.join(iterDir, '.codegraph'))) {
+            vscode.window.showWarningMessage('CodeGraph 自动初始化未完成，暂无法同步。请根据提示先完成初始化后重试。');
+            return;
+        }
+
+        let sync = spawnSync('codegraph', ['sync', '-q'], {
+            cwd: iterDir,
+            encoding: 'utf8',
+            shell: false,
+            timeout: 30_000,
+        });
+        if (sync.status !== 0 && process.platform === 'win32') {
+            const script = 'Invoke-Expression (fnm env --shell powershell | Out-String); codegraph sync -q';
+            const plans: Array<{ command: string; args: string[] }> = [
+                {
+                    command: 'powershell',
+                    args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+                },
+                {
+                    command: 'pwsh',
+                    args: ['-NoProfile', '-Command', script],
+                },
+            ];
+
+            for (const plan of plans) {
+                const fallback = spawnSync(plan.command, plan.args, {
+                    cwd: iterDir,
+                    encoding: 'utf8',
+                    shell: false,
+                    timeout: 30_000,
+                });
+                if (fallback.status === 0) {
+                    sync = fallback;
+                    break;
+                }
+            }
+        }
+        const stderr = (sync.stderr || '').trim();
+        const stdout = (sync.stdout || '').trim();
+        const digest = stderr || stdout || '';
+
+        if (sync.status !== 0) {
+            appendHarnessLog(iterDir, 'codegraph-sync', `FAILED: ${digest || 'codegraph sync failed'}`);
+            vscode.window.showWarningMessage(`CodeGraph 同步失败：${digest || 'codegraph sync failed'}`);
+            return;
+        }
+
+        const snapshot = this.codeGraphEvidenceSnapshotWriter.writeSnapshot(iterDir);
+        appendHarnessLog(
+            iterDir,
+            'codegraph-sync',
+            snapshot.persisted
+                ? `OK: sync completed; evidence=${snapshot.bundlePath}`
+                : `OK: sync completed; evidence write failed: ${snapshot.summary}`,
+        );
+
+        if (snapshot.persisted) {
+            vscode.window.showInformationMessage('CodeGraph 已同步并刷新证据快照。');
+        } else {
+            vscode.window.showWarningMessage(`CodeGraph 已同步，但证据快照写入失败：${snapshot.summary}`);
+        }
     }
 
     private syncConfiguredPathsForWorktree(worktreePath: string): void {
@@ -1507,6 +1607,7 @@ export class HarnessActionsService {
         const iterDir = this.deps.getIterationDir(task);
         const initResult = await this.ensureIterationCodeBeforeOpen(task, iterDir);
         if (!initResult.ok) return;
+        await this.runCodeGraphInitOnFirstCreate(task, iterDir, initResult.wasNewlyCreated, 'runCustomButtonByFeatureId');
         if (!fs.existsSync(iterDir)) {
             vscode.window.showWarningMessage(`迭代目录不存在，无法执行：${iterDir}`);
             return;
@@ -1565,6 +1666,31 @@ export class HarnessActionsService {
             return undefined;
         }
         return button;
+    }
+
+    /**
+     * Trigger shared CodeGraph init flow when opening a worktree, and keep
+     * custom-button wiring on first-create only for backward-compatible pacing.
+     */
+    private async runCodeGraphInitOnFirstCreate(
+        task: Feature,
+        iterDir: string,
+        wasNewlyCreated: boolean,
+        entryPoint: 'openFolderLocationByFeatureId' | 'runCustomButtonByFeatureId' | 'syncCodeGraphByFeatureId',
+    ): Promise<void> {
+        const shouldRun = entryPoint === 'openFolderLocationByFeatureId' || entryPoint === 'syncCodeGraphByFeatureId' || wasNewlyCreated;
+        if (!shouldRun) {
+            return;
+        }
+        if (!this.deps.runCodeGraphInitOnFirstCreate) {
+            return;
+        }
+        await this.deps.runCodeGraphInitOnFirstCreate({
+            featureId: task.id,
+            taskName: task.name,
+            worktreePath: iterDir,
+            entryPoint,
+        });
     }
 
     /**

@@ -90,6 +90,7 @@ interface HarnessMessageControllerDeps {
     setFeatureAutomation: (featureId: string, aa: boolean) => void;
     setSpecDriftRepair: (featureId: string, enabled: boolean) => void;
     setFeatureAiProvider: (featureId: string, ap: string) => void;
+    syncCodeGraph: (featureId: string) => Promise<void>;
     openFolderLocation: (featureId: string, location: Extract<HarnessMessage, { type: 'openFolderLocation' }>['location']) => Promise<void>;
     openArtifact: (featureId: string, artifact: Extract<HarnessMessage, { type: 'openArtifact' }>['artifact']) => Promise<void>;
     nextStage: (featureId: string, step: Extract<HarnessMessage, { type: 'next' }>['step'], targetStage?: Extract<HarnessMessage, { type: 'next' }>['targetStage']) => Promise<void>;
@@ -325,6 +326,7 @@ export class HarnessMessageController {
             case 'setFeatureAutomation':
             case 'setSpecDriftRepair':
             case 'setFeatureAiProvider':
+            case 'syncCodeGraph':
             case 'openArtifact':
             case 'openFolderLocation':
             case 'next':
@@ -655,7 +657,11 @@ export class HarnessMessageController {
                 await this.deps.saveGit(msg.mg ?? '', msg.bb, msg.gmg);
                 return;
             case 'saveAdvancedConfig':
-                this.deps.saveAdvancedConfig(msg);
+                this.deps.saveAdvancedConfig({
+                    ...msg,
+                    acg: msg.acg !== false,
+                    cai: msg.cai === true,
+                });
                 return;
             case 'initProjectStructure':
                 try {
@@ -724,6 +730,9 @@ export class HarnessMessageController {
                 return;
             case 'setFeatureAiProvider':
                 this.deps.setFeatureAiProvider(msg.id, msg.ap);
+                return;
+            case 'syncCodeGraph':
+                await this.deps.syncCodeGraph(msg.id);
                 return;
             case 'openFolderLocation':
                 await this.deps.openFolderLocation(msg.id, msg.location);

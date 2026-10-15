@@ -22,6 +22,8 @@ const { buildMainPageHtml } = require('../out/webviewTemplates');
 const { STAGE } = require('../out/models');
 const { CapabilityDeltaService } = require('../out/services/capabilityDeltaService');
 const { DomainKnowledgeAggregateService } = require('../out/services/domainKnowledgeAggregateService');
+const { CodeGraphDedupeGuard } = require('../out/services/codegraph/codeGraphDedupeGuard');
+const { CodeGraphInitOrchestrator } = require('../out/services/codegraph/codeGraphInitOrchestrator');
 
 /** Create isolated temp workspace. */
 function makeTempDir() {
@@ -116,6 +118,135 @@ function buildTaskView() {
 }
 
 describe('领域知识流转覆盖基线', () => {
+    test('CodeGraph 自动安装失败时返回 warning 且不抛异常，主流程可继续（Req-3, Req-4）', async () => {
+        const records = [];
+        const orchestrator = new CodeGraphInitOrchestrator(
+            new CodeGraphDedupeGuard(),
+            {
+                ensureCli() {
+                    return {
+                        ready: false,
+                        installedNow: false,
+                        summary: 'auto install failed: missing permissions',
+                    };
+                },
+            },
+            {
+                runInitBuild() {
+                    throw new Error('build should not run when ensureCli is not ready');
+                },
+            },
+            {
+                appendRunRecord(record) {
+                    records.push(record);
+                    return { persisted: true, logPath: 'mock-log' };
+                },
+            },
+        );
+
+        const first = await orchestrator.runOnce({
+            sessionId: 'session-a',
+            worktreePath: '/tmp/worktree-a',
+            featureId: 'feature-a',
+            taskName: 'task-a',
+            entryPoint: 'openFolderLocationByFeatureId',
+            autoCodeGraphEnabled: true,
+            autoInstallEnabled: true,
+        });
+        const second = await orchestrator.runOnce({
+            sessionId: 'session-a',
+            worktreePath: '/tmp/worktree-b',
+            featureId: 'feature-b',
+            taskName: 'task-b',
+            entryPoint: 'runCustomButtonByFeatureId',
+            autoCodeGraphEnabled: true,
+            autoInstallEnabled: true,
+        });
+
+        assert.equal(first.status, 'warning');
+        assert.equal(second.status, 'warning');
+        assert.equal(first.summary.includes('auto install failed'), true);
+        assert.equal(second.summary.includes('auto install failed'), true);
+        assert.equal(records.length, 2);
+        assert.deepEqual(
+            records.map(item => item.entryPoint).sort(),
+            ['openFolderLocationByFeatureId', 'runCustomButtonByFeatureId'],
+        );
+    });
+
+    test('已存在 .codegraph 时跳过重建且不触发安装/构建（Req-4）', async () => {
+        const tmpDir = makeTempDir();
+        try {
+            fs.mkdirSync(path.join(tmpDir, '.codegraph'), { recursive: true });
+
+            let ensureCliCalls = 0;
+            let buildCalls = 0;
+            let snapshotCalls = 0;
+            const records = [];
+            const orchestrator = new CodeGraphInitOrchestrator(
+                new CodeGraphDedupeGuard(),
+                {
+                    ensureCli() {
+                        ensureCliCalls += 1;
+                        return {
+                            ready: true,
+                            installedNow: false,
+                            summary: 'ready',
+                        };
+                    },
+                },
+                {
+                    runInitBuild() {
+                        buildCalls += 1;
+                        return {
+                            status: 'success',
+                            summary: 'unexpected build run',
+                            startedAt: new Date().toISOString(),
+                            endedAt: new Date().toISOString(),
+                        };
+                    },
+                },
+                {
+                    appendRunRecord(record) {
+                        records.push(record);
+                        return { persisted: true, logPath: 'mock-log' };
+                    },
+                },
+                {
+                    writeSnapshot() {
+                        snapshotCalls += 1;
+                        return {
+                            persisted: true,
+                            bundlePath: path.join(tmpDir, '.harness', 'process', 'codegraph-evidence.json'),
+                            summary: 'evidence snapshot refreshed',
+                        };
+                    },
+                },
+            );
+
+            const result = await orchestrator.runOnce({
+                sessionId: 'session-skip',
+                worktreePath: tmpDir,
+                featureId: 'feature-skip',
+                taskName: 'task-skip',
+                entryPoint: 'openFolderLocationByFeatureId',
+                autoCodeGraphEnabled: true,
+                autoInstallEnabled: true,
+            });
+
+            assert.equal(result.status, 'deduped');
+            assert.equal(result.summary.includes('already initialized'), true);
+            assert.equal(result.summary.includes('evidence snapshot refreshed'), true);
+            assert.equal(ensureCliCalls, 0);
+            assert.equal(buildCalls, 0);
+            assert.equal(snapshotCalls, 1);
+            assert.equal(records.length, 1);
+            assert.equal(records[0].status, 'deduped');
+        } finally {
+            cleanup(tmpDir);
+        }
+    });
+
     // ── Updated: legacy main-panel domain actions must be absent (INV-1, Req-1) ──
     test('main panel DOES NOT render legacy domain governance actions (INV-1, Req-1)', () => {
         const view = buildTaskView();

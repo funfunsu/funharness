@@ -1,9 +1,24 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { BASE, Config, PROMPT_CONFIGS, PROMPTS_DIR, deriveMasterRoot, getDocsRootDirName, getPrimaryTrackedSpecsDir, getSpecDocsDir, getTrackedSpecsDirCandidates } from '../models';
+import { spawn } from 'child_process';
+import {
+    BASE,
+    CodeGraphEvidenceBundle,
+    CodeGraphEvidenceStage,
+    Config,
+    PROMPT_CONFIGS,
+    PROMPTS_DIR,
+    deriveMasterRoot,
+    getDocsRootDirName,
+    getPrimaryTrackedSpecsDir,
+    getSpecDocsDir,
+    getTrackedSpecsDirCandidates,
+} from '../models';
 import { resolveConstitution, summarizeConstitution } from '../constitution';
 import { ReviewStage, StageContext, StageReviewPromptResult } from '../harnessMessages';
 import type { ReviewPromptConfigService } from './reviewPromptConfigService';
+import { CodeGraphEvidenceProvider } from './codegraph/codeGraphEvidenceProvider';
+import { CodeGraphEvidenceSnapshotWriter } from './codegraph/codeGraphEvidenceSnapshotWriter';
 
 export interface RenderedPrompt {
     content: string;
@@ -85,11 +100,19 @@ export class PromptService {
         dev: 'dev_system_prompt.md',
         'local-repair': 'local_repair_system_prompt.md',
     };
+    private readonly codeGraphEvidenceProvider: CodeGraphEvidenceProvider;
+    private readonly codeGraphEvidenceSnapshotWriter: CodeGraphEvidenceSnapshotWriter;
+    private readonly lastCodeGraphSyncAtByWorktree = new Map<string, number>();
+    private readonly codeGraphSyncInFlightByWorktree = new Set<string>();
+    private readonly codeGraphSyncThrottleMs = 30_000;
 
     constructor(
         private readonly workspaceRoot: string,
         private readonly extensionPath: string,
-    ) {}
+    ) {
+        this.codeGraphEvidenceProvider = new CodeGraphEvidenceProvider();
+        this.codeGraphEvidenceSnapshotWriter = new CodeGraphEvidenceSnapshotWriter();
+    }
 
     getRenderedPrompt(step: string, taskName: string, taskDesc: string, currentWorkSpace: string, config?: Partial<Config>): string {
         return this.getRenderedPromptWithSource(step, taskName, taskDesc, currentWorkSpace, config).content;
@@ -120,12 +143,247 @@ export class PromptService {
             { taskName, taskDesc, currentWorkSpace },
             config
         );
+        renderedContent = this.appendCodeGraphEvidenceSection(step, renderedContent, currentWorkSpace, config);
 
         return {
             content: renderedContent,
             source: resolved.source,
             path: resolved.path,
         };
+    }
+
+    /**
+     * Inject CodeGraph evidence only for req/des/tsk/dev stages.
+     */
+    private appendCodeGraphEvidenceSection(step: string, prompt: string, currentWorkSpace: string, config?: Partial<Config>): string {
+        const stage = this.resolveCodeGraphEvidenceStage(step);
+        if (!stage) {
+            return prompt;
+        }
+
+        this.trySyncCodeGraphBeforeEvidence(step, currentWorkSpace, config);
+
+        const budgetTokens = this.resolveEvidenceBudget(step);
+        let evidence: CodeGraphEvidenceBundle;
+        try {
+            evidence = this.codeGraphEvidenceProvider.getStageEvidence({
+                worktreePath: currentWorkSpace,
+                stage,
+                budgetTokens,
+                freshnessPolicy: 'latest-success-record',
+            });
+        } catch {
+            evidence = {
+                usable: false,
+                freshness: 'missing',
+                anchors: [],
+                seams: [],
+                impactSet: [],
+                bundlePath: path.join(currentWorkSpace, '.codegraph', 'evidence.json'),
+                warning: 'codegraph evidence injection failed unexpectedly',
+            };
+        }
+
+        const section = this.renderCodeGraphEvidenceSection(stage, evidence);
+        return `${prompt.trimEnd()}\n\n${section}`;
+    }
+
+    /**
+     * Best-effort lightweight sync before evidence read so stage prompts can consume fresher graph data.
+     * Runs in background to avoid blocking prompt rendering.
+     */
+    private trySyncCodeGraphBeforeEvidence(step: string, currentWorkSpace: string, config?: Partial<Config>): void {
+        if (!this.resolveCodeGraphEvidenceStage(step)) {
+            return;
+        }
+        if (config?.autoCodeGraphEnabled === false) {
+            return;
+        }
+
+        const worktreePath = path.resolve(currentWorkSpace || '');
+        if (!worktreePath) {
+            return;
+        }
+        if (!fs.existsSync(path.join(worktreePath, '.codegraph'))) {
+            return;
+        }
+
+        const now = Date.now();
+        const last = this.lastCodeGraphSyncAtByWorktree.get(worktreePath) || 0;
+        if (now - last < this.codeGraphSyncThrottleMs) {
+            return;
+        }
+        this.lastCodeGraphSyncAtByWorktree.set(worktreePath, now);
+        this.scheduleBackgroundCodeGraphSync(worktreePath);
+    }
+
+    /**
+     * Queue one background sync per worktree to keep prompt path responsive.
+     */
+    private scheduleBackgroundCodeGraphSync(worktreePath: string): void {
+        if (this.codeGraphSyncInFlightByWorktree.has(worktreePath)) {
+            return;
+        }
+        this.codeGraphSyncInFlightByWorktree.add(worktreePath);
+
+        setTimeout(() => {
+            void this.runBackgroundCodeGraphSync(worktreePath);
+        }, 0);
+    }
+
+    /**
+     * Execute sync in background and refresh snapshot best-effort.
+     */
+    private async runBackgroundCodeGraphSync(worktreePath: string): Promise<void> {
+        try {
+            const directOk = await this.runCodeGraphCommand('codegraph', ['sync', '-q'], worktreePath, 20_000);
+            if (!directOk && process.platform === 'win32') {
+                const script = 'Invoke-Expression (fnm env --shell powershell | Out-String); codegraph sync -q';
+                const psOk = await this.runCodeGraphCommand(
+                    'powershell',
+                    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+                    worktreePath,
+                    20_000,
+                );
+                if (!psOk) {
+                    await this.runCodeGraphCommand(
+                        'pwsh',
+                        ['-NoProfile', '-Command', script],
+                        worktreePath,
+                        20_000,
+                    );
+                }
+            }
+        } catch {
+            // Keep prompt rendering non-blocking even when sync fails.
+        } finally {
+            // Ensure provider has a default evidence payload even if native bundle export is absent.
+            this.codeGraphEvidenceSnapshotWriter.writeSnapshot(worktreePath);
+            this.codeGraphSyncInFlightByWorktree.delete(worktreePath);
+        }
+    }
+
+    /**
+     * Run one command and resolve whether it exited with success.
+     */
+    private runCodeGraphCommand(command: string, args: string[], cwd: string, timeoutMs: number): Promise<boolean> {
+        return new Promise((resolve) => {
+            let settled = false;
+            let child;
+            try {
+                child = spawn(command, args, {
+                    cwd,
+                    stdio: 'ignore',
+                    shell: false,
+                });
+            } catch {
+                resolve(false);
+                return;
+            }
+
+            const timer = setTimeout(() => {
+                if (!settled) {
+                    settled = true;
+                    try { child.kill(); } catch { /* ignore */ }
+                    resolve(false);
+                }
+            }, timeoutMs);
+
+            child.on('error', () => {
+                if (!settled) {
+                    settled = true;
+                    clearTimeout(timer);
+                    resolve(false);
+                }
+            });
+
+            child.on('close', (code) => {
+                if (!settled) {
+                    settled = true;
+                    clearTimeout(timer);
+                    resolve(code === 0);
+                }
+            });
+        });
+    }
+
+    /**
+     * Build a prompt section that either carries usable evidence or explicit downgrade warning.
+     */
+    private renderCodeGraphEvidenceSection(stage: CodeGraphEvidenceStage, evidence: CodeGraphEvidenceBundle): string {
+        const stageNameByCode: Record<CodeGraphEvidenceStage, string> = {
+            req: 'requirements',
+            des: 'design',
+            tsk: 'tasks',
+            dev: 'development',
+        };
+        const header = `## CodeGraph 证据注入（${stageNameByCode[stage]}）`;
+
+        if (!evidence.usable) {
+            return [
+                header,
+                `- usable: false`,
+                `- freshness: ${evidence.freshness}`,
+                `- bundlePath: ${evidence.bundlePath}`,
+                `- warning: ${(evidence.warning || 'codegraph evidence unavailable').replace(/\r?\n/g, ' ')}`,
+                '- downgradePolicy: 仅告警降级并回退现有流程，不得将“未查询到节点”推断为“不存在业务关系”。',
+            ].join('\n');
+        }
+
+        const anchors = evidence.anchors.map(item => `  - ${item}`).join('\n') || '  - (none)';
+        const seams = evidence.seams
+            .map(item => `  - ${item.caller} -> ${item.callee} (${item.relation})`)
+            .join('\n') || '  - (none)';
+        const impactSet = evidence.impactSet.map(item => `  - ${item}`).join('\n') || '  - (none)';
+
+        return [
+            header,
+            '- usable: true',
+            `- freshness: ${evidence.freshness}`,
+            `- bundlePath: ${evidence.bundlePath}`,
+            evidence.warning ? `- warning: ${evidence.warning.replace(/\r?\n/g, ' ')}` : '- warning: (none)',
+            '- anchors:',
+            anchors,
+            '- seams:',
+            seams,
+            '- impactSet:',
+            impactSet,
+        ].join('\n');
+    }
+
+    /**
+     * Map harness stage key to evidence stage key.
+     */
+    private resolveCodeGraphEvidenceStage(step: string): CodeGraphEvidenceStage | undefined {
+        if (step === 'req') {
+            return 'req';
+        }
+        if (step === 'des') {
+            return 'des';
+        }
+        if (step === 'tsk') {
+            return 'tsk';
+        }
+        if (step === 'dev') {
+            return 'dev';
+        }
+        return undefined;
+    }
+
+    /**
+     * Stage-aware evidence budget controls prompt size and keeps dev stage slightly larger.
+     */
+    private resolveEvidenceBudget(step: string): number {
+        if (step === 'dev') {
+            return 1200;
+        }
+        if (step === 'des') {
+            return 900;
+        }
+        if (step === 'tsk') {
+            return 800;
+        }
+        return 700;
     }
 
     /**
