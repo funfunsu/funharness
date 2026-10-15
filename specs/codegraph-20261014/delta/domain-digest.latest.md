@@ -1,6 +1,6 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-10-15T11:00:17.138Z
+- generatedAt: 2026-10-15T11:02:24.642Z
 - taskId: task_1791946269103
 - taskName: CodeGraph
 - gateLevel: standard
