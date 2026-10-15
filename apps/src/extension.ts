@@ -53,6 +53,9 @@ import { appendStructureGateFailureLog } from './services/harnessLog';
 import { CapabilityDeltaService } from './services/capabilityDeltaService';
 import { DomainKnowledgeAggregateService } from './services/domainKnowledgeAggregateService';
 import { DomainRegistryService } from './services/domainRegistryService';
+import { CodeGraphDedupeGuard } from './services/codegraph/codeGraphDedupeGuard';
+import { CodeGraphEvidenceProvider } from './services/codegraph/codeGraphEvidenceProvider';
+import { CodeGraphInitOrchestrator } from './services/codegraph/codeGraphInitOrchestrator';
 import { resolveHarnessWorkspaceRoot } from './workspaceRoot';
 
 type SaveAiQuickChatButtonsRouteResult =
@@ -146,6 +149,10 @@ class Harness {
     private capabilityDeltaService!: CapabilityDeltaService;
     private domainKnowledgeAggregateService!: DomainKnowledgeAggregateService;
     private domainRegistryService!: DomainRegistryService;
+    private codeGraphDedupeGuard!: CodeGraphDedupeGuard;
+    private codeGraphInitOrchestrator!: CodeGraphInitOrchestrator;
+    private codeGraphEvidenceProvider!: CodeGraphEvidenceProvider;
+    private readonly codeGraphSessionId: string = crypto.randomUUID();
     /** In-memory session state for the subpanel domain knowledge workspace. Binds Req-4, Req-5. */
     private domainSession: {
         changeSet: import('./models').DomainChangeSet | null;
@@ -211,6 +218,9 @@ class Harness {
                 this.capabilityDeltaService,
                 this.domainRegistryService,
             );
+            this.codeGraphDedupeGuard = new CodeGraphDedupeGuard();
+            this.codeGraphInitOrchestrator = new CodeGraphInitOrchestrator(this.codeGraphDedupeGuard);
+            this.codeGraphEvidenceProvider = new CodeGraphEvidenceProvider();
             this.schedulerRegistry = new SchedulerRegistry(
                 (task) => this.getIterationDir(task),
                 workspaceRoot,
@@ -243,6 +253,18 @@ class Harness {
                 runDomainSummaryAiRefiner: (prompt) => this.aiDispatchService.refineToTextSync(prompt, this.getMasterRoot()),
                 copyProjectStructureToIteration: (iterDir) => this.copyProjectStructureToIteration(iterDir),
                 renderAgentPrompt: (step, taskName, taskDesc, iterDir) => this.promptService.getRenderedPromptWithSource(step, taskName, taskDesc, iterDir, this.config),
+                runCodeGraphInitOnFirstCreate: async ({ featureId, taskName, worktreePath, entryPoint }) => {
+                    const autoCodeGraphEnabled = this.config.autoCodeGraphEnabled !== false;
+                    this.scheduleCodeGraphInitRun({
+                        sessionId: this.codeGraphSessionId,
+                        featureId,
+                        taskName,
+                        worktreePath,
+                        entryPoint,
+                        autoCodeGraphEnabled,
+                        autoInstallEnabled: autoCodeGraphEnabled,
+                    });
+                },
             });
             this.messageController = new HarnessMessageController({
                 isWorktreeSubview: () => this.isWorktreeSubview(),
@@ -361,6 +383,7 @@ class Harness {
                         this.saveAndRender();
                     }
                 },
+                syncCodeGraph: async (featureId) => this.actionsService.syncCodeGraphByFeatureId(featureId),
                 openFolderLocation: async (featureId, location) => this.actionsService.openFolderLocationByFeatureId(featureId, location),
                 openArtifact: async (featureId, artifact) => this.actionsService.openArtifactByFeatureId(featureId, artifact),
                 nextStage: async (featureId, step, targetStage) => this.actionsService.nextStageByFeatureId(featureId, step, targetStage),
@@ -404,6 +427,7 @@ class Harness {
             // If this worktree window left auto-polling on before a reload, pick it back up.
             if (this.isWorktreeSubview()) {
                 this.autoPollService.resumeIfOwnedAfterReload();
+                void this.tryRunCodeGraphInitForCurrentWorktree();
             }
             setInterval(async () => {
                 if (this.currentPage !== 'main' || this.autoAdvanceRunning) {
@@ -429,8 +453,131 @@ class Harness {
         return this.schedulerRegistry.get(task);
     }
 
+    /**
+     * For worktree subview windows opened directly via VS Code (without harness buttons),
+     * attempt one CodeGraph init run so users still get automatic initialization behavior.
+     */
+    private async tryRunCodeGraphInitForCurrentWorktree(): Promise<void> {
+        try {
+            const worktreePath = this.openedWorkspacePath || workspaceRoot;
+            if (!worktreePath) {
+                return;
+            }
+            const currentTask = this.features[0];
+            const autoCodeGraphEnabled = this.config.autoCodeGraphEnabled !== false;
+            this.scheduleCodeGraphInitRun({
+                sessionId: this.codeGraphSessionId,
+                featureId: currentTask?.id,
+                taskName: currentTask?.name,
+                worktreePath,
+                entryPoint: 'openFolderLocationByFeatureId',
+                autoCodeGraphEnabled,
+                autoInstallEnabled: autoCodeGraphEnabled,
+            });
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            vscode.window.showWarningMessage(`CodeGraph 初始化异常：${detail}`);
+        }
+    }
+
+    /**
+     * Queue CodeGraph init on the next event-loop turn so UI opening remains responsive.
+     */
+    private scheduleCodeGraphInitRun(input: {
+        sessionId: string;
+        featureId?: string;
+        taskName?: string;
+        worktreePath: string;
+        entryPoint: 'openFolderLocationByFeatureId' | 'runCustomButtonByFeatureId' | 'syncCodeGraphByFeatureId';
+        autoCodeGraphEnabled: boolean;
+        autoInstallEnabled: boolean;
+    }): void {
+        setTimeout(() => {
+            void this.executeCodeGraphInitRun(input);
+        }, 0);
+    }
+
+    /**
+     * Execute one queued CodeGraph init run and surface summary notifications.
+     */
+    private async executeCodeGraphInitRun(input: {
+        sessionId: string;
+        featureId?: string;
+        taskName?: string;
+        worktreePath: string;
+        entryPoint: 'openFolderLocationByFeatureId' | 'runCustomButtonByFeatureId' | 'syncCodeGraphByFeatureId';
+        autoCodeGraphEnabled: boolean;
+        autoInstallEnabled: boolean;
+    }): Promise<void> {
+        const result = await this.codeGraphInitOrchestrator.runOnce(input);
+
+        if (result.status === 'warning') {
+            await this.showCodeGraphInitWarning(result.summary);
+            return;
+        }
+
+        if (result.status === 'deduped') {
+            vscode.window.showInformationMessage(`CodeGraph 初始化已去重：${result.summary}`);
+            return;
+        }
+
+        vscode.window.showInformationMessage(`CodeGraph 初始化完成：${result.summary}`);
+    }
+
+    private getCodeGraphManualInstallCommand(): string {
+        if (process.platform === 'win32') {
+            return 'npm.cmd install -g @colbymchenry/codegraph (if you use fnm: Invoke-Expression (fnm env --shell powershell | Out-String); npm.cmd install -g @colbymchenry/codegraph)';
+        }
+        return 'npm install -g @colbymchenry/codegraph';
+    }
+
+    private async showCodeGraphInitWarning(summary: string): Promise<void> {
+        const copyFix = '复制修复命令';
+        const showGuide = '查看排障步骤';
+        const selection = await vscode.window.showWarningMessage(
+            `CodeGraph 初始化告警：${summary}`,
+            copyFix,
+            showGuide,
+        );
+
+        if (selection === copyFix) {
+            const command = this.getCodeGraphManualInstallCommand();
+            await vscode.env.clipboard.writeText(command);
+            vscode.window.showInformationMessage('已复制 CodeGraph 修复命令，请在终端执行后重试。');
+            return;
+        }
+
+        if (selection === showGuide) {
+            const command = this.getCodeGraphManualInstallCommand();
+            const doc = await vscode.workspace.openTextDocument({
+                language: 'markdown',
+                content: [
+                    '# CodeGraph 初始化排障',
+                    '',
+                    '## 1. 手动安装 CLI',
+                    '',
+                    '```powershell',
+                    command,
+                    '```',
+                    '',
+                    '## 2. 验证安装结果',
+                    '',
+                    '```powershell',
+                    'codegraph --version',
+                    '```',
+                    '',
+                    '## 3. 重新打开 worktree 或点击旁路区 Sync CodeGraph',
+                    '',
+                    '若仍失败，请打开 .harness/process/codegraph-runs.jsonl 查看最新 errorDigest。',
+                ].join('\n'),
+            });
+            await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+        }
+    }
+
     private loadConfig(): void {
         this.config = this.featureStore.loadConfig();
+        this.normalizeCodeGraphPolicyConfig();
         this.configMeta = this.featureStore.getConfigMeta();
         const effectiveGitRoot = (this.configMeta.origin === 'worktreeSnapshot' && this.configMeta.masterRoot && fs.existsSync(this.configMeta.masterRoot))
             ? this.configMeta.masterRoot
@@ -951,9 +1098,22 @@ class Harness {
         this.config.cliCommandTemplate = msg.cct;
         this.config.aiFallbackToManual = msg.afm;
         this.config.aiPanelAutoSubmit = msg.pas;
+        this.config.autoCodeGraphEnabled = msg.acg !== false;
+        // Policy convergence: when CodeGraph is enabled, auto-install follows automatically.
+        this.config.autoInstallEnabled = this.config.autoCodeGraphEnabled;
         this.saveConfig();
         this.ensureProjectStructureBaseline();
         vscode.window.showInformationMessage('✅ 高级策略已保存');
+    }
+
+    /**
+     * Keep CodeGraph policy flags compatible with legacy configs that may not contain the fields.
+     */
+    private normalizeCodeGraphPolicyConfig(): void {
+        this.config.autoCodeGraphEnabled = typeof this.config.autoCodeGraphEnabled === 'boolean'
+            ? this.config.autoCodeGraphEnabled
+            : DEFAULT_CONFIG.autoCodeGraphEnabled;
+        this.config.autoInstallEnabled = this.config.autoCodeGraphEnabled;
     }
 
     private handleSaveCustomButtons(buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string }[]): void {

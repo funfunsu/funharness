@@ -20,7 +20,7 @@ const path = require('node:path');
 
 const { deriveIterationBranchName, deriveIterationWorktreeName, deriveIterationBranchNameWithOptions, deriveIterationWorktreeNameWithOptions } = require('../out/services/branchName');
 const { FeatureStoreService } = require('../out/services/featureStoreService');
-const { BASE } = require('../out/models');
+const { BASE, DEFAULT_CONFIG } = require('../out/models');
 
 function makeTempDir() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'fh-feature-store-'));
@@ -238,6 +238,52 @@ describe('AI 快捷对话配置持久化覆盖基线', () => {
             assert.equal(snapshot.aiQuickChatButtons[0].label, '重试');
             assert.equal(snapshot.aiQuickChatButtons[1].content, '总结当前变更和风险');
             assert.equal(snapshot.customButtons.length, 0);
+        } finally {
+            cleanup(root);
+        }
+    });
+});
+
+describe('CodeGraph 配置治理覆盖基线', () => {
+    test('loadConfig 对缺省字段回退到自动构建开启、自动安装开启', () => {
+        const root = makeTempDir();
+        try {
+            const configPath = path.join(root, BASE, 'config.json');
+            fs.mkdirSync(path.dirname(configPath), { recursive: true });
+            fs.writeFileSync(configPath, JSON.stringify({
+                baseBranch: 'main',
+                aiProvider: 'copilot-chat',
+            }, null, 2), 'utf8');
+
+            const service = new FeatureStoreService(root);
+            const loaded = service.loadConfig();
+
+            assert.equal(loaded.autoCodeGraphEnabled, true);
+            assert.equal(loaded.autoInstallEnabled, true);
+        } finally {
+            cleanup(root);
+        }
+    });
+
+    test('saveConfig 后重新加载保持开关持久化一致', () => {
+        const root = makeTempDir();
+        try {
+            const service = new FeatureStoreService(root);
+            service.saveConfig({
+                ...DEFAULT_CONFIG,
+                autoCodeGraphEnabled: false,
+                autoInstallEnabled: true,
+                baseBranch: 'release/main',
+            });
+
+            const reloaded = service.loadConfig();
+            const raw = JSON.parse(fs.readFileSync(path.join(root, BASE, 'config.json'), 'utf8'));
+
+            assert.equal(reloaded.autoCodeGraphEnabled, false);
+            assert.equal(reloaded.autoInstallEnabled, true);
+            assert.equal(raw.autoCodeGraphEnabled, false);
+            assert.equal(raw.autoInstallEnabled, true);
+            assert.equal(reloaded.baseBranch, 'release/main');
         } finally {
             cleanup(root);
         }

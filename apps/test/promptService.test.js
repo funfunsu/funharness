@@ -26,6 +26,11 @@ function cleanup(dir) {
     }
 }
 
+/** Inject a mock evidence provider into PromptService for deterministic assertions. */
+function setEvidenceProviderMock(service, mockImpl) {
+    service.codeGraphEvidenceProvider = mockImpl;
+}
+
 describe('PromptService', () => {
     test('本地修复独立模板注入宪法并保留运行时占位符，缺失模板则返回空', () => {
         const root = makeTempDir();
@@ -112,6 +117,80 @@ describe('PromptService', () => {
 
             assert.equal(rendered.content.includes('当前领域注册表状态：available'), true);
             assert.equal(rendered.content.includes('当前已登记 canonical 领域：asset-label, billing'), true, rendered.content);
+        } finally {
+            cleanup(workspaceRoot);
+        }
+    });
+
+    test('四阶段 req/des/tsk/dev 在证据可用时注入锚点与接缝信息', () => {
+        const workspaceRoot = makeTempDir();
+        try {
+            const appsRoot = path.join(__dirname, '..');
+            const service = new PromptService(workspaceRoot, appsRoot);
+            setEvidenceProviderMock(service, {
+                getStageEvidence(input) {
+                    return {
+                        usable: true,
+                        freshness: 'fresh',
+                        anchors: [`anchor-${input.stage}`],
+                        seams: [{ caller: `caller-${input.stage}`, callee: `callee-${input.stage}`, relation: 'calls' }],
+                        impactSet: [`impact-${input.stage}`],
+                        bundlePath: path.join(workspaceRoot, '.codegraph', 'evidence.json'),
+                    };
+                },
+            });
+
+            const stageMap = {
+                req: 'requirements',
+                des: 'design',
+                tsk: 'tasks',
+                dev: 'development',
+            };
+
+            for (const [stage, stageName] of Object.entries(stageMap)) {
+                const rendered = service.getRenderedPromptWithSource(stage, '任务A', '描述A', workspaceRoot);
+                assert.equal(rendered.content.includes(`## CodeGraph 证据注入（${stageName}）`), true);
+                assert.equal(rendered.content.includes(`anchor-${stage}`), true);
+                assert.equal(rendered.content.includes(`caller-${stage} -> callee-${stage} (calls)`), true);
+                assert.equal(rendered.content.includes(`impact-${stage}`), true);
+                assert.equal(rendered.content.includes('usable: true'), true);
+            }
+        } finally {
+            cleanup(workspaceRoot);
+        }
+    });
+
+    test('证据 stale 或 missing 时注入降级告警并禁止否定性推断', () => {
+        const workspaceRoot = makeTempDir();
+        try {
+            const appsRoot = path.join(__dirname, '..');
+            const service = new PromptService(workspaceRoot, appsRoot);
+            let callCount = 0;
+            setEvidenceProviderMock(service, {
+                getStageEvidence() {
+                    callCount += 1;
+                    return {
+                        usable: false,
+                        freshness: callCount === 1 ? 'stale' : 'missing',
+                        anchors: [],
+                        seams: [],
+                        impactSet: [],
+                        bundlePath: path.join(workspaceRoot, '.codegraph', 'evidence.json'),
+                        warning: callCount === 1 ? 'evidence is stale' : 'evidence missing',
+                    };
+                },
+            });
+
+            const staleRendered = service.getRenderedPromptWithSource('des', '任务B', '描述B', workspaceRoot);
+            const missingRendered = service.getRenderedPromptWithSource('dev', '任务C', '描述C', workspaceRoot);
+
+            for (const content of [staleRendered.content, missingRendered.content]) {
+                assert.equal(content.includes('usable: false'), true);
+                assert.equal(content.includes('downgradePolicy'), true);
+                assert.equal(content.includes('不得将“未查询到节点”推断为“不存在业务关系”'), true);
+            }
+            assert.equal(staleRendered.content.includes('freshness: stale'), true);
+            assert.equal(missingRendered.content.includes('freshness: missing'), true);
         } finally {
             cleanup(workspaceRoot);
         }

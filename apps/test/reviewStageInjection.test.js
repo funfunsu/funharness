@@ -607,3 +607,40 @@ describe('TEST-10: 评审失败不改变主流程完成语义 (Req-4, INV-10)', 
         }
     });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CodeGraph evidence downgrade regression guard for prompt assembly
+// ─────────────────────────────────────────────────────────────────────────────
+describe('CodeGraph 证据注入降级回退回归', () => {
+    let tmpDir;
+
+    beforeEach(() => {
+        tmpDir = makeTempDir();
+    });
+
+    afterEach(() => cleanup(tmpDir));
+
+    test('GIVEN req 阶段证据缺失 WHEN 渲染阶段 Prompt THEN 写入降级告警且禁止否定性推断', () => {
+        const promptService = new PromptService(tmpDir, path.join(__dirname, '..'));
+        promptService.codeGraphEvidenceProvider = {
+            getStageEvidence() {
+                return {
+                    usable: false,
+                    freshness: 'missing',
+                    anchors: [],
+                    seams: [],
+                    impactSet: [],
+                    bundlePath: path.join(tmpDir, '.codegraph', 'evidence.json'),
+                    warning: 'evidence missing in test',
+                };
+            },
+        };
+
+        const rendered = promptService.getRenderedPromptWithSource('req', '任务', '描述', tmpDir);
+        assert.equal(rendered.content.includes('CodeGraph 证据注入（requirements）'), true);
+        assert.equal(rendered.content.includes('usable: false'), true);
+        assert.equal(rendered.content.includes('freshness: missing'), true);
+        assert.equal(rendered.content.includes('downgradePolicy'), true);
+        assert.equal(rendered.content.includes('不得将“未查询到节点”推断为“不存在业务关系”'), true);
+    });
+});

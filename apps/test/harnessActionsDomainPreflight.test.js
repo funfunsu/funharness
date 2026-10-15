@@ -59,8 +59,10 @@ function writeRequirements(iterDir, domain) {
 
 function createVscodeMock(sink = {}, userChoice = '去处理') {
     const opened = sink.opened || [];
+    const terminals = sink.terminals || [];
     return {
         window: {
+            terminals,
             async showWarningMessage(message) {
                 if (String(message).includes('领域未登记')) {
                     return userChoice;
@@ -73,6 +75,19 @@ function createVscodeMock(sink = {}, userChoice = '去处理') {
             async showErrorMessage() {
                 return undefined;
             },
+            createTerminal(options) {
+                const terminal = {
+                    name: options?.name || 'mock-terminal',
+                    sent: [],
+                    show() {},
+                    dispose() {},
+                    sendText(text) {
+                        this.sent.push(text);
+                    },
+                };
+                terminals.push(terminal);
+                return terminal;
+            },
         },
         commands: {
             async executeCommand(command, uri) {
@@ -84,6 +99,9 @@ function createVscodeMock(sink = {}, userChoice = '去处理') {
             file(filePath) {
                 return { fsPath: filePath };
             },
+        },
+        workspace: {
+            workspaceFolders: [{ uri: { fsPath: process.cwd() } }],
         },
     };
 }
@@ -107,7 +125,7 @@ function loadHarnessActionsService(vscodeMock) {
     }
 }
 
-function createServiceHarness(tmpDir, userChoice) {
+function createServiceHarness(tmpDir, userChoice, options = {}) {
     const feature = {
         id: 'feature-domain-gate',
         name: 'feature-domain-gate',
@@ -120,16 +138,21 @@ function createServiceHarness(tmpDir, userChoice) {
     const features = [feature];
     const sink = { opened: [] };
     const calls = { saveAndRender: 0, runAgent: 0 };
+    const config = { ...DEFAULT_CONFIG, ...(options.configOverrides || {}) };
+    const gitService = {
+        consumeLocalBaseFallbackNotice: () => '',
+        ...(options.gitServiceOverrides || {}),
+    };
 
     const HarnessActionsService = loadHarnessActionsService(createVscodeMock(sink, userChoice));
     const service = new HarnessActionsService({
         getFeatures: () => features,
-        getConfig: () => ({ ...DEFAULT_CONFIG }),
+        getConfig: () => ({ ...config }),
         getMasterRoot: () => tmpDir,
         getIterationDir: () => tmpDir,
         ensureIterationDir: () => {},
         saveAndRender: () => { calls.saveAndRender += 1; },
-        gitService: {},
+        gitService,
         getScheduler: () => ({ isAutoMode: () => false, parseSubFeaturesMd: () => [] }),
         stopScheduler: () => {},
         onPass: () => {},
@@ -137,6 +160,7 @@ function createServiceHarness(tmpDir, userChoice) {
         dispatchAi: async () => {},
         copyProjectStructureToIteration: () => {},
         renderAgentPrompt: () => ({ content: '', source: 'none', path: '' }),
+        runCodeGraphInitOnFirstCreate: options.runCodeGraphInitOnFirstCreate,
     });
 
     service.runAgentByFeatureId = async () => {
@@ -304,5 +328,97 @@ describe('领域预检阻断与引导', () => {
         assert.equal(feature.stage, STAGE.WRITING_REQUIREMENT);
         assert.equal(calls.runAgent, 0);
         assert.equal(sink.opened.some(item => item.path.includes(path.join('docs', 'domains', 'registry.yaml'))), true);
+    });
+
+    test('首次真实创建时，openFolder 与 customButton 两入口均触发同一 CodeGraph 初始化编排', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+
+        const triggerCalls = [];
+        const { service, feature } = createServiceHarness(tmpDir, '去处理', {
+            configOverrides: {
+                monorepoGit: 'https://example.com/demo.git',
+                customButtons: [
+                    {
+                        id: 'btn_1',
+                        name: '运行',
+                        scriptSource: 'master',
+                        script: 'noop.ps1',
+                        args: '',
+                        placement: 'iteration',
+                    },
+                ],
+            },
+            gitServiceOverrides: {
+                async createIterationBranches() {
+                    return { success: true, baseBranch: 'main', iterationBranch: 'task/demo' };
+                },
+            },
+            runCodeGraphInitOnFirstCreate: async (input) => {
+                triggerCalls.push(input);
+            },
+        });
+
+        // Avoid terminal side effects; this case only verifies CodeGraph trigger wiring.
+        service.launchCustomButton = () => {};
+
+        await service.openFolderLocationByFeatureId(feature.id, 'worktree');
+        await service.runCustomButtonByFeatureId(feature.id, 'btn_1');
+
+        assert.equal(triggerCalls.length, 2);
+        assert.deepEqual(
+            triggerCalls.map(item => item.entryPoint).sort(),
+            ['openFolderLocationByFeatureId', 'runCustomButtonByFeatureId'],
+        );
+        assert.equal(triggerCalls.every(item => item.worktreePath === tmpDir), true);
+    });
+
+    test('打开已有 worktree 时也触发 openFolder 入口 CodeGraph 初始化编排', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        fs.mkdirSync(path.join(tmpDir, '.git'), { recursive: true });
+
+        const triggerCalls = [];
+        const { service, feature } = createServiceHarness(tmpDir, '去处理', {
+            configOverrides: {
+                monorepoGit: 'https://example.com/demo.git',
+            },
+            runCodeGraphInitOnFirstCreate: async (input) => {
+                triggerCalls.push(input);
+            },
+        });
+
+        // Mark iteration as already initialized to emulate an existing worktree reopen.
+        feature.worktreePath = tmpDir;
+        feature.iterationBranch = 'task/demo';
+        service.launchCustomButton = () => {};
+
+        await service.openFolderLocationByFeatureId(feature.id, 'worktree');
+
+        assert.equal(triggerCalls.length, 1);
+        assert.equal(triggerCalls[0].entryPoint, 'openFolderLocationByFeatureId');
+        assert.equal(triggerCalls[0].worktreePath, tmpDir);
+    });
+
+    test('点击 Sync CodeGraph 时，若未初始化则先自动触发初始化编排', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+
+        const triggerCalls = [];
+        const { service, feature } = createServiceHarness(tmpDir, '去处理', {
+            runCodeGraphInitOnFirstCreate: async (input) => {
+                triggerCalls.push(input);
+                fs.mkdirSync(path.join(input.worktreePath, '.codegraph'), { recursive: true });
+            },
+        });
+
+        feature.worktreePath = tmpDir;
+        feature.iterationBranch = 'task/demo';
+
+        await service.syncCodeGraphByFeatureId(feature.id);
+
+        assert.equal(triggerCalls.length, 1);
+        assert.equal(triggerCalls[0].entryPoint, 'syncCodeGraphByFeatureId');
+        assert.equal(triggerCalls[0].worktreePath, tmpDir);
     });
 });

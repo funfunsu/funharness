@@ -377,6 +377,14 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="syncMainCode('${ctx.task.id}')">🔄 拉取代码</button>`,
     },
     {
+        key: 'sync-codegraph',
+        placement: 'side',
+        panels: ['worktree'],
+        stages: 'all',
+        when: (ctx) => ctx.hasWorktree,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="syncCodeGraph('${ctx.task.id}')">🧩 Sync CodeGraph</button>`,
+    },
+    {
         key: 'commit-to-baseline',
         placement: 'side',
         panels: ['main', 'worktree'],
@@ -1904,6 +1912,7 @@ function commitFeatureDescEditor(id){
 function resetFeature(id){v.postMessage({type:'resetFeature',id})}
 function openArtifact(id,artifact){v.postMessage({type:'openArtifact',id,artifact})}
 function openFolderLocation(id,location){v.postMessage({type:'openFolderLocation',id,location})}
+function syncCodeGraph(id){v.postMessage({type:'syncCodeGraph',id})}
 function setFeatureAutomation(id,aa){v.postMessage({type:'setFeatureAutomation',id,aa})}
 function setSpecDriftRepair(id,enabled){v.postMessage({type:'setSpecDriftRepair',id,enabled})}
 function setFeatureAiProvider(id,ap){v.postMessage({type:'setFeatureAiProvider',id,ap})}
@@ -2128,6 +2137,13 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <span>Claude Code (面板) 预填后自动回车发送（仅 macOS，需授予编辑器「辅助功能」权限）</span>
 <input id="pas" type="checkbox" ${config.aiPanelAutoSubmit !== false ? 'checked' : ''} ${disabled}>
 </div>
+<div class="toggle-row">
+<span>首次创建 worktree 时自动构建 CodeGraph</span>
+<input id="acg" type="checkbox" ${config.autoCodeGraphEnabled !== false ? 'checked' : ''} ${disabled}>
+</div>
+<div class="toggle-row">
+<span>CodeGraph 开启时，若本机缺少 CLI 将自动尝试安装（无需单独开关）</span>
+</div>
 <button onclick="saveAdvancedConfig()" style="background:#007aff" ${disabled}>💾 保存高级策略</button>
 </details>
 </div>
@@ -2244,7 +2260,7 @@ function toggleCustomPromptMore(){
     toggle.textContent=open?'收起':'更多';
 }
 function saveGit(){v.postMessage({type:'saveGit',bb:document.getElementById('bb').value,mg:document.getElementById('mg').value,gmg:document.getElementById('gmg').value})}
-function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',dcm:document.getElementById('dcm').value,ins:document.getElementById('ins').checked,wsd:document.getElementById('wsd').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked})}
+function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',dcm:document.getElementById('dcm').value,ins:document.getElementById('ins').checked,wsd:document.getElementById('wsd').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked,acg:document.getElementById('acg').checked})}
 function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
 function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
 function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}

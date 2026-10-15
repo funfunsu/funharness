@@ -91,7 +91,7 @@ export type HarnessMessage =
     | { type: 'getLatestReviewStatus'; stage: ReviewStage }
     | { type: 'openCustomConstitution' }
     | { type: 'saveGit'; bb: string; mg?: string; gmg?: string }
-    | { type: 'saveAdvancedConfig'; dcm: 'batch' | 'single'; ins: boolean; wsd: string; prm: 'local' | 'local+ai'; srd: string; gl: 'relaxed' | 'standard' | 'strict'; cct: string; afm: boolean; pas: boolean }
+    | { type: 'saveAdvancedConfig'; dcm: 'batch' | 'single'; ins: boolean; wsd: string; prm: 'local' | 'local+ai'; srd: string; gl: 'relaxed' | 'standard' | 'strict'; cct: string; afm: boolean; pas: boolean; acg: boolean; cai?: boolean }
     | { type: 'initProjectStructure' }
     | { type: 'applyProjectStructurePreview' }
     | { type: 'openArtifactsIndex' }
@@ -113,6 +113,7 @@ export type HarnessMessage =
     | { type: 'setFeatureAutomation'; id: string; aa: boolean }
     | { type: 'setSpecDriftRepair'; id: string; enabled: boolean }
     | { type: 'setFeatureAiProvider'; id: string; ap: string }
+    | { type: 'syncCodeGraph'; id: string }
     | { type: 'openFolderLocation'; id: string; location: 'worktree' | 'frontend' | 'backend' | 'mainFrontend' | 'mainBackend' | 'mono' | 'mainMono' }
     | { type: 'openArtifact'; id: string; artifact: 'requirements' | 'design' | 'testcase' | 'tasks' | 'testScript' }
     | { type: 'next'; id: string; step: HarnessStep; targetStage?: HarnessStep }
