@@ -122,7 +122,7 @@ describe('PromptService', () => {
         }
     });
 
-    test('四阶段 req/des/tsk/dev 在证据可用时注入锚点与接缝信息', () => {
+    test('五阶段 req/des/tcs/tsk/dev 在证据可用时注入锚点与接缝信息', () => {
         const workspaceRoot = makeTempDir();
         try {
             const appsRoot = path.join(__dirname, '..');
@@ -143,6 +143,7 @@ describe('PromptService', () => {
             const stageMap = {
                 req: 'requirements',
                 des: 'design',
+                tcs: 'testcase',
                 tsk: 'tasks',
                 dev: 'development',
             };

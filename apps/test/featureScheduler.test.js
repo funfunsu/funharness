@@ -673,6 +673,69 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         assert.match(query, /1\. 非法输入被拒绝/);
     });
 
+    test('dev-subtask 派发 query 显式注入 CodeGraph 证据块（fresh usable）', () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        const specDir = path.join(tmpDir, 'specs');
+        fs.mkdirSync(specDir, { recursive: true });
+        fs.writeFileSync(path.join(specDir, 'tasks.md'), [
+            '- [ ] 1.1 保存配置',
+            '  - 验收: GIVEN 有效输入 WHEN 保存 THEN 配置持久化',
+            '  - 追踪: Req-1 + INV-1',
+        ].join('\n'), 'utf8');
+
+        const codegraphDir = path.join(tmpDir, '.codegraph');
+        fs.mkdirSync(codegraphDir, { recursive: true });
+        fs.writeFileSync(path.join(codegraphDir, 'evidence.json'), JSON.stringify({
+            anchors: ['anchor-dev'],
+            seams: [{ caller: 'caller-dev', callee: 'callee-dev', relation: 'calls' }],
+            impactSet: ['impact-dev'],
+        }), 'utf8');
+
+        const processDir = path.join(tmpDir, '.harness', 'process');
+        fs.mkdirSync(processDir, { recursive: true });
+        fs.writeFileSync(path.join(processDir, 'codegraph-runs.jsonl'), `${JSON.stringify({
+            status: 'success',
+            endedAt: new Date().toISOString(),
+        })}\n`, 'utf8');
+
+        const { vscodeMock } = createVscodeMock();
+        const FeatureScheduler = loadFeatureScheduler(vscodeMock);
+        const scheduler = new FeatureScheduler(tmpDir, tmpDir,
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' }, async () => {}, () => {}, () => '');
+        const query = scheduler.buildDispatchQuery(scheduler.parseSubFeaturesMd()[0], createFeature());
+
+        assert.match(query, /## CodeGraph 证据注入（development-subtask）/);
+        assert.match(query, /- usable: true/);
+        assert.match(query, /anchor-dev/);
+        assert.match(query, /caller-dev -> callee-dev \(calls\)/);
+        assert.match(query, /impact-dev/);
+    });
+
+    test('dev-subtask 在缺失证据时注入降级告警并禁止否定性推断', () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        const specDir = path.join(tmpDir, 'specs');
+        fs.mkdirSync(specDir, { recursive: true });
+        fs.writeFileSync(path.join(specDir, 'tasks.md'), [
+            '- [ ] 1.1 保存配置',
+            '  - 验收: GIVEN 有效输入 WHEN 保存 THEN 配置持久化',
+            '  - 追踪: Req-1 + INV-1',
+        ].join('\n'), 'utf8');
+
+        const { vscodeMock } = createVscodeMock();
+        const FeatureScheduler = loadFeatureScheduler(vscodeMock);
+        const scheduler = new FeatureScheduler(tmpDir, tmpDir,
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' }, async () => {}, () => {}, () => '');
+        const query = scheduler.buildDispatchQuery(scheduler.parseSubFeaturesMd()[0], createFeature());
+
+        assert.match(query, /## CodeGraph 证据注入（development-subtask）/);
+        assert.match(query, /- usable: false/);
+        assert.match(query, /- freshness: missing/);
+        assert.match(query, /downgradePolicy/);
+        assert.match(query, /不得将“未查询到节点”推断为“不存在业务关系”/);
+    });
+
     test('依赖正文总预算与路径去重保留验收和超额读取入口', () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);

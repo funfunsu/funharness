@@ -2,11 +2,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { parseDocument } from 'yaml';
-import { Config, SubFeature, Feature, getAiProvider, getSpecDocsDir, resolveFeaturePlanFileForIteration } from './models';
+import { CodeGraphEvidenceBundle, Config, SubFeature, Feature, getAiProvider, getSpecDocsDir, resolveFeaturePlanFileForIteration } from './models';
 import { appendHarnessLog } from './services/harnessLog';
 import { LocalProcessTaskService, LocalVerificationError } from './services/localProcessTaskService';
 import { AiUsageService } from './services/aiUsageService';
 import { LocalRepairService, LocalRepairState } from './services/localRepairService';
+import { CodeGraphEvidenceProvider } from './services/codegraph/codeGraphEvidenceProvider';
+import { CodeGraphEvidenceSnapshotWriter } from './services/codegraph/codeGraphEvidenceSnapshotWriter';
 
 export class FeatureScheduler {
     private iterDir: string;
@@ -27,6 +29,8 @@ export class FeatureScheduler {
     private config: Config;
     private readonly dispatchAi: (query: string, iterDir: string, source: 'stage-agent' | 'dev-subtask', providerOverride?: string, context?: { stage?: string; taskId?: string }) => Promise<void>;
     private readonly getDevSystemPrompt: (subFeature: SubFeature, iterFeature: Feature) => string;
+    private readonly codeGraphEvidenceProvider: CodeGraphEvidenceProvider;
+    private readonly codeGraphEvidenceSnapshotWriter: CodeGraphEvidenceSnapshotWriter;
 
     constructor(
         iterDir: string,
@@ -46,6 +50,8 @@ export class FeatureScheduler {
         this.onStatusChange = onStatusChange;
         this.getDevSystemPrompt = getDevSystemPrompt;
         this.localRepairs = new LocalRepairService(iterDir);
+        this.codeGraphEvidenceProvider = new CodeGraphEvidenceProvider();
+        this.codeGraphEvidenceSnapshotWriter = new CodeGraphEvidenceSnapshotWriter();
     }
 
     private fillTemplateVars(template: string, vars: Record<string, string>): string {
@@ -418,6 +424,7 @@ export class FeatureScheduler {
         const testcaseContext = fs.existsSync(testcaseFile) ? this.buildTestcaseContext(subTask) : '';
         const manifestContext = this.buildManifestContext(subTask);
         const instructionContext = this.buildProjectInstructionContext();
+        const codeGraphEvidenceSection = this.buildCodeGraphEvidenceSectionForDevSubTask();
 
         const outputFiles = subTask.output.length > 0
             ? this.renderOutputFilesSection(subTask)
@@ -532,6 +539,9 @@ ${manifestContext}
 ## 项目规范上下文（workspaceRoot/.github/instructions）
 ${instructionContext}
 
+## CodeGraph 证据注入（development-subtask）
+${codeGraphEvidenceSection}
+
 **重要：若项目规范与通用规范冲突，以 workspaceRoot/.github/instructions 中的规则为最高优先级。**
 
 ## 输出要求
@@ -553,6 +563,74 @@ files:
   - {实际创建的文件路径列表}
 \`\`\`
 ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，请生成验收脚本（平台差异如下）：\n- Windows: \`${windowsTestScriptPath}\`\n- Non-Windows: \`${nonWindowsTestScriptPath}\`\n脚本仅供人工触发验证，不自动执行。` : ''}`;
+    }
+
+    private buildCodeGraphEvidenceSectionForDevSubTask(): string {
+        if (this.config.autoCodeGraphEnabled === false) {
+            return [
+                '- usable: false',
+                '- freshness: missing',
+                `- bundlePath: ${path.join(this.iterDir, '.codegraph', 'evidence.json')}`,
+                '- warning: auto codegraph is disabled by policy',
+                '- downgradePolicy: 仅告警降级并回退现有流程，不得将“未查询到节点”推断为“不存在业务关系”。',
+            ].join('\n');
+        }
+
+        let evidence: CodeGraphEvidenceBundle;
+        try {
+            if (fs.existsSync(path.join(this.iterDir, '.codegraph'))) {
+                this.codeGraphEvidenceSnapshotWriter.writeSnapshot(this.iterDir);
+            }
+            evidence = this.codeGraphEvidenceProvider.getStageEvidence({
+                worktreePath: this.iterDir,
+                stage: 'dev',
+                budgetTokens: 1200,
+                freshnessPolicy: 'latest-success-record',
+            });
+        } catch {
+            evidence = {
+                usable: false,
+                freshness: 'missing',
+                anchors: [],
+                seams: [],
+                impactSet: [],
+                bundlePath: path.join(this.iterDir, '.codegraph', 'evidence.json'),
+                warning: 'codegraph evidence injection failed unexpectedly',
+            };
+        }
+
+        return this.renderCodeGraphEvidenceSection(evidence);
+    }
+
+    private renderCodeGraphEvidenceSection(evidence: CodeGraphEvidenceBundle): string {
+        if (!evidence.usable) {
+            return [
+                '- usable: false',
+                `- freshness: ${evidence.freshness}`,
+                `- bundlePath: ${evidence.bundlePath}`,
+                `- warning: ${(evidence.warning || 'codegraph evidence unavailable').replace(/\r?\n/g, ' ')}`,
+                '- downgradePolicy: 仅告警降级并回退现有流程，不得将“未查询到节点”推断为“不存在业务关系”。',
+            ].join('\n');
+        }
+
+        const anchors = evidence.anchors.map(item => `  - ${item}`).join('\n') || '  - (none)';
+        const seams = evidence.seams
+            .map(item => `  - ${item.caller} -> ${item.callee} (${item.relation})`)
+            .join('\n') || '  - (none)';
+        const impactSet = evidence.impactSet.map(item => `  - ${item}`).join('\n') || '  - (none)';
+
+        return [
+            '- usable: true',
+            `- freshness: ${evidence.freshness}`,
+            `- bundlePath: ${evidence.bundlePath}`,
+            evidence.warning ? `- warning: ${evidence.warning.replace(/\r?\n/g, ' ')}` : '- warning: (none)',
+            '- anchors:',
+            anchors,
+            '- seams:',
+            seams,
+            '- impactSet:',
+            impactSet,
+        ].join('\n');
     }
 
     private buildRequirementsContext(subTask: SubFeature): string {
