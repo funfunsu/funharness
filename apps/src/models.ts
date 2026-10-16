@@ -501,7 +501,7 @@ export interface Config {
     lifecycleHooks: LifecycleHooks;
 }
 
-export type CodeGraphEvidenceStage = 'req' | 'des' | 'tsk' | 'dev';
+export type CodeGraphEvidenceStage = 'req' | 'des' | 'tcs' | 'tsk' | 'dev';
 
 export type CodeGraphEvidenceFreshness = 'fresh' | 'stale' | 'missing';
 

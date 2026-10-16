@@ -314,6 +314,7 @@ export class PromptService {
         const stageNameByCode: Record<CodeGraphEvidenceStage, string> = {
             req: 'requirements',
             des: 'design',
+            tcs: 'testcase',
             tsk: 'tasks',
             dev: 'development',
         };
@@ -361,6 +362,9 @@ export class PromptService {
         if (step === 'des') {
             return 'des';
         }
+        if (step === 'tcs') {
+            return 'tcs';
+        }
         if (step === 'tsk') {
             return 'tsk';
         }
@@ -379,6 +383,9 @@ export class PromptService {
         }
         if (step === 'des') {
             return 900;
+        }
+        if (step === 'tcs') {
+            return 850;
         }
         if (step === 'tsk') {
             return 800;

@@ -150,6 +150,20 @@ node scripts/validate-webview.js  # 单独验证 Webview 内联脚本
 - **任务**：任务输出区分 `新建输出`(newFiles) 与 `改造输出`(modifiedFiles)；凡产出新组件/新服务的任务，`改造输出` 必须包含其调用方/引用方（接线交付物）。`SubFeature.newFiles/modifiedFiles` 由 `parseSubFeaturesMd` 解析，`无` 等占位符会被过滤。
 - **开发**：实现后自检每个新文件是否被生产代码引用（前端 import、后端注入/调用）；仅被测试引用或零引用即孤儿，须补接线或触发 FAILURE PROTOCOL。
 
+### 5. 直接对话场景的 CodeGraph 使用协议（Direct Chat Protocol）
+
+- 当用户在聊天中直接要求“分析/修改代码”且未通过阶段按钮触发 Agent 时，仍必须优先使用 CodeGraph 证据，不得仅凭文件名或局部文本推断调用关系。
+- 在给出实现建议、影响面判断、接缝定位前，优先读取并使用以下证据源（存在时）：
+  - `.codegraph/evidence.json`（或 `.codegraph/evidence/bundle.json`）
+  - `.harness/process/codegraph-evidence.json`
+  - `.harness/process/codegraph-runs.jsonl`
+- 若 `.codegraph` 已存在且证据可能过期，先执行轻量同步（如 `codegraph sync -q`）并刷新证据快照，再进入分析/实现。
+- 若证据 `stale` 或 `missing`：
+  - 必须明确告警并说明降级；
+  - 允许继续完成任务，但不得将“未查询到节点”推断为“不存在业务关系”；
+  - 需在结论中标注不确定性来源与建议补充动作。
+- 在输出需求、设计、任务、开发建议时，优先引用证据中的 `anchors`、`seams`、`impactSet` 来约束改动范围与接线位置，减少孤儿实现风险。
+
 ---
 
 ## 推荐规范（SHOULD）
