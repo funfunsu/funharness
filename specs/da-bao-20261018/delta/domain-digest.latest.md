@@ -1,6 +1,6 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-10-18T01:51:51.458Z
+- generatedAt: 2026-10-18T01:53:10.048Z
 - taskId: task_1792288290732
 - taskName: 打包
 - gateLevel: standard
