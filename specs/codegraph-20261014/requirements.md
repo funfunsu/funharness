@@ -20,7 +20,8 @@
 2. GIVEN 用户通过主流程入口 [runCustomButtonByFeatureId] 触发某任务目录首次真实创建 WHEN worktree 创建成功 THEN 系统必须复用同一自动构建流程，且不会因为入口不同而跳过构建。
 3. GIVEN 用户通过主流程入口 [openFolderLocationByFeatureId] 打开一个已存在的 worktree 且配置开启自动 CodeGraph WHEN 系统检测到可执行初始化窗口 THEN 系统可以执行一次补偿初始化尝试，并保持失败不阻断。
 4. GIVEN 用户触发 [syncCodeGraphByFeatureId] 且目标 worktree 下不存在 .codegraph WHEN 同步流程启动 THEN 系统必须执行一次 CodeGraph 初始化补偿构建。
-5. GIVEN CodeGraph 构建成功 WHEN 开发者在 VS Code 中进入该 worktree THEN 在该 worktree 下可观测到 CodeGraph 初始化结果（例如存在 .codegraph 目录且可通过状态查询得到可用索引）。
+5. GIVEN 用户触发 [syncCodeGraphByFeatureId] 且补偿初始化后仍不存在 .codegraph WHEN 同步流程继续 THEN 系统必须告警并终止本次同步，不得执行盲同步。
+6. GIVEN CodeGraph 构建成功 WHEN 开发者在 VS Code 中进入该 worktree THEN 在该 worktree 下可观测到 CodeGraph 初始化结果（例如存在 .codegraph 目录且可通过状态查询得到可用索引）。
 
 ### Req-2：提供默认开启的高级设置开关控制自动 CodeGraph
 **用户故事：** 作为产品管理员，我希望在高级设置中有一个默认开启的 CodeGraph 开关，以便于按项目策略统一控制自动构建行为。
@@ -54,8 +55,9 @@
 3. GIVEN 测试用例阶段生成测试文档 WHEN 该任务已有可用图谱 THEN 测试用例 prompt 必须包含受预算控制的图谱证据摘要以辅助覆盖关键接缝。
 4. GIVEN 任务拆解阶段生成任务清单 WHEN 该任务已有可用图谱 THEN 任务 prompt 必须包含接线提示，使新建输出与改造调用方形成可追踪映射。
 5. GIVEN 开发阶段生成实现方案或代码 WHEN 该任务已有可用图谱 THEN 开发上下文必须包含受预算控制的图谱证据摘要及完整证据包路径。
-6. GIVEN 某阶段图谱缺失或过期 WHEN 生成阶段产物 THEN 系统必须降级为告警并回退现有流程，不得将“未查询到节点”当作“不存在业务关系”的结论。
-7. GIVEN 证据 freshness=\"fresh\" 但 seams 或 impactSet 为空 WHEN 生成阶段产物 THEN 系统必须保留不确定性告警语义并禁止输出否定性业务结论。
+6. GIVEN 某阶段开始组装 Prompt 且 worktree 已存在 .codegraph WHEN 命中同步节流窗口外 THEN 系统必须以非阻断方式发起一次后台 `codegraph sync -q` 以刷新证据快照。
+7. GIVEN 某阶段图谱缺失或过期 WHEN 生成阶段产物 THEN 系统必须降级为告警并回退现有流程，不得将“未查询到节点”当作“不存在业务关系”的结论。
+8. GIVEN 证据 freshness=\"fresh\" 但 seams 或 impactSet 为空 WHEN 生成阶段产物 THEN 系统必须保留不确定性告警语义并禁止输出否定性业务结论。
 
 ## 需求追踪矩阵（如有已有设计/代码）
 | 需求ID | 触发主流程/入口 | 关键可观测结果 | 后续设计关注点 |
@@ -80,6 +82,7 @@ requirements:
       - GIVEN 用户通过主流程入口 [runCustomButtonByFeatureId] 触发某任务目录首次真实创建 WHEN worktree 创建成功 THEN 系统必须复用同一自动构建流程，且不会因为入口不同而跳过构建。
       - GIVEN 用户通过主流程入口 [openFolderLocationByFeatureId] 打开一个已存在的 worktree 且配置开启自动 CodeGraph WHEN 系统检测到可执行初始化窗口 THEN 系统可以执行一次补偿初始化尝试，并保持失败不阻断。
       - GIVEN 用户触发 [syncCodeGraphByFeatureId] 且目标 worktree 下不存在 .codegraph WHEN 同步流程启动 THEN 系统必须执行一次 CodeGraph 初始化补偿构建。
+      - GIVEN 用户触发 [syncCodeGraphByFeatureId] 且补偿初始化后仍不存在 .codegraph WHEN 同步流程继续 THEN 系统必须告警并终止本次同步，不得执行盲同步。
       - GIVEN CodeGraph 构建成功 WHEN 开发者在 VS Code 中进入该 worktree THEN 在该 worktree 下可观测到 CodeGraph 初始化结果（例如存在 .codegraph 目录且可通过状态查询得到可用索引）。
   - id: Req-2
     domain: project-structure-init
@@ -118,6 +121,7 @@ requirements:
       - GIVEN 测试用例阶段生成测试文档 WHEN 该任务已有可用图谱 THEN 测试用例 prompt 必须包含受预算控制的图谱证据摘要以辅助覆盖关键接缝。
       - GIVEN 任务拆解阶段生成任务清单 WHEN 该任务已有可用图谱 THEN 任务 prompt 必须包含接线提示，使新建输出与改造调用方形成可追踪映射。
       - GIVEN 开发阶段生成实现方案或代码 WHEN 该任务已有可用图谱 THEN 开发上下文必须包含受预算控制的图谱证据摘要及完整证据包路径。
+      - GIVEN 某阶段开始组装 Prompt 且 worktree 已存在 .codegraph WHEN 命中同步节流窗口外 THEN 系统必须以非阻断方式发起一次后台 `codegraph sync -q` 以刷新证据快照。
       - GIVEN 某阶段图谱缺失或过期 WHEN 生成阶段产物 THEN 系统必须降级为告警并回退现有流程，不得将“未查询到节点”当作“不存在业务关系”的结论。
       - GIVEN 证据 freshness=\"fresh\" 但 seams 或 impactSet 为空 WHEN 生成阶段产物 THEN 系统必须保留不确定性告警语义并禁止输出否定性业务结论。
 ```

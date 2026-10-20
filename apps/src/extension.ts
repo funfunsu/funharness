@@ -9,7 +9,6 @@ import {
     Config,
     CUSTOM_SCRIPT_DIR,
     CustomButton,
-    CustomButtonScriptSource,
     DEFAULT_AUTO_POLL_PROMPT,
     DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START,
     DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END,
@@ -32,11 +31,13 @@ import {
     resolveSpecFile,
     resolveFeaturePlanFileForIteration,
     isOsScriptFile,
-    normalizeCustomButton
+    parseMonorepoRemoteEndpoints,
+    normalizeCustomButton,
+    MonorepoRemoteEndpoint,
 } from './models';
 import { FeatureScheduler } from './featureScheduler';
 import { startMasterArtifactWatcher } from './masterArtifactWatcher';
-import { buildErrorPageHtml, buildMainPageHtml, buildSettingsPageHtml, MainFeatureViewModel } from './webviewTemplates';
+import { buildErrorPageHtml, buildMainPageHtml, buildSettingsPageHtml, MainFeatureViewModel, RemoteApiTokenStatusView } from './webviewTemplates';
 import { HarnessConfigMeta, FeatureStoreService } from './services/featureStoreService';
 import { PromptService } from './services/promptService';
 import { ReviewPromptConfigService } from './services/reviewPromptConfigService';
@@ -187,6 +188,7 @@ class Harness {
             workspaceRoot = resolvedRoot.workspaceRoot;
 
             this.gitService.setWorkspaceRoot(workspaceRoot);
+            this.gitService.setRemoteApiTokenProvider((endpointKey) => this.getRemoteApiTokenValue(endpointKey));
             this.featureStore = new FeatureStoreService(workspaceRoot);
             this.promptService = new PromptService(workspaceRoot, extensionPath);
             this.reviewPromptConfigService = new ReviewPromptConfigService(workspaceRoot);
@@ -354,6 +356,9 @@ class Harness {
                 getLatestReviewStatus: async (stage) => { await this.handleGetLatestReviewStatus(stage); },
                 openCustomConstitution: () => this.handleOpenCustomConstitution(),
                 saveGit: (monorepoGit, baseBranch, githubMirrorGit) => this.handleSaveGit(monorepoGit, baseBranch, githubMirrorGit),
+                setRemoteApiToken: async (endpointKey) => this.handleSetRemoteApiToken(endpointKey),
+                testRemoteApiToken: async (endpointKey) => this.handleTestRemoteApiToken(endpointKey),
+                clearRemoteApiToken: async (endpointKey) => this.handleClearRemoteApiToken(endpointKey),
                 saveAdvancedConfig: (msg) => this.handleSaveAdvancedConfig(msg),
                 initProjectStructure: () => this.handleInitProjectStructure(),
                 applyProjectStructurePreview: () => this.handleApplyProjectStructurePreview(),
@@ -394,6 +399,7 @@ class Harness {
                 completeDevWithPush: async (featureId) => this.actionsService.completeDevWithPush(featureId),
                 pushAndNextStage: async (featureId) => this.actionsService.pushAndNextStage(featureId),
                 commitToBaseline: async (featureId) => this.actionsService.commitToBaselineByFeatureId(featureId),
+                refreshChangeRequests: async (featureId) => this.actionsService.refreshChangeRequestsByFeatureId(featureId),
                 saveCustomButtons: (buttons) => this.handleSaveCustomButtons(buttons),
                 saveAiQuickChatButtons: (_taskId, buttons) => this.handleSaveAiQuickChatButtons(buttons),
                 runAiQuickChatButton: async (featureId, buttonId) => this.actionsService.runAiQuickChatButtonByFeatureId(featureId, buttonId),
@@ -461,6 +467,10 @@ class Harness {
         try {
             const worktreePath = this.openedWorkspacePath || workspaceRoot;
             if (!worktreePath) {
+                return;
+            }
+            const codeGraphDir = path.join(worktreePath, '.codegraph');
+            if (fs.existsSync(codeGraphDir)) {
                 return;
             }
             const currentTask = this.features[0];
@@ -686,15 +696,15 @@ class Harness {
         const masterRoot = this.getMasterRoot();
         const scriptsSubdir = getScriptsSubdir(this.config);
         const masterDir = path.join(masterRoot, CUSTOM_SCRIPT_DIR);
+        const workspaceScriptsDir = path.join(workspaceRoot, scriptsSubdir);
         const inventory: ScriptInventory = {
             scriptsSubdir,
             master: this.scanScriptDir(masterDir),
             repoMono: [],
             dirs: { master: masterDir },
         };
-        const monoDir = path.join(masterRoot, 'repos', 'mono-main', scriptsSubdir);
-        inventory.repoMono = this.scanScriptDir(monoDir);
-        inventory.dirs.repoMono = monoDir;
+        inventory.repoMono = this.scanScriptDir(workspaceScriptsDir);
+        inventory.dirs.repoMono = workspaceScriptsDir;
         return inventory;
     }
 
@@ -712,7 +722,7 @@ class Harness {
             // reveal is best-effort; the path is still shown below
         }
         vscode.window.showInformationMessage(`请将脚本放入此目录后点「刷新脚本列表」：${dir}`);
-        this.renderSettings();
+        this.render();
     }
 
     /** Open the unified harness log file in the editor for troubleshooting. */
@@ -759,7 +769,10 @@ class Harness {
             return;
         }
         try {
-        if (this.currentPage === 'settings') return this.renderSettings();
+        if (this.currentPage === 'settings') {
+            void this.renderSettings();
+            return;
+        }
         const running = this.features.filter(t => t.stage !== STAGE.DONE);
         const featureViews: MainFeatureViewModel[] = running.map((task) => {
             const stats = this.getFeatureStats(task);
@@ -868,6 +881,9 @@ class Harness {
             aiQuickChatButtons: this.config.aiQuickChatButtons || [],
             autoPollEnabled: this.config.autoPollEnabled,
             autoPoll: this.isWorktreeSubview() ? this.autoPollService.getStatus() : undefined,
+            scriptInventory: this.buildScriptInventory(),
+            readOnly: this.configMeta.readOnly === true,
+            customButtonEditable: !this.configMeta.readOnly || Boolean(this.configMeta.masterRoot && fs.existsSync(this.configMeta.masterRoot)),
         });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -879,14 +895,16 @@ class Harness {
         }
     }
 
-    private renderSettings(): void {
+    private async renderSettings(): Promise<void> {
         const webview = this.sidebarView?.webview ?? this.panel?.webview;
         if (!webview) return;
         try {
+            const remoteApiTokenStatuses = await this.buildRemoteApiTokenStatuses();
             webview.html = buildSettingsPageHtml(
                 this.config,
                 this.configMeta,
                 this.buildScriptInventory(),
+                remoteApiTokenStatuses,
             );
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -1064,9 +1082,17 @@ class Harness {
             return;
         }
 
-        this.config.monorepoGit = mono;
+        const endpoints = parseMonorepoRemoteEndpoints(mono, (githubMirrorGit || '').trim());
+        if (endpoints.length === 0) {
+            vscode.window.showWarningMessage('请至少填写一个有效的远程仓库地址');
+            return;
+        }
+
+        this.config.monorepoRemotes = endpoints;
+        this.config.monorepoGit = endpoints[0].url;
+        // Keep legacy field for backward compatibility; support multi-value payload by newline.
+        this.config.githubMirrorGit = endpoints.slice(1).map(item => item.url).join('\n');
         this.config.baseBranch = baseBranch;
-        this.config.githubMirrorGit = (githubMirrorGit || '').trim();
         this.saveConfig();
         this.gitService.setConfig(this.config);
 
@@ -1081,6 +1107,129 @@ class Harness {
         } else {
             vscode.window.showErrorMessage(result.message);
         }
+    }
+
+    private buildRemoteApiTokenSecretKey(endpointKey: string): string {
+        const rootFingerprint = crypto.createHash('sha256').update(this.getMasterRoot()).digest('hex').slice(0, 16);
+        return `fun-harness.remote-api-token.${rootFingerprint}.${endpointKey}`;
+    }
+
+    private async getRemoteApiTokenValue(endpointKey: string): Promise<string | undefined> {
+        const key = this.buildRemoteApiTokenSecretKey(endpointKey);
+        const token = await this.context.secrets.get(key);
+        const normalized = (token || '').trim();
+        return normalized ? normalized : undefined;
+    }
+
+    private getConfiguredRemoteEndpoints(): MonorepoRemoteEndpoint[] {
+        const mono = (this.config.monorepoGit || '').trim();
+        if (!mono) {
+            return [];
+        }
+        return parseMonorepoRemoteEndpoints(mono, (this.config.githubMirrorGit || '').trim());
+    }
+
+    private async buildRemoteApiTokenStatuses(): Promise<RemoteApiTokenStatusView[]> {
+        const endpoints = this.getConfiguredRemoteEndpoints();
+        const rows: RemoteApiTokenStatusView[] = [];
+        for (const endpoint of endpoints) {
+            const configured = Boolean(await this.getRemoteApiTokenValue(endpoint.key));
+            rows.push({
+                endpointKey: endpoint.key,
+                remoteName: endpoint.remoteName,
+                platform: endpoint.platform,
+                configured,
+            });
+        }
+        return rows;
+    }
+
+    private async resolveEndpointForTokenAction(endpointKey: string): Promise<MonorepoRemoteEndpoint | null> {
+        const endpoint = this.getConfiguredRemoteEndpoints().find(item => item.key === endpointKey);
+        if (!endpoint) {
+            vscode.window.showWarningMessage('未找到对应远端，请先保存 Git 配置');
+            return null;
+        }
+        if (endpoint.platform !== 'github' && endpoint.platform !== 'gitlab') {
+            vscode.window.showWarningMessage(`当前远端平台不支持 Token API：${endpoint.platform}`);
+            return null;
+        }
+        return endpoint;
+    }
+
+    private async handleSetRemoteApiToken(endpointKey: string): Promise<void> {
+        if (this.configMeta.readOnly) {
+            vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改设置');
+            return;
+        }
+        const endpoint = await this.resolveEndpointForTokenAction(endpointKey);
+        if (!endpoint) {
+            return;
+        }
+
+        const token = await vscode.window.showInputBox({
+            prompt: `为 ${endpoint.remoteName} 设置 ${endpoint.platform.toUpperCase()} API Token`,
+            placeHolder: endpoint.platform === 'gitlab' ? '例如 glpat-...' : '例如 github_pat_... 或 ghp_...',
+            password: true,
+            ignoreFocusOut: true,
+            validateInput: (value) => value.trim() ? undefined : 'Token 不能为空',
+        });
+        if (typeof token !== 'string') {
+            return;
+        }
+
+        const key = this.buildRemoteApiTokenSecretKey(endpoint.key);
+        await this.context.secrets.store(key, token.trim());
+        vscode.window.showInformationMessage(`✅ 已保存 ${endpoint.remoteName} 的 API Token`);
+        if (this.currentPage === 'settings') {
+            void this.renderSettings();
+        }
+    }
+
+    private async handleClearRemoteApiToken(endpointKey: string): Promise<void> {
+        if (this.configMeta.readOnly) {
+            vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改设置');
+            return;
+        }
+        const endpoint = await this.resolveEndpointForTokenAction(endpointKey);
+        if (!endpoint) {
+            return;
+        }
+
+        const confirmed = await vscode.window.showWarningMessage(
+            `确认清除 ${endpoint.remoteName} 的 API Token？`,
+            { modal: true },
+            '清除',
+        );
+        if (confirmed !== '清除') {
+            return;
+        }
+
+        const key = this.buildRemoteApiTokenSecretKey(endpoint.key);
+        await this.context.secrets.delete(key);
+        vscode.window.showInformationMessage(`已清除 ${endpoint.remoteName} 的 API Token`);
+        if (this.currentPage === 'settings') {
+            void this.renderSettings();
+        }
+    }
+
+    private async handleTestRemoteApiToken(endpointKey: string): Promise<void> {
+        const endpoint = await this.resolveEndpointForTokenAction(endpointKey);
+        if (!endpoint) {
+            return;
+        }
+        const token = await this.getRemoteApiTokenValue(endpoint.key);
+        if (!token) {
+            vscode.window.showWarningMessage(`请先为 ${endpoint.remoteName} 设置 API Token`);
+            return;
+        }
+
+        const result = await this.gitService.testRemoteApiToken(endpoint, token);
+        if (result.ok) {
+            vscode.window.showInformationMessage(`✅ ${endpoint.remoteName} Token 连接测试通过`);
+            return;
+        }
+        vscode.window.showErrorMessage(`❌ ${endpoint.remoteName} Token 测试失败：${result.message}`);
     }
 
     private handleSaveAdvancedConfig(msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>): void {
@@ -1117,16 +1266,11 @@ class Harness {
     }
 
     private handleSaveCustomButtons(buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string }[]): void {
-        if (this.configMeta.readOnly) {
-            vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改自定义按钮');
-            return;
-        }
-
         const normalized: CustomButton[] = (buttons || [])
             .map((b, i) => normalizeCustomButton({
                 id: `cb_${i}`,
                 name: (b.name || '').trim(),
-                scriptSource: (b.scriptSource as CustomButtonScriptSource | undefined),
+                scriptSource: 'worktree',
                 script: (b.script || '').trim(),
                 args: (b.args || '').trim(),
                 command: b.command,
@@ -1134,20 +1278,33 @@ class Harness {
             }))
             .filter(b => b.name && b.script);
 
+        if (this.configMeta.readOnly) {
+            const masterRoot = this.configMeta.masterRoot;
+            if (!masterRoot || !fs.existsSync(masterRoot)) {
+                vscode.window.showWarningMessage('当前窗口是只读快照，且未找到主窗口路径，无法保存自定义按钮');
+                return;
+            }
+            const masterStore = new FeatureStoreService(masterRoot);
+            const masterConfig = masterStore.loadConfig();
+            masterStore.saveConfig({
+                ...masterConfig,
+                customButtons: normalized,
+            });
+            masterStore.syncCustomButtonsToWorktrees(normalized);
+
+            // Keep the current snapshot view in sync immediately.
+            this.config.customButtons = normalized;
+            this.render();
+            vscode.window.showInformationMessage(`✅ 已保存 ${normalized.length} 个自定义按钮（已写入主窗口配置）`);
+            return;
+        }
+
         this.config.customButtons = normalized;
         this.saveConfig();
         // Push the latest buttons into existing worktree snapshots so their subview
         // panels reflect them after a window reload (new worktrees inherit on creation).
         this.featureStore.syncCustomButtonsToWorktrees(normalized);
-        // Ensure the shared master script dir exists so the user always has a place to drop
-        // uncommitted scripts (committed source dirs are created with the repo scaffold).
-        const scriptDir = path.join(this.getMasterRoot(), CUSTOM_SCRIPT_DIR);
-        try {
-            fs.mkdirSync(scriptDir, { recursive: true });
-        } catch {
-            // best-effort
-        }
-        this.renderSettings();
+        this.render();
         vscode.window.showInformationMessage(`✅ 已保存 ${normalized.length} 个自定义按钮`);
     }
 

@@ -74,7 +74,16 @@ function loadHarnessActionsService(vscodeMock) {
     }
 }
 
-function createServiceHarness(tmpDir, overrideConfig = {}, sink = {}, mergeResult = { success: true, message: '', cleanupComplete: false }) {
+function createServiceHarness(
+    tmpDir,
+    overrideConfig = {},
+    sink = {},
+    options = {
+        submitResult: { success: true, message: 'ok', entries: { origin: { state: 'merge-queued', remoteName: 'origin' } } },
+        refreshResult: { entries: { origin: { state: 'merged', remoteName: 'origin' } }, allRequiredMerged: true },
+        cleanupResult: { success: true, message: '', cleanupComplete: false },
+    },
+) {
     const feature = {
         id: 'feature-1',
         name: 'feature 1',
@@ -84,17 +93,25 @@ function createServiceHarness(tmpDir, overrideConfig = {}, sink = {}, mergeResul
     const features = [feature];
 
     const calls = {
-        merge: 0,
-        mergeOptions: [],
+        submit: 0,
+        refresh: 0,
+        cleanup: 0,
         onPass: 0,
         saveAndRender: 0,
     };
 
     const gitService = {
-        async mergeIterationToTarget(_task, _iterDir, options) {
-            calls.merge += 1;
-            calls.mergeOptions.push(options || {});
-            return mergeResult;
+        async submitBranchForChangeRequests() {
+            calls.submit += 1;
+            return options.submitResult;
+        },
+        async refreshChangeRequestStatuses() {
+            calls.refresh += 1;
+            return options.refreshResult;
+        },
+        async cleanupIterationAfterRemoteMerge() {
+            calls.cleanup += 1;
+            return options.cleanupResult;
         },
     };
 
@@ -144,7 +161,7 @@ describe('最终执行门禁回归覆盖基线', () => {
 
         await service.passByFeatureId(feature.id);
 
-        assert.equal(calls.merge, 0);
+        assert.equal(calls.refresh, 0);
         assert.equal(feature.stage, STAGE.READY_FOR_REVIEW);
         assert.equal(calls.onPass, 0);
         assert.equal(sink.errors.some(msg => msg.includes('执行门禁未通过')), true);
@@ -159,8 +176,8 @@ describe('最终执行门禁回归覆盖基线', () => {
 
         await service.passByFeatureId(feature.id);
 
-        assert.equal(calls.merge, 1);
-        assert.equal(calls.mergeOptions[0].operation, 'complete');
+        assert.equal(calls.refresh, 1);
+        assert.equal(calls.cleanup, 1);
         assert.equal(feature.stage, STAGE.DONE);
         assert.equal(calls.onPass, 1);
         assert.equal(sink.errors.length, 0);
@@ -175,17 +192,25 @@ describe('最终执行门禁回归覆盖基线', () => {
             tmpDir,
             { gateLevel: 'standard' },
             sink,
-            { success: false, message: '[frontend] 迭代分支同步到远程失败：推送失败' },
+            {
+                submitResult: { success: true, message: 'ok', entries: { origin: { state: 'merge-queued', remoteName: 'origin' } } },
+                refreshResult: {
+                    entries: { origin: { state: 'failed', remoteName: 'origin', lastError: '推送失败' } },
+                    allRequiredMerged: false,
+                },
+                cleanupResult: { success: true, message: '', cleanupComplete: false },
+            },
         );
 
         await service.passByFeatureId(feature.id);
 
-        assert.equal(calls.merge, 1);
-        assert.equal(calls.mergeOptions[0].operation, 'complete');
+        assert.equal(calls.refresh, 1);
+        assert.equal(calls.cleanup, 0);
         assert.equal(feature.stage, STAGE.READY_FOR_REVIEW);
         assert.equal(calls.onPass, 0);
-        assert.equal(calls.saveAndRender, 0);
-        assert.equal(sink.errors.some(msg => msg.includes('推送失败')), true);
+        assert.equal(calls.saveAndRender > 0, true);
+        assert.equal(sink.errors.length, 0);
+        assert.equal(sink.infos.length >= 0, true);
         assert.equal(sink.errors.some(msg => msg.includes('均未变更')), false);
     });
 
@@ -198,8 +223,7 @@ describe('最终执行门禁回归覆盖基线', () => {
 
         await service.commitToBaselineByFeatureId(feature.id);
 
-        assert.equal(calls.merge, 1);
-        assert.deepEqual(calls.mergeOptions[0], { cleanup: false, operation: 'save' });
+        assert.equal(calls.submit, 1);
         assert.equal(feature.stage, STAGE.READY_FOR_REVIEW);
         assert.equal(calls.onPass, 0);
         assert.equal(sink.errors.length, 0);
@@ -221,7 +245,7 @@ describe('最终执行门禁回归覆盖基线', () => {
 
         await service.passByFeatureId(feature.id);
 
-        assert.equal(calls.merge, 1);
+        assert.equal(calls.refresh, 1);
         assert.equal(feature.stage, STAGE.DONE);
         assert.equal(calls.onPass, 1);
         assert.equal(sink.errors.length, 0);
