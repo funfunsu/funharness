@@ -67,6 +67,9 @@ interface HarnessMessageControllerDeps {
     getLatestReviewStatus?: (stage: ReviewStage) => Promise<void>;
     openCustomConstitution: () => Promise<void>;
     saveGit:(monorepoGit: string, baseBranch: string, githubMirrorGit?: string) => Promise<void>;
+    setRemoteApiToken: (endpointKey: string) => Promise<void>;
+    testRemoteApiToken: (endpointKey: string) => Promise<void>;
+    clearRemoteApiToken: (endpointKey: string) => Promise<void>;
     saveAdvancedConfig: (msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>) => void;
     initProjectStructure: () => Promise<void>;
     applyProjectStructurePreview: () => Promise<void>;
@@ -101,6 +104,7 @@ interface HarnessMessageControllerDeps {
     completeDevWithPush: (featureId: string) => Promise<void>;
     pushAndNextStage: (featureId: string) => Promise<void>;
     commitToBaseline: (featureId: string) => Promise<void>;
+    refreshChangeRequests: (featureId: string) => Promise<void>;
     saveCustomButtons: (buttons: { name: string; script?: string; args?: string; command?: string }[]) => void;
     saveAiQuickChatButtons: (taskId: string, buttons: AiQuickChatButtonInput[]) => SaveAiQuickChatButtonsRouteResult;
     saveLifecycleHooks: (hooks: { script: string; scriptSource?: string; args?: string }[]) => void;
@@ -338,6 +342,7 @@ export class HarnessMessageController {
             case 'completeDevWithPush':
             case 'pushAndNextStage':
             case 'commitToBaseline':
+            case 'refreshChangeRequests':
             case 'runCustomButton':
             case 'openMasterWorkspace':
             case 'toggleAutoPoll':
@@ -353,6 +358,7 @@ export class HarnessMessageController {
             case 'todo.delete':
             case 'todo.list':
             case 'todo.promoteToFeature':
+            case 'saveCustomButtons':
             case 'saveAiQuickChatButtons':
             case 'runAiQuickChatButton':
                 return true;
@@ -656,6 +662,15 @@ export class HarnessMessageController {
             case 'saveGit':
                 await this.deps.saveGit(msg.mg ?? '', msg.bb, msg.gmg);
                 return;
+            case 'setRemoteApiToken':
+                await this.deps.setRemoteApiToken(msg.endpointKey);
+                return;
+            case 'testRemoteApiToken':
+                await this.deps.testRemoteApiToken(msg.endpointKey);
+                return;
+            case 'clearRemoteApiToken':
+                await this.deps.clearRemoteApiToken(msg.endpointKey);
+                return;
             case 'saveAdvancedConfig':
                 this.deps.saveAdvancedConfig({
                     ...msg,
@@ -763,6 +778,9 @@ export class HarnessMessageController {
                 return;
             case 'commitToBaseline':
                 await this.deps.commitToBaseline(msg.id);
+                return;
+            case 'refreshChangeRequests':
+                await this.deps.refreshChangeRequests(msg.id);
                 return;
             case 'saveCustomButtons':
                 this.deps.saveCustomButtons(msg.buttons);

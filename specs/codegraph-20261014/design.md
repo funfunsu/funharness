@@ -1,6 +1,6 @@
 # 设计文档
 ## 1. 概述
-本设计面向 CodeGraph 能力在 Fun Harness 主流程中的受控接入，覆盖 worktree 首次真实创建自动构建、缺图补偿触发、开关治理、缺失 CLI 自动安装尝试、失败非阻断、过程可追踪、五阶段证据注入七个目标。
+本设计面向 CodeGraph 能力在 Fun Harness 主流程中的受控接入，覆盖 worktree 首次真实创建自动构建、缺图补偿触发、开关治理、缺失 CLI 自动安装尝试、失败非阻断、过程可追踪、五阶段证据注入，以及阶段前非阻断后台同步八个目标。
 
 设计仅使用需求阶段 canonical domain：
 - project-structure-init（Req-1, Req-2, Req-3, Req-4）
@@ -19,7 +19,7 @@ graph TD
   A3[Harness.init] -->|apps/src/extension.ts#Harness.init 构造注入| N2[CodeGraphDedupeGuard NEW]
   A3 -->|apps/src/extension.ts#Harness.init 构造注入| N1
   A3 -->|apps/src/extension.ts#Harness.init 构造注入| N6[CodeGraphEvidenceProvider NEW]
-  A7[Harness.openWorktreeSubview 回调] -->|apps/src/extension.ts#openWorktreeSubview| N1
+  A7[Harness.tryRunCodeGraphInitForCurrentWorktree] -->|apps/src/extension.ts#tryRunCodeGraphInitForCurrentWorktree| N1
 
   A4[Harness.handleSaveAdvancedConfig] -->|apps/src/extension.ts#handleSaveAdvancedConfig| N7[CodeGraphConfigNormalizer]
   A5[HarnessActionsService.runAgentByFeatureId] -->|apps/src/services/harnessActionsService.ts#runAgentByFeatureId| N6
@@ -32,6 +32,7 @@ graph TD
   N4 -->|成功后刷新证据| N6
   N7 -->|开关/策略生效| N1
   N6 -->|Req-5 注入阶段 Prompt| P1[PromptService.getRenderedPromptWithSource]
+  P1 -->|非阻断后台 sync -q + 快照刷新| N9[PromptCodeGraphSyncThrottler]
 ```
 
 ### 2.2 项目目录结构
@@ -45,14 +46,14 @@ graph TD
 - apps/src/services/codegraph/codeGraphEvidenceSnapshotWriter.ts（新，初始化后证据快照落盘）
 - apps/src/extension.ts（改，组合根注入与高级设置保存入口扩展）
 - apps/src/services/harnessActionsService.ts（改，首次真实创建与补偿触发编排）
-- apps/src/services/promptService.ts（改，五阶段证据注入位点）
+- apps/src/services/promptService.ts（改，五阶段证据注入位点 + 阶段前后台同步节流）
 
 ### 2.3 路由设计
 1. 初始化触发路由（Req-1, Req-3, Req-4）
 - 触发入口1：HarnessMessageController.handle(openFolderLocation) -> HarnessActionsService.openFolderLocationByFeatureId -> ensureIterationCodeBeforeOpen。
 - 触发入口2：HarnessActionsService.runCustomButtonByFeatureId -> ensureIterationCodeBeforeOpen。
 - 触发入口3：HarnessActionsService.syncCodeGraphByFeatureId（仅在目标 worktree 缺失 .codegraph 时触发补偿构建）。
-- 触发入口4：Harness.openWorktreeSubview 回调（用于打开已有 worktree 时的补偿初始化尝试）。
+- 触发入口4：Harness.tryRunCodeGraphInitForCurrentWorktree（用于直接打开已有 worktree 且缺图时的补偿初始化尝试，entryPoint 复用 openFolderLocationByFeatureId）。
 - openFolderLocationByFeatureId 在 worktree 准备完成后触发初始化尝试；runCustomButtonByFeatureId 在 wasNewlyCreated=true 时触发。
 
 2. 配置治理路由（Req-2）
@@ -62,16 +63,18 @@ graph TD
 3. Prompt 注入路由（Req-5）
 - 阶段入口：HarnessActionsService.runAgentByFeatureId 调用 renderAgentPrompt。
 - 注入点：PromptService.getRenderedPromptWithSource 在 req/des/tcs/tsk/dev 阶段读取 CodeGraphEvidenceProvider 输出。
+- 同步策略：PromptService 在检测到 worktree 已存在 `.codegraph` 且未命中节流窗口时，后台执行 `codegraph sync -q`（失败不阻断），随后刷新证据快照。
 - 降级策略：证据缺失或过期时，仅注入告警说明并回退原有 Prompt 逻辑。
 
 ### 2.4 集成接缝清单（Integration Points）
-- CodeGraphInitOrchestrator -> 入边调用方真实代码坐标：HarnessActionsService.openFolderLocationByFeatureId / HarnessActionsService.runCustomButtonByFeatureId / HarnessActionsService.syncCodeGraphByFeatureId / Harness.openWorktreeSubview 回调 | 触发点：首次创建或缺图补偿初始化窗口 | Req-1, Req-3, Req-4
+- CodeGraphInitOrchestrator -> 入边调用方真实代码坐标：HarnessActionsService.openFolderLocationByFeatureId / HarnessActionsService.runCustomButtonByFeatureId / HarnessActionsService.syncCodeGraphByFeatureId / Harness.tryRunCodeGraphInitForCurrentWorktree | 触发点：首次创建或缺图补偿初始化窗口 | Req-1, Req-3, Req-4
 - CodeGraphDedupeGuard -> 入边调用方真实代码坐标：Harness.init（组合根依赖注入）+ CodeGraphInitOrchestrator.runOnce | 触发点：同 worktree 路径 + 进程会话去重判断 | Req-4
 - CodeGraphInstallProbe -> 入边调用方真实代码坐标：CodeGraphInitOrchestrator.runOnce（编排器内部默认依赖） | 触发点：检测不到 codegraph 命令且 autoInstallEnabled=true | Req-3
 - CodeGraphBuildRunner -> 入边调用方真实代码坐标：CodeGraphInitOrchestrator.runOnce（编排器内部默认依赖） | 触发点：安装成功或 CLI 已存在后执行构建 | Req-1, Req-4
 - CodeGraphRunLedger -> 入边调用方真实代码坐标：CodeGraphInitOrchestrator.runOnce（编排器内部默认依赖） | 触发点：常规分支每次尝试结束（成功/失败/去重）写入过程记录 | Req-4
 - CodeGraphEvidenceProvider -> 入边调用方真实代码坐标：HarnessActionsService.runAgentByFeatureId -> PromptService.getRenderedPromptWithSource | 触发点：生成 req/des/tcs/tsk/dev Prompt 前拉取证据包 | Req-5
 - CodeGraphConfigNormalizer -> 入边调用方真实代码坐标：Harness.handleSaveAdvancedConfig | 触发点：保存高级设置与加载默认配置归一化 | Req-2
+- PromptCodeGraphSyncThrottler -> 入边调用方真实代码坐标：PromptService.trySyncCodeGraphBeforeEvidence / PromptService.runBackgroundCodeGraphSync | 触发点：阶段 Prompt 装配前命中后台同步条件 | Req-5
 
 ## 3. 组件与接口设计
 ### 3.1 API 契约
@@ -94,9 +97,16 @@ graph TD
 - Contract: getStageEvidence(input)
 - input: { worktreePath, stage:req|des|tcs|tsk|dev, budgetTokens, freshnessPolicy }
 - output: { usable, freshness, anchors, seams, impactSet, bundlePath, warning? }
-- 约束：freshness 基于最近成功 ledger 记录窗口（默认 24h）；usable=false 时必须返回 warning 且不得推断“无业务关系”
+- 约束：freshnessPolicy=latest-success-record；freshness 基于最近成功 ledger 记录窗口（默认 24h）；usable=false 时必须返回 warning 且不得推断“无业务关系”
 
-4. API-4 过程记录契约（domain: project-structure-init, Req-4）
+4. API-4 手动同步契约（domain: project-structure-init, Req-1/4）
+- Caller: HarnessActionsService.syncCodeGraphByFeatureId
+- Contract: syncCodeGraphByFeatureId(featureId)
+- input: { featureId }
+- output: { status: success|warning, summary }
+- 约束：若 `.codegraph` 缺失则先触发一次初始化补偿；补偿后仍缺失必须告警并终止，不得执行盲同步
+
+5. API-5 过程记录契约（domain: project-structure-init, Req-4）
 - Caller: CodeGraphInitOrchestrator
 - Contract: appendRunRecord(record)
 - input: { worktreeId, worktreePath, entryPoint, startedAt, endedAt, status, summary, errorDigest?, dedupeReason? }
@@ -113,7 +123,7 @@ graph TD
 - runId: string
 - worktreeId: string
 - worktreePath: string
-- entryPoint: openFolderLocationByFeatureId | runCustomButtonByFeatureId | syncCodeGraphByFeatureId | openWorktreeSubview
+- entryPoint: openFolderLocationByFeatureId | runCustomButtonByFeatureId | syncCodeGraphByFeatureId
 - status: success | warning | deduped
 - startedAt: string(ISO-8601)
 - endedAt: string(ISO-8601)
@@ -222,7 +232,7 @@ graph TD
 
 ## 6. 测试策略
 1. 触发一致性测试（Req-1）
-- 覆盖 openFolderLocationByFeatureId、runCustomButtonByFeatureId、syncCodeGraphByFeatureId 与 openWorktreeSubview 补偿触发场景，断言按入口条件触发同一编排。
+- 覆盖 openFolderLocationByFeatureId、runCustomButtonByFeatureId、syncCodeGraphByFeatureId 与 tryRunCodeGraphInitForCurrentWorktree 补偿触发场景，断言按入口条件触发同一编排。
 
 2. 配置默认与持久化测试（Req-2）
 - 缺省配置断言 autoCodeGraphEnabled=true, autoInstallEnabled=true，并校验归一化后保持同向。
@@ -239,6 +249,7 @@ graph TD
 5. 五阶段证据注入测试（Req-5）
 - req/des/tcs/tsk/dev 各阶段在证据可用时注入锚点与接缝信息。
 - stale/missing 场景断言降级 warning 与无错误否定推断。
+- 阶段前后台同步仅作 best-effort，不阻断 Prompt 渲染。
 
 ## 7. 机器可读区
 ```yaml
@@ -254,7 +265,7 @@ apiContracts:
       featureId: string
       taskName: string
       worktreePath: string
-      entryPoint: openFolderLocationByFeatureId|runCustomButtonByFeatureId|syncCodeGraphByFeatureId|openWorktreeSubview
+      entryPoint: openFolderLocationByFeatureId|runCustomButtonByFeatureId|syncCodeGraphByFeatureId
       sessionId: string
       autoCodeGraphEnabled: boolean
       autoInstallEnabled: boolean
@@ -284,7 +295,7 @@ apiContracts:
       worktreePath: string
       stage: req|des|tcs|tsk|dev
       budgetTokens: number
-      freshnessPolicy: latest-success-record-with-24h-threshold
+      freshnessPolicy: latest-success-record
     response:
       usable: boolean
       freshness: fresh|stale|missing
@@ -298,13 +309,23 @@ apiContracts:
       warning: string?
   - id: API-4
     domain: project-structure-init
+    requirementIds: [Req-1, Req-4]
+    method: EVENT
+    path: /internal/codegraph/sync/manual
+    request:
+      featureId: string
+    response:
+      status: success|warning
+      summary: string
+  - id: API-5
+    domain: project-structure-init
     requirementIds: [Req-4]
     method: EVENT
     path: /internal/codegraph/process/append-run-record
     request:
       worktreeId: string
       worktreePath: string
-      entryPoint: openFolderLocationByFeatureId|runCustomButtonByFeatureId|syncCodeGraphByFeatureId|openWorktreeSubview
+      entryPoint: openFolderLocationByFeatureId|runCustomButtonByFeatureId|syncCodeGraphByFeatureId
       startedAt: string
       endedAt: string
       status: success|warning|deduped
@@ -395,7 +416,7 @@ invariants:
     rule: 证据缺失或过期时必须告警降级，禁止将未查询到节点推断为不存在业务关系。
 integrationPoints:
   - node: CodeGraphInitOrchestrator
-    inboundFrom: HarnessActionsService.openFolderLocationByFeatureId / HarnessActionsService.runCustomButtonByFeatureId / HarnessActionsService.syncCodeGraphByFeatureId / Harness.openWorktreeSubview 回调
+    inboundFrom: HarnessActionsService.openFolderLocationByFeatureId / HarnessActionsService.runCustomButtonByFeatureId / HarnessActionsService.syncCodeGraphByFeatureId / Harness.tryRunCodeGraphInitForCurrentWorktree
     triggerPoint: 首次创建或缺图补偿初始化窗口
     requirementIds: [Req-1, Req-3, Req-4]
   - node: CodeGraphDedupeGuard
@@ -422,4 +443,8 @@ integrationPoints:
     inboundFrom: Harness.handleSaveAdvancedConfig
     triggerPoint: 保存高级设置与加载缺省配置归一化
     requirementIds: [Req-2]
+  - node: PromptCodeGraphSyncThrottler
+    inboundFrom: PromptService.trySyncCodeGraphBeforeEvidence / PromptService.runBackgroundCodeGraphSync
+    triggerPoint: 阶段 Prompt 装配前命中后台同步条件
+    requirementIds: [Req-5]
 ```

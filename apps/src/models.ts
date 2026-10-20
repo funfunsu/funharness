@@ -84,6 +84,33 @@ export interface DevRollbackSnapshot {
     repoHeadByKind?: Partial<Record<'frontend' | 'backend' | 'mono', string>>;
 }
 
+export type ChangeRequestState =
+    | 'open'
+    | 'merge-queued'
+    | 'merged'
+    | 'closed'
+    | 'failed'
+    | 'unsupported';
+
+export type MonorepoRemotePlatform = 'generic' | 'github' | 'gitlab';
+
+export interface FeatureChangeRequestState {
+    endpointKey: string;
+    platform: MonorepoRemotePlatform;
+    remoteName: string;
+    remoteUrl: string;
+    repo: string;
+    number?: number;
+    url?: string;
+    sourceBranch: string;
+    targetBranch: string;
+    state: ChangeRequestState;
+    autoMergeRequestedAt?: string;
+    mergedAt?: string;
+    updatedAt: string;
+    lastError?: string;
+}
+
 export interface Feature {
     id: string;
     name: string;
@@ -105,6 +132,8 @@ export interface Feature {
     allowStageRegressionOnce?: boolean;
     /** Development-stage rollback checkpoint captured right after task decomposition confirmation. */
     devRollbackSnapshot?: DevRollbackSnapshot;
+    /** Per-remote change request (PR/MR) lifecycle state in PR-driven submit mode. */
+    changeRequests?: Record<string, FeatureChangeRequestState>;
 }
 
 // ── AI Provider Registry ───────────────────────────────────────────
@@ -194,13 +223,13 @@ export function getAiProvider(id: string): AiProviderDefinition {
 
 /**
  * Where a custom button's script file physically lives. This decouples buttons from the
- * old single hardcoded `<masterRoot>/scripts/` dir so scripts can be co-located with code:
- * - 'master':   `<masterRoot>/scripts/` — shared, NOT committed to git (legacy default).
+ * old single hardcoded `<masterRoot>/scripts/` dir so scripts can be co-located with code.
+ * Current custom-button behavior is worktree-first in monorepo mode:
  * - 'worktree': the committed scripts dir inside THIS task's iteration worktree (per-iteration).
  *               For 'main'-placement buttons (no worktree) this falls back to the main clone.
  *
- * The legacy 'repo' source has been folded into 'worktree' (committed scripts are the same set);
- * old configs are migrated to 'worktree' on load.
+ * Legacy values are kept in the type for backward compatibility and normalized to 'worktree'
+ * when buttons are loaded/saved.
  */
 export type CustomButtonScriptSource = 'master' | 'worktree';
 
@@ -241,7 +270,7 @@ export interface LifecycleHooks {
 export interface CustomButton {
     id: string;
     name: string;
-    /** Where the script file lives. Defaults to 'master' for legacy/undefined buttons. */
+    /** Where the script file lives. Defaults to 'worktree' for legacy/undefined buttons. */
     scriptSource?: CustomButtonScriptSource;
     /** Script file name (no path), resolved against the scriptSource directory. */
     script?: string;
@@ -393,11 +422,10 @@ export function isOsScriptFile(name: string): boolean {
 
 /**
  * Normalize a possibly-legacy custom button into the {scriptSource, script, args} form.
- * Legacy buttons carrying only `command` become 'master'-source buttons.
+ * Legacy buttons carrying only `command` become 'worktree'-source buttons.
  */
 export function normalizeCustomButton(b: CustomButton): CustomButton {
-    const source: CustomButtonScriptSource =
-        b.scriptSource === 'worktree' || (b.scriptSource as string) === 'repo' ? 'worktree' : 'master';
+    const source: CustomButtonScriptSource = 'worktree';
     let script = (b.script || '').trim();
     let args = (b.args || '').trim();
     if (!script && b.command) {
@@ -424,6 +452,11 @@ export interface Config {
      * mode: it clones ONE repo whose iteration worktree is the iteration dir root.
      */
     monorepoGit: string;
+    /**
+     * Optional explicit monorepo remote endpoint list. When empty, endpoints are derived from
+     * `monorepoGit` (+ legacy `githubMirrorGit`) for backward compatibility.
+     */
+    monorepoRemotes?: MonorepoRemoteEndpoint[];
     /**
      * Optional secondary remote URL. When non-empty, every push to the target baseline branch
      * (main repo, monorepo or multi-repo) is mirrored to this remote as well, best-effort — a
@@ -651,6 +684,17 @@ export const DEFAULT_MONOREPO_DIRS = {
     scripts: 'scripts',
 } as const;
 
+export interface MonorepoRemoteEndpoint {
+    /** Stable identifier used in task/runtime state. */
+    key: string;
+    /** Git remote name used in local repositories (e.g. origin, mirror1). */
+    remoteName: string;
+    url: string;
+    platform: MonorepoRemotePlatform;
+    /** Whether this endpoint is required for a successful multi-remote submit. */
+    required?: boolean;
+}
+
 /** The committed scripts subfolder name used by the 'worktree' button source. */
 export function getScriptsSubdir(config: Pick<Config, 'monorepoDirs'>): string {
     const value = (config.monorepoDirs?.scripts || '').trim();
@@ -658,6 +702,106 @@ export function getScriptsSubdir(config: Pick<Config, 'monorepoDirs'>): string {
 }
 
 export type GateLevel = 'relaxed' | 'standard' | 'strict';
+
+function inferMonorepoRemotePlatform(url: string): MonorepoRemotePlatform {
+    const lower = (url || '').toLowerCase();
+    if (lower.includes('github')) return 'github';
+    if (lower.includes('gitlab.com') || lower.includes('gitlab')) return 'gitlab';
+    return 'generic';
+}
+
+function normalizeRemoteName(raw: string, index: number): string {
+    const candidate = (raw || '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
+    if (candidate) {
+        return candidate;
+    }
+    return index === 0 ? 'origin' : `mirror${index}`;
+}
+
+function normalizeRemoteUrl(url: string): string {
+    return (url || '').trim().replace(/\/$/, '').replace(/\.git$/, '').toLowerCase();
+}
+
+function splitRemoteInput(value: string): string[] {
+    return (value || '')
+        .split(/[\n,;]+/)
+        .map(item => item.trim())
+        .filter(Boolean);
+}
+
+/**
+ * Parse legacy monorepo remote fields into a normalized endpoint list.
+ *
+ * Supported formats:
+ * - monorepoGit="https://a.git" (single)
+ * - monorepoGit="https://a.git,https://b.git" (comma/semicolon/newline separated)
+ * - monorepoGit + githubMirrorGit (legacy mirror field)
+ */
+export function parseMonorepoRemoteEndpoints(monorepoGit: string, githubMirrorGit?: string): MonorepoRemoteEndpoint[] {
+    const urls = [
+        ...splitRemoteInput(monorepoGit),
+        ...splitRemoteInput(githubMirrorGit || ''),
+    ];
+    const seen = new Set<string>();
+    const endpoints: MonorepoRemoteEndpoint[] = [];
+
+    for (const url of urls) {
+        const normalized = normalizeRemoteUrl(url);
+        if (!normalized || seen.has(normalized)) {
+            continue;
+        }
+        seen.add(normalized);
+        const index = endpoints.length;
+        const remoteName = index === 0 ? 'origin' : `mirror${index}`;
+        endpoints.push({
+            key: `remote-${index + 1}`,
+            remoteName: normalizeRemoteName(remoteName, index),
+            url,
+            platform: inferMonorepoRemotePlatform(url),
+            required: true,
+        });
+    }
+
+    return endpoints;
+}
+
+/**
+ * Resolve effective monorepo endpoints with backward compatibility for legacy config fields.
+ */
+export function resolveConfiguredMonorepoRemoteEndpoints(
+    config: Pick<Config, 'monorepoGit' | 'githubMirrorGit' | 'monorepoRemotes'> | undefined,
+): MonorepoRemoteEndpoint[] {
+    const explicit = (config?.monorepoRemotes || [])
+        .map((item, idx) => {
+            const url = (item?.url || '').trim();
+            if (!url) {
+                return null;
+            }
+            const remoteName = normalizeRemoteName(item?.remoteName || (idx === 0 ? 'origin' : `mirror${idx}`), idx);
+            return {
+                key: (item?.key || `remote-${idx + 1}`).trim() || `remote-${idx + 1}`,
+                remoteName,
+                url,
+                platform: item?.platform || inferMonorepoRemotePlatform(url),
+                required: item?.required !== false,
+            } as MonorepoRemoteEndpoint;
+        })
+        .filter((item): item is MonorepoRemoteEndpoint => Boolean(item));
+
+    if (explicit.length > 0) {
+        const seen = new Set<string>();
+        return explicit.filter(item => {
+            const normalized = normalizeRemoteUrl(item.url);
+            if (!normalized || seen.has(normalized)) {
+                return false;
+            }
+            seen.add(normalized);
+            return true;
+        });
+    }
+
+    return parseMonorepoRemoteEndpoints(config?.monorepoGit || '', config?.githubMirrorGit || '');
+}
 
 /** Normalize the configured gate level, defaulting to 'standard'. */
 export function resolveGateLevel(config: Pick<Config, 'gateLevel'> | undefined): GateLevel {
@@ -808,6 +952,7 @@ export function resolveFeaturePlanFileForIteration(iterDir: string, config: Spec
 
 export const DEFAULT_CONFIG: Config = {
     monorepoGit: '',
+    monorepoRemotes: [],
     githubMirrorGit: '',
     monorepoDirs: { ...DEFAULT_MONOREPO_DIRS },
     baseBranch: '',

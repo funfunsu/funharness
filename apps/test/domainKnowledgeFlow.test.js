@@ -237,11 +237,93 @@ describe('领域知识流转覆盖基线', () => {
             assert.equal(result.status, 'deduped');
             assert.equal(result.summary.includes('already initialized'), true);
             assert.equal(result.summary.includes('evidence snapshot refreshed'), true);
+            assert.equal(result.summary.includes('AGENTS.md'), true);
             assert.equal(ensureCliCalls, 0);
             assert.equal(buildCalls, 0);
             assert.equal(snapshotCalls, 1);
             assert.equal(records.length, 1);
             assert.equal(records[0].status, 'deduped');
+        } finally {
+            cleanup(tmpDir);
+        }
+    });
+
+    test('CodeGraph 初始化成功后自动写入 AGENTS.md 复用说明且幂等（Req-4）', async () => {
+        const tmpDir = makeTempDir();
+        try {
+            const records = [];
+            const orchestrator = new CodeGraphInitOrchestrator(
+                new CodeGraphDedupeGuard(),
+                {
+                    ensureCli() {
+                        return {
+                            ready: true,
+                            installedNow: false,
+                            summary: 'ready',
+                        };
+                    },
+                },
+                {
+                    runInitBuild() {
+                        fs.mkdirSync(path.join(tmpDir, '.codegraph', 'evidence'), { recursive: true });
+                        return {
+                            status: 'success',
+                            summary: 'build ok',
+                            startedAt: new Date().toISOString(),
+                            endedAt: new Date().toISOString(),
+                        };
+                    },
+                },
+                {
+                    appendRunRecord(record) {
+                        records.push(record);
+                        return { persisted: true, logPath: 'mock-log' };
+                    },
+                },
+                {
+                    writeSnapshot() {
+                        return {
+                            persisted: true,
+                            bundlePath: path.join(tmpDir, '.harness', 'process', 'codegraph-evidence.json'),
+                            summary: 'evidence snapshot refreshed',
+                        };
+                    },
+                },
+            );
+
+            const first = await orchestrator.runOnce({
+                sessionId: 'session-guide',
+                worktreePath: tmpDir,
+                featureId: 'feature-guide',
+                taskName: 'task-guide',
+                entryPoint: 'openFolderLocationByFeatureId',
+                autoCodeGraphEnabled: true,
+                autoInstallEnabled: true,
+            });
+
+            const agentsPath = path.join(tmpDir, 'AGENTS.md');
+            const firstContent = fs.readFileSync(agentsPath, 'utf8');
+            assert.equal(first.status, 'success');
+            assert.equal(first.summary.includes('AGENTS.md'), true);
+            assert.equal(firstContent.includes('FUN_HARNESS_CODEGRAPH_USAGE_START'), true);
+            assert.equal(firstContent.includes('CodeGraph 复用方法（自动写入）'), true);
+
+            const second = await orchestrator.runOnce({
+                sessionId: 'session-guide-2',
+                worktreePath: tmpDir,
+                featureId: 'feature-guide-2',
+                taskName: 'task-guide-2',
+                entryPoint: 'syncCodeGraphByFeatureId',
+                autoCodeGraphEnabled: true,
+                autoInstallEnabled: true,
+            });
+
+            const secondContent = fs.readFileSync(agentsPath, 'utf8');
+            const markerMatches = secondContent.match(/FUN_HARNESS_CODEGRAPH_USAGE_START/g) || [];
+            assert.equal(second.status, 'deduped');
+            assert.equal(markerMatches.length, 1);
+            assert.equal(second.summary.includes('AGENTS.md already exists; skip auto write to avoid growth'), true);
+            assert.equal(records.length, 2);
         } finally {
             cleanup(tmpDir);
         }

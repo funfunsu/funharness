@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
-import { Config, DEFAULT_MONOREPO_DIRS, Feature } from '../models';
+import { Config, DEFAULT_MONOREPO_DIRS, Feature, FeatureChangeRequestState, MonorepoRemoteEndpoint, resolveConfiguredMonorepoRemoteEndpoints } from '../models';
 import { appendHarnessLog } from './harnessLog';
 import { clearDirChildrenPreserving, safeRemovePath } from './fileOps';
 import { deriveIterationBranchNameWithOptions } from './branchName';
@@ -24,6 +24,7 @@ export class GitService {
     private workspaceRoot: string;
     private lastExecError: string = '';
     private localBaseFallbackNotices: Set<string> = new Set();
+    private remoteApiTokenProvider?: (endpointKey: string) => Promise<string | undefined>;
     /** Iteration dir of the in-flight task op; git command logs go to its per-task harness.log. */
     private currentLogDir: string = '';
 
@@ -38,6 +39,10 @@ export class GitService {
 
     setWorkspaceRoot(workspaceRoot: string): void {
         this.workspaceRoot = workspaceRoot;
+    }
+
+    setRemoteApiTokenProvider(provider: (endpointKey: string) => Promise<string | undefined>): void {
+        this.remoteApiTokenProvider = provider;
     }
 
     /**
@@ -80,9 +85,839 @@ export class GitService {
         });
     }
 
-    /** True when a single-repository (monorepo) remote is configured. */
+    private getMonorepoRemoteEndpoints(): MonorepoRemoteEndpoint[] {
+        return resolveConfiguredMonorepoRemoteEndpoints(this.config);
+    }
+
+    private nowIso(): string {
+        return new Date().toISOString();
+    }
+
+    private parseRepoId(endpoint: MonorepoRemoteEndpoint): string {
+        const value = (endpoint.url || '').trim();
+        if (!value) {
+            return '';
+        }
+
+        // https://host/owner/repo(.git)
+        let match = /^https?:\/\/[^/]+\/(.+?)(?:\.git)?$/i.exec(value);
+        if (match && match[1]) {
+            return match[1].replace(/^\/+/, '').replace(/\/+$/, '');
+        }
+
+        // git@host:owner/repo(.git)
+        match = /^[^@]+@[^:]+:(.+?)(?:\.git)?$/i.exec(value);
+        if (match && match[1]) {
+            return match[1].replace(/^\/+/, '').replace(/\/+$/, '');
+        }
+
+        return '';
+    }
+
+    private parseRemoteWebBase(endpoint: MonorepoRemoteEndpoint): string {
+        const raw = (endpoint.url || '').trim();
+        if (!raw) {
+            return '';
+        }
+
+        const httpsMatch = /^https?:\/\/([^/]+)\/(.+?)(?:\.git)?$/i.exec(raw);
+        if (httpsMatch && httpsMatch[1] && httpsMatch[2]) {
+            const host = httpsMatch[1].replace(/^\/+|\/+$/g, '');
+            const repoPath = httpsMatch[2].replace(/^\/+|\/+$/g, '');
+            return `https://${host}/${repoPath}`;
+        }
+
+        const sshMatch = /^[^@]+@([^:]+):(.+?)(?:\.git)?$/i.exec(raw);
+        if (sshMatch && sshMatch[1] && sshMatch[2]) {
+            const host = sshMatch[1].replace(/^\/+|\/+$/g, '');
+            const repoPath = sshMatch[2].replace(/^\/+|\/+$/g, '');
+            return `https://${host}/${repoPath}`;
+        }
+
+        return '';
+    }
+
+    private parseRemoteHost(endpoint: MonorepoRemoteEndpoint): string {
+        const webBase = this.parseRemoteWebBase(endpoint);
+        if (!webBase) {
+            return '';
+        }
+        try {
+            const parsed = new URL(webBase);
+            return parsed.host || '';
+        } catch {
+            return '';
+        }
+    }
+
+    private githubApiBase(endpoint: MonorepoRemoteEndpoint): string {
+        const host = this.parseRemoteHost(endpoint).toLowerCase();
+        if (!host || host === 'github.com') {
+            return 'https://api.github.com';
+        }
+        return `https://${host}/api/v3`;
+    }
+
+    private async getRemoteApiToken(endpointKey: string): Promise<string | undefined> {
+        if (!this.remoteApiTokenProvider) {
+            return undefined;
+        }
+        try {
+            const token = await this.remoteApiTokenProvider(endpointKey);
+            const normalized = (token || '').trim();
+            return normalized ? normalized : undefined;
+        } catch {
+            return undefined;
+        }
+    }
+
+    private async fetchJson(
+        url: string,
+        init: { method?: string; headers?: Record<string, string>; body?: string },
+    ): Promise<{ ok: boolean; status: number; bodyText: string; json?: any }> {
+        const fetchFn = (globalThis as unknown as {
+            fetch?: (input: string, requestInit?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<any>;
+        }).fetch;
+        if (!fetchFn) {
+            return { ok: false, status: 0, bodyText: '当前运行环境不支持 fetch' };
+        }
+
+        try {
+            const response = await fetchFn(url, {
+                method: init.method || 'GET',
+                headers: init.headers,
+                body: init.body,
+            });
+            const bodyText = String(await response.text());
+            let json: any = undefined;
+            if (bodyText) {
+                try {
+                    json = JSON.parse(bodyText);
+                } catch {
+                    json = undefined;
+                }
+            }
+            return {
+                ok: Boolean(response.ok),
+                status: Number(response.status || 0),
+                bodyText,
+                json,
+            };
+        } catch (error) {
+            return {
+                ok: false,
+                status: 0,
+                bodyText: error instanceof Error ? error.message : String(error),
+            };
+        }
+    }
+
+    private buildManualChangeRequestUrl(
+        endpoint: MonorepoRemoteEndpoint,
+        sourceBranch: string,
+        targetBranch: string,
+        title: string,
+    ): string {
+        const webBase = this.parseRemoteWebBase(endpoint);
+        if (!webBase) {
+            return '';
+        }
+        const src = encodeURIComponent(sourceBranch);
+        const dst = encodeURIComponent(targetBranch);
+        const encTitle = encodeURIComponent(title);
+
+        if (endpoint.platform === 'github') {
+            return `${webBase}/compare/${dst}...${src}?expand=1&title=${encTitle}`;
+        }
+        if (endpoint.platform === 'gitlab') {
+            return `${webBase}/-/merge_requests/new?merge_request[source_branch]=${src}&merge_request[target_branch]=${dst}&merge_request[title]=${encTitle}`;
+        }
+        return '';
+    }
+
+    private async isCliAvailable(command: 'gh' | 'glab'): Promise<boolean> {
+        const probe = await this.execCmdOutput(`${command} --version`, this.workspaceRoot || process.cwd());
+        return probe.success;
+    }
+
+    private buildChangeRequestEntryBase(
+        endpoint: MonorepoRemoteEndpoint,
+        sourceBranch: string,
+        targetBranch: string,
+    ): FeatureChangeRequestState {
+        return {
+            endpointKey: endpoint.key,
+            platform: endpoint.platform,
+            remoteName: endpoint.remoteName,
+            remoteUrl: endpoint.url,
+            repo: this.parseRepoId(endpoint),
+            sourceBranch,
+            targetBranch,
+            state: 'failed',
+            updatedAt: this.nowIso(),
+        };
+    }
+
+    private extractPullNumberFromUrl(url: string): number | undefined {
+        const match = /\/(pull|merge_requests)\/(\d+)/.exec(url || '');
+        if (!match) {
+            return undefined;
+        }
+        const parsed = Number(match[2]);
+        return Number.isFinite(parsed) ? parsed : undefined;
+    }
+
+    async testRemoteApiToken(
+        endpoint: MonorepoRemoteEndpoint,
+        token: string,
+    ): Promise<{ ok: boolean; message: string }> {
+        const normalizedToken = (token || '').trim();
+        if (!normalizedToken) {
+            return { ok: false, message: 'Token 不能为空' };
+        }
+
+        if (endpoint.platform === 'github') {
+            const apiBase = this.githubApiBase(endpoint);
+            const response = await this.fetchJson(`${apiBase}/user`, {
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${normalizedToken}`,
+                    Accept: 'application/vnd.github+json',
+                    'X-GitHub-Api-Version': '2022-11-28',
+                    'User-Agent': 'fun-harness',
+                },
+            });
+            if (!response.ok) {
+                return { ok: false, message: `GitHub API 响应 ${response.status}` };
+            }
+            return { ok: true, message: 'ok' };
+        }
+
+        if (endpoint.platform === 'gitlab') {
+            const host = this.parseRemoteHost(endpoint);
+            if (!host) {
+                return { ok: false, message: `无法解析 GitLab host：${endpoint.url}` };
+            }
+            const response = await this.fetchJson(`https://${host}/api/v4/user`, {
+                method: 'GET',
+                headers: {
+                    'PRIVATE-TOKEN': normalizedToken,
+                },
+            });
+            if (!response.ok) {
+                return { ok: false, message: `GitLab API 响应 ${response.status}` };
+            }
+            return { ok: true, message: 'ok' };
+        }
+
+        return { ok: false, message: `当前平台不支持 Token 测试：${endpoint.platform}` };
+    }
+
+    private async createOrUpdateGithubPullByToken(
+        endpoint: MonorepoRemoteEndpoint,
+        task: Feature,
+        sourceBranch: string,
+        targetBranch: string,
+        token: string,
+    ): Promise<FeatureChangeRequestState> {
+        const base = this.buildChangeRequestEntryBase(endpoint, sourceBranch, targetBranch);
+        const repo = base.repo;
+        if (!repo) {
+            return {
+                ...base,
+                state: 'failed',
+                updatedAt: this.nowIso(),
+                lastError: `无法从远程地址解析仓库标识：${endpoint.url}`,
+            };
+        }
+
+        const owner = repo.split('/')[0] || '';
+        const title = `chore: ${task.name}`;
+        const body = [
+            'Auto-generated by Fun Harness',
+            `Task: ${task.id} ${task.name}`,
+            `Branch: ${sourceBranch} -> ${targetBranch}`,
+        ].join('\n');
+
+        const commonHeaders = {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'User-Agent': 'fun-harness',
+        };
+        const apiBase = this.githubApiBase(endpoint);
+
+        const listUrl = `${apiBase}/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${sourceBranch}`)}&base=${encodeURIComponent(targetBranch)}&per_page=1`;
+        const list = await this.fetchJson(listUrl, { method: 'GET', headers: commonHeaders });
+        if (list.ok && Array.isArray(list.json) && list.json.length > 0) {
+            const existing = list.json[0] as { number?: number; html_url?: string };
+            const number = Number(existing.number || 0) || undefined;
+            const url = String(existing.html_url || '');
+            return {
+                ...base,
+                number,
+                url,
+                state: 'open',
+                updatedAt: this.nowIso(),
+            };
+        }
+
+        const create = await this.fetchJson(`${apiBase}/repos/${repo}/pulls`, {
+            method: 'POST',
+            headers: {
+                ...commonHeaders,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                title,
+                head: sourceBranch,
+                base: targetBranch,
+                body,
+            }),
+        });
+
+        if (!create.ok) {
+            return {
+                ...base,
+                state: 'failed',
+                updatedAt: this.nowIso(),
+                lastError: `GitHub API 创建 PR 失败（${create.status}）`,
+            };
+        }
+
+        const number = Number((create.json && create.json.number) || 0) || undefined;
+        const url = String((create.json && create.json.html_url) || '');
+        return {
+            ...base,
+            number,
+            url,
+            state: 'open',
+            updatedAt: this.nowIso(),
+        };
+    }
+
+    private async createOrUpdateGitlabMergeByToken(
+        endpoint: MonorepoRemoteEndpoint,
+        task: Feature,
+        sourceBranch: string,
+        targetBranch: string,
+        token: string,
+    ): Promise<FeatureChangeRequestState> {
+        const base = this.buildChangeRequestEntryBase(endpoint, sourceBranch, targetBranch);
+        const repo = base.repo;
+        if (!repo) {
+            return {
+                ...base,
+                state: 'failed',
+                updatedAt: this.nowIso(),
+                lastError: `无法从远程地址解析仓库标识：${endpoint.url}`,
+            };
+        }
+
+        const host = this.parseRemoteHost(endpoint);
+        if (!host) {
+            return {
+                ...base,
+                state: 'failed',
+                updatedAt: this.nowIso(),
+                lastError: `无法解析 GitLab host：${endpoint.url}`,
+            };
+        }
+
+        const title = `chore: ${task.name}`;
+        const body = [
+            'Auto-generated by Fun Harness',
+            `Task: ${task.id} ${task.name}`,
+            `Branch: ${sourceBranch} -> ${targetBranch}`,
+        ].join('\n');
+
+        const baseApi = `https://${host}/api/v4/projects/${encodeURIComponent(repo)}`;
+        const listUrl = `${baseApi}/merge_requests?state=opened&source_branch=${encodeURIComponent(sourceBranch)}&target_branch=${encodeURIComponent(targetBranch)}&per_page=1`;
+        const list = await this.fetchJson(listUrl, {
+            method: 'GET',
+            headers: {
+                'PRIVATE-TOKEN': token,
+            },
+        });
+
+        if (list.ok && Array.isArray(list.json) && list.json.length > 0) {
+            const existing = list.json[0] as { iid?: number; web_url?: string };
+            const number = Number(existing.iid || 0) || undefined;
+            const url = String(existing.web_url || '');
+            return {
+                ...base,
+                number,
+                url,
+                state: 'open',
+                updatedAt: this.nowIso(),
+            };
+        }
+
+        const create = await this.fetchJson(`${baseApi}/merge_requests`, {
+            method: 'POST',
+            headers: {
+                'PRIVATE-TOKEN': token,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                source_branch: sourceBranch,
+                target_branch: targetBranch,
+                title,
+                description: body,
+                squash: true,
+                merge_when_pipeline_succeeds: true,
+                remove_source_branch: true,
+            }),
+        });
+
+        if (!create.ok) {
+            return {
+                ...base,
+                state: 'failed',
+                updatedAt: this.nowIso(),
+                lastError: `GitLab API 创建 MR 失败（${create.status}）`,
+            };
+        }
+
+        const number = Number((create.json && create.json.iid) || 0) || undefined;
+        const url = String((create.json && create.json.web_url) || '');
+        return {
+            ...base,
+            number,
+            url,
+            state: 'open',
+            updatedAt: this.nowIso(),
+        };
+    }
+
+    private async tryCreateOrUpdateChangeRequestByToken(
+        endpoint: MonorepoRemoteEndpoint,
+        task: Feature,
+        sourceBranch: string,
+        targetBranch: string,
+    ): Promise<FeatureChangeRequestState | null> {
+        if (endpoint.platform !== 'github' && endpoint.platform !== 'gitlab') {
+            return null;
+        }
+        const token = await this.getRemoteApiToken(endpoint.key);
+        if (!token) {
+            return null;
+        }
+
+        if (endpoint.platform === 'github') {
+            return this.createOrUpdateGithubPullByToken(endpoint, task, sourceBranch, targetBranch, token);
+        }
+        return this.createOrUpdateGitlabMergeByToken(endpoint, task, sourceBranch, targetBranch, token);
+    }
+
+    private async queryGithubPullStatusByToken(
+        endpoint: MonorepoRemoteEndpoint,
+        item: FeatureChangeRequestState,
+        token: string,
+    ): Promise<FeatureChangeRequestState> {
+        const repo = (item.repo || this.parseRepoId(endpoint)).trim();
+        if (!repo) {
+            return { ...item, state: 'failed', updatedAt: this.nowIso(), lastError: '缺少 GitHub 仓库标识' };
+        }
+
+        const headers = {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'User-Agent': 'fun-harness',
+        };
+        const apiBase = this.githubApiBase(endpoint);
+
+        if (item.number) {
+            const view = await this.fetchJson(`${apiBase}/repos/${repo}/pulls/${item.number}`, {
+                method: 'GET',
+                headers,
+            });
+            if (!view.ok) {
+                return { ...item, state: 'failed', updatedAt: this.nowIso(), lastError: `GitHub API 读取 PR 失败（${view.status}）` };
+            }
+            const stateRaw = String((view.json && view.json.state) || '').toLowerCase();
+            const merged = Boolean(view.json && view.json.merged);
+            const mapped: FeatureChangeRequestState['state'] = merged ? 'merged' : stateRaw === 'closed' ? 'closed' : 'open';
+            return {
+                ...item,
+                repo,
+                number: Number((view.json && view.json.number) || item.number),
+                url: String((view.json && view.json.html_url) || item.url || ''),
+                state: mapped,
+                mergedAt: mapped === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
+                updatedAt: this.nowIso(),
+                lastError: undefined,
+            };
+        }
+
+        const owner = repo.split('/')[0] || '';
+        const list = await this.fetchJson(
+            `${apiBase}/repos/${repo}/pulls?state=all&head=${encodeURIComponent(`${owner}:${item.sourceBranch}`)}&base=${encodeURIComponent(item.targetBranch)}&per_page=1`,
+            { method: 'GET', headers },
+        );
+        if (!list.ok || !Array.isArray(list.json) || list.json.length === 0) {
+            return { ...item, state: 'unsupported', updatedAt: this.nowIso(), lastError: 'GitHub API 未查询到匹配 PR' };
+        }
+        const found = list.json[0] as { number?: number; html_url?: string; state?: string; merged_at?: string | null };
+        const stateRaw = String(found.state || '').toLowerCase();
+        const mapped: FeatureChangeRequestState['state'] = found.merged_at ? 'merged' : stateRaw === 'closed' ? 'closed' : 'open';
+        return {
+            ...item,
+            repo,
+            number: Number(found.number || 0) || item.number,
+            url: String(found.html_url || item.url || ''),
+            state: mapped,
+            mergedAt: mapped === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
+            updatedAt: this.nowIso(),
+            lastError: undefined,
+        };
+    }
+
+    private async queryGitlabMergeStatusByToken(
+        endpoint: MonorepoRemoteEndpoint,
+        item: FeatureChangeRequestState,
+        token: string,
+    ): Promise<FeatureChangeRequestState> {
+        const repo = (item.repo || this.parseRepoId(endpoint)).trim();
+        if (!repo) {
+            return { ...item, state: 'failed', updatedAt: this.nowIso(), lastError: '缺少 GitLab 仓库标识' };
+        }
+        const host = this.parseRemoteHost(endpoint);
+        if (!host) {
+            return { ...item, state: 'failed', updatedAt: this.nowIso(), lastError: `无法解析 GitLab host：${endpoint.url}` };
+        }
+
+        const headers = { 'PRIVATE-TOKEN': token };
+        const baseApi = `https://${host}/api/v4/projects/${encodeURIComponent(repo)}`;
+
+        if (item.number) {
+            const view = await this.fetchJson(`${baseApi}/merge_requests/${item.number}`, {
+                method: 'GET',
+                headers,
+            });
+            if (!view.ok) {
+                return { ...item, state: 'failed', updatedAt: this.nowIso(), lastError: `GitLab API 读取 MR 失败（${view.status}）` };
+            }
+            const stateRaw = String((view.json && view.json.state) || '').toLowerCase();
+            const mapped: FeatureChangeRequestState['state'] = stateRaw === 'merged' ? 'merged' : stateRaw === 'closed' ? 'closed' : 'open';
+            return {
+                ...item,
+                repo,
+                number: Number((view.json && view.json.iid) || item.number),
+                url: String((view.json && view.json.web_url) || item.url || ''),
+                state: mapped,
+                mergedAt: mapped === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
+                updatedAt: this.nowIso(),
+                lastError: undefined,
+            };
+        }
+
+        const list = await this.fetchJson(
+            `${baseApi}/merge_requests?state=all&source_branch=${encodeURIComponent(item.sourceBranch)}&target_branch=${encodeURIComponent(item.targetBranch)}&per_page=1`,
+            { method: 'GET', headers },
+        );
+        if (!list.ok || !Array.isArray(list.json) || list.json.length === 0) {
+            return { ...item, state: 'unsupported', updatedAt: this.nowIso(), lastError: 'GitLab API 未查询到匹配 MR' };
+        }
+        const found = list.json[0] as { iid?: number; web_url?: string; state?: string; merged_at?: string | null };
+        const stateRaw = String(found.state || '').toLowerCase();
+        const mapped: FeatureChangeRequestState['state'] = stateRaw === 'merged' || Boolean(found.merged_at)
+            ? 'merged'
+            : stateRaw === 'closed'
+                ? 'closed'
+                : 'open';
+        return {
+            ...item,
+            repo,
+            number: Number(found.iid || 0) || item.number,
+            url: String(found.web_url || item.url || ''),
+            state: mapped,
+            mergedAt: mapped === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
+            updatedAt: this.nowIso(),
+            lastError: undefined,
+        };
+    }
+
+    private async tryRefreshChangeRequestStatusByToken(
+        endpoint: MonorepoRemoteEndpoint,
+        item: FeatureChangeRequestState,
+    ): Promise<FeatureChangeRequestState | null> {
+        if (endpoint.platform !== 'github' && endpoint.platform !== 'gitlab') {
+            return null;
+        }
+        const token = await this.getRemoteApiToken(endpoint.key);
+        if (!token) {
+            return null;
+        }
+
+        if (endpoint.platform === 'github') {
+            return this.queryGithubPullStatusByToken(endpoint, item, token);
+        }
+        return this.queryGitlabMergeStatusByToken(endpoint, item, token);
+    }
+
+    private async createOrUpdateChangeRequestForEndpoint(
+        endpoint: MonorepoRemoteEndpoint,
+        task: Feature,
+        sourceBranch: string,
+        targetBranch: string,
+        repoDir: string,
+    ): Promise<FeatureChangeRequestState> {
+        const tokenEntry = await this.tryCreateOrUpdateChangeRequestByToken(
+            endpoint,
+            task,
+            sourceBranch,
+            targetBranch,
+        );
+        if (tokenEntry && tokenEntry.state !== 'failed') {
+            return tokenEntry;
+        }
+
+        const base = this.buildChangeRequestEntryBase(endpoint, sourceBranch, targetBranch);
+        const repo = base.repo;
+        if (!repo) {
+            return {
+                ...base,
+                state: 'failed',
+                updatedAt: this.nowIso(),
+                lastError: `无法从远程地址解析仓库标识：${endpoint.url}`,
+            };
+        }
+
+        const title = `chore: ${task.name}`.replace(/"/g, "'");
+        const body = [
+            `Auto-generated by Fun Harness`,
+            `Task: ${task.id} ${task.name}`,
+            `Branch: ${sourceBranch} -> ${targetBranch}`,
+        ].join('\n').replace(/"/g, "'");
+
+        if (endpoint.platform === 'github') {
+            const ghReady = await this.isCliAvailable('gh');
+            if (!ghReady) {
+                const manualUrl = this.buildManualChangeRequestUrl(endpoint, sourceBranch, targetBranch, title);
+                const inferred = await this.inferChangeRequestStateByGitGraph(
+                    {
+                        ...base,
+                        sourceBranch,
+                        targetBranch,
+                    },
+                    repoDir,
+                    'gh',
+                );
+                const mergedByGitGraph = inferred.state === 'merged';
+                return {
+                    ...base,
+                    state: mergedByGitGraph ? 'merged' : 'unsupported',
+                    url: manualUrl,
+                    updatedAt: this.nowIso(),
+                    mergedAt: mergedByGitGraph ? this.nowIso() : undefined,
+                    lastError: mergedByGitGraph
+                        ? '未检测到 gh CLI，已基于 Git 分支关系判定为已合并'
+                        : (manualUrl
+                            ? '未检测到 gh CLI，已生成手动创建 PR 链接'
+                            : '未检测到 gh CLI，且无法生成手动创建 PR 链接'),
+                };
+            }
+
+            const list = await this.execCmdOutput(
+                `gh pr list --repo "${repo}" --head "${sourceBranch}" --base "${targetBranch}" --state open --json number,url -L 1`,
+                repoDir,
+            );
+
+            let number: number | undefined;
+            let url = '';
+            if (list.success) {
+                try {
+                    const parsed = JSON.parse(list.stdout || '[]') as Array<{ number?: number; url?: string }>;
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        number = Number(parsed[0].number);
+                        url = String(parsed[0].url || '');
+                    }
+                } catch {
+                    // ignore parse error and fall back to create
+                }
+            }
+
+            if (!number) {
+                const created = await this.execCmdOutput(
+                    `gh pr create --repo "${repo}" --base "${targetBranch}" --head "${sourceBranch}" --title "${title}" --body "${body}"`,
+                    repoDir,
+                );
+                if (!created.success) {
+                    return {
+                        ...base,
+                        state: 'failed',
+                        updatedAt: this.nowIso(),
+                        lastError: `GitHub PR 创建失败：${this.lastExecError}`,
+                    };
+                }
+                url = (created.stdout || '').trim();
+                number = this.extractPullNumberFromUrl(url);
+                if (!number) {
+                    const view = await this.execCmdOutput(
+                        `gh pr list --repo "${repo}" --head "${sourceBranch}" --base "${targetBranch}" --state open --json number,url -L 1`,
+                        repoDir,
+                    );
+                    if (view.success) {
+                        try {
+                            const parsed = JSON.parse(view.stdout || '[]') as Array<{ number?: number; url?: string }>;
+                            if (Array.isArray(parsed) && parsed.length > 0) {
+                                number = Number(parsed[0].number);
+                                url = String(parsed[0].url || url);
+                            }
+                        } catch {
+                            // ignore parse error
+                        }
+                    }
+                }
+            }
+
+            if (!number) {
+                return {
+                    ...base,
+                    state: 'open',
+                    url,
+                    updatedAt: this.nowIso(),
+                    lastError: 'PR 已创建但未解析到编号，自动合并请求已跳过',
+                };
+            }
+
+            const merge = await this.execCmdOutput(
+                `gh pr merge --repo "${repo}" --auto --squash ${number}`,
+                repoDir,
+            );
+            if (!merge.success) {
+                return {
+                    ...base,
+                    number,
+                    url,
+                    state: 'open',
+                    updatedAt: this.nowIso(),
+                    lastError: `PR 已存在，但自动合并请求失败：${this.lastExecError}`,
+                };
+            }
+
+            return {
+                ...base,
+                number,
+                url,
+                state: 'merge-queued',
+                autoMergeRequestedAt: this.nowIso(),
+                updatedAt: this.nowIso(),
+            };
+        }
+
+        if (endpoint.platform === 'gitlab') {
+            const glabReady = await this.isCliAvailable('glab');
+            if (!glabReady) {
+                const manualUrl = this.buildManualChangeRequestUrl(endpoint, sourceBranch, targetBranch, title);
+                const inferred = await this.inferChangeRequestStateByGitGraph(
+                    {
+                        ...base,
+                        sourceBranch,
+                        targetBranch,
+                    },
+                    repoDir,
+                    'glab',
+                );
+                const mergedByGitGraph = inferred.state === 'merged';
+                return {
+                    ...base,
+                    state: mergedByGitGraph ? 'merged' : 'unsupported',
+                    url: manualUrl,
+                    updatedAt: this.nowIso(),
+                    mergedAt: mergedByGitGraph ? this.nowIso() : undefined,
+                    lastError: mergedByGitGraph
+                        ? '未检测到 glab CLI，已基于 Git 分支关系判定为已合并'
+                        : (manualUrl
+                            ? '未检测到 glab CLI，已生成手动创建 MR 链接'
+                            : '未检测到 glab CLI，且无法生成手动创建 MR 链接'),
+                };
+            }
+
+            const list = await this.execCmdOutput(
+                `glab mr list --repo "${repo}" --source-branch "${sourceBranch}" --target-branch "${targetBranch}" --state opened --output json`,
+                repoDir,
+            );
+
+            let iid: number | undefined;
+            let webUrl = '';
+            if (list.success) {
+                try {
+                    const parsed = JSON.parse(list.stdout || '[]') as Array<{ iid?: number; web_url?: string }>;
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        iid = Number(parsed[0].iid);
+                        webUrl = String(parsed[0].web_url || '');
+                    }
+                } catch {
+                    // ignore parse error
+                }
+            }
+
+            if (!iid) {
+                const created = await this.execCmdOutput(
+                    `glab mr create --repo "${repo}" --source-branch "${sourceBranch}" --target-branch "${targetBranch}" --title "${title}" --description "${body}" --yes`,
+                    repoDir,
+                );
+                if (!created.success) {
+                    return {
+                        ...base,
+                        state: 'failed',
+                        updatedAt: this.nowIso(),
+                        lastError: `GitLab MR 创建失败：${this.lastExecError}`,
+                    };
+                }
+                webUrl = (created.stdout || '').trim();
+                iid = this.extractPullNumberFromUrl(webUrl);
+            }
+
+            if (!iid) {
+                return {
+                    ...base,
+                    state: 'open',
+                    url: webUrl,
+                    updatedAt: this.nowIso(),
+                    lastError: 'MR 已创建但未解析到 IID，自动合并请求已跳过',
+                };
+            }
+
+            const merge = await this.execCmdOutput(
+                `glab mr merge ${iid} --repo "${repo}" --auto-merge --squash --yes`,
+                repoDir,
+            );
+            if (!merge.success) {
+                return {
+                    ...base,
+                    number: iid,
+                    url: webUrl,
+                    state: 'open',
+                    updatedAt: this.nowIso(),
+                    lastError: `MR 已存在，但自动合并请求失败：${this.lastExecError}`,
+                };
+            }
+
+            return {
+                ...base,
+                number: iid,
+                url: webUrl,
+                state: 'merge-queued',
+                autoMergeRequestedAt: this.nowIso(),
+                updatedAt: this.nowIso(),
+            };
+        }
+
+        return {
+            ...base,
+            state: 'unsupported',
+            updatedAt: this.nowIso(),
+            lastError: `暂不支持该平台自动创建 CR：${endpoint.platform}`,
+        };
+    }
+
+    /** True when at least one monorepo remote endpoint is configured. */
     private isMonorepo(): boolean {
-        return Boolean(this.config.monorepoGit && this.config.monorepoGit.trim());
+        return this.getMonorepoRemoteEndpoints().length > 0;
     }
 
     /**
@@ -91,14 +926,19 @@ export class GitService {
      * Pass '' for `iterationDir` when only main-repo info is needed (e.g. initializeRepos).
      */
     private resolveRepoDescriptors(iterationDir: string): RepoDescriptor[] {
+        const endpoints = this.getMonorepoRemoteEndpoints();
         if (!this.isMonorepo()) {
+            return [];
+        }
+        const primary = endpoints[0];
+        if (!primary) {
             return [];
         }
 
         return [{
             kind: 'mono',
             label: '仓库',
-            remote: this.config.monorepoGit.trim(),
+            remote: primary.url,
             // Monorepo: a dedicated main clone under repos/mono-main; iterations are git
             // worktrees whose root IS the iteration dir (front/back live in configured subfolders).
             mainDir: this.getMainRepoDir('mono'),
@@ -127,6 +967,102 @@ export class GitService {
      */
     private logGitToRoot(line: string): void {
         appendHarnessLog(this.workspaceRoot || this.currentLogDir, 'git', line);
+    }
+
+    private async ensureRemoteNamed(repoDir: string, remoteName: string, remoteUrl: string): Promise<boolean> {
+        const escapedUrl = remoteUrl.replace(/"/g, '\\"');
+        const existing = await this.execCmdOutput(`git remote get-url ${remoteName}`, repoDir);
+        if (existing.success) {
+            const current = this.normaliseRemoteUrl(existing.stdout);
+            const expected = this.normaliseRemoteUrl(remoteUrl);
+            if (current === expected) {
+                return true;
+            }
+            return this.execCmd(`git remote set-url ${remoteName} ${escapedUrl}`, repoDir);
+        }
+        return this.execCmd(`git remote add ${remoteName} ${escapedUrl}`, repoDir);
+    }
+
+    private async pushBranchToConfiguredEndpoints(
+        repoDir: string,
+        branch: string,
+        endpoints: MonorepoRemoteEndpoint[],
+    ): Promise<{ ok: boolean; reason?: string; localSha?: string }> {
+        if (endpoints.length === 0) {
+            return { ok: false, reason: '未配置可用远程端点' };
+        }
+
+        const localShaOut = await this.execCmdOutput(`git rev-parse ${branch}`, repoDir);
+        if (!localShaOut.success) {
+            return { ok: false, reason: `读取本地 ${branch} SHA 失败：${this.lastExecError}` };
+        }
+        const localSha = localShaOut.stdout.trim();
+        if (!localSha) {
+            return { ok: false, reason: `读取本地 ${branch} SHA 为空` };
+        }
+
+        const failures: string[] = [];
+        for (const endpoint of endpoints) {
+            const remoteName = endpoint.remoteName || 'origin';
+            const required = endpoint.required !== false;
+            const ok = await this.ensureRemoteNamed(repoDir, remoteName, endpoint.url);
+            if (!ok) {
+                const reason = `配置远端 ${remoteName}(${endpoint.url}) 失败：${this.lastExecError}`;
+                if (required) {
+                    failures.push(reason);
+                } else {
+                    this.logGit(`可选远端跳过：${reason}`);
+                }
+                continue;
+            }
+
+            const pushed = await this.execCmd(`git push -u ${remoteName} ${branch}`, repoDir);
+            if (!pushed) {
+                const reason = `推送到远端 ${remoteName}(${endpoint.url}) 失败：${this.lastExecError}`;
+                if (required) {
+                    failures.push(reason);
+                } else {
+                    this.logGit(`可选远端推送失败（忽略）：${reason}`);
+                }
+                continue;
+            }
+
+            const fetched = await this.execCmd(`git fetch ${remoteName}`, repoDir);
+            if (!fetched) {
+                const reason = `推送后 fetch ${remoteName} 失败：${this.lastExecError}`;
+                if (required) {
+                    failures.push(reason);
+                } else {
+                    this.logGit(`可选远端校验失败（忽略）：${reason}`);
+                }
+                continue;
+            }
+
+            const remoteShaOut = await this.execCmdOutput(`git rev-parse ${remoteName}/${branch}`, repoDir);
+            if (!remoteShaOut.success) {
+                const reason = `读取远端 ${remoteName}/${branch} SHA 失败：${this.lastExecError}`;
+                if (required) {
+                    failures.push(reason);
+                } else {
+                    this.logGit(`可选远端校验失败（忽略）：${reason}`);
+                }
+                continue;
+            }
+            const remoteSha = remoteShaOut.stdout.trim();
+            if (!remoteSha || remoteSha !== localSha) {
+                const reason = `远端 ${remoteName}/${branch} (${remoteSha || '空'}) 与本地 ${branch} (${localSha}) 不一致`;
+                if (required) {
+                    failures.push(reason);
+                } else {
+                    this.logGit(`可选远端 SHA 不一致（忽略）：${reason}`);
+                }
+            }
+        }
+
+        if (failures.length > 0) {
+            return { ok: false, reason: failures.join('；') };
+        }
+        return { ok: true, localSha };
     }
 
     async initializeRepos(): Promise<{ success: boolean; message: string }> {
@@ -437,6 +1373,7 @@ export class GitService {
         const failures: Array<{ repo: string; reason: string }> = [];
         const commitMessage = this.buildCommitMessage(task);
         const expectedBranch = this.deriveBranchName(task);
+        const endpoints = this.getMonorepoRemoteEndpoints();
         const repos = this.resolveRepoDescriptors(iterationDir);
 
         for (const repo of repos) {
@@ -445,7 +1382,7 @@ export class GitService {
                 failures.push({ repo: repo.label, reason: branchErr });
                 continue;
             }
-            const error = await this.pushRepoChanges(repo.label, repo.worktreeDir, commitMessage);
+            const error = await this.pushRepoChanges(repo.label, repo.worktreeDir, commitMessage, expectedBranch, endpoints);
             if (error) {
                 failures.push({ repo: repo.label, reason: error });
             }
@@ -458,7 +1395,296 @@ export class GitService {
         return { success: true, message: '✅ 代码已全部推送' };
     }
 
-    private async pushRepoChanges(repoName: string, repoDir: string, commitMessage: string): Promise<string | null> {
+    async submitBranchForChangeRequests(
+        task: Feature,
+        iterationDir: string,
+    ): Promise<{ success: boolean; message: string; entries: Record<string, FeatureChangeRequestState> }> {
+        this.currentLogDir = iterationDir;
+        const pushed = await this.pushAll(task, iterationDir);
+        if (!pushed.success) {
+            return { success: false, message: pushed.message, entries: {} };
+        }
+
+        const endpoints = this.getMonorepoRemoteEndpoints();
+        const sourceBranch = this.deriveBranchName(task);
+        const targetBranch = this.resolveBaseBranch(task);
+        const repos = this.resolveRepoDescriptors(iterationDir);
+        const repoDir = repos[0]?.worktreeDir || iterationDir;
+        const entries: Record<string, FeatureChangeRequestState> = {};
+        const failures: string[] = [];
+
+        for (const endpoint of endpoints) {
+            const entry = await this.createOrUpdateChangeRequestForEndpoint(
+                endpoint,
+                task,
+                sourceBranch,
+                targetBranch,
+                repoDir,
+            );
+            entries[endpoint.key] = entry;
+            const requiresManual = entry.state === 'unsupported' && Boolean(entry.url);
+            if (endpoint.required !== false && (entry.state === 'failed' || (entry.state === 'unsupported' && !requiresManual))) {
+                failures.push(`[${endpoint.remoteName}] ${entry.lastError || '未知错误'}`);
+            }
+        }
+
+        if (failures.length > 0) {
+            return {
+                success: false,
+                message: `分支已推送，但创建/更新 PR/MR 失败：\n${failures.join('\n')}`,
+                entries,
+            };
+        }
+
+        const manualFallbacks = Object.values(entries).filter(entry => entry.state === 'unsupported' && Boolean(entry.url));
+        if (manualFallbacks.length > 0) {
+            const names = manualFallbacks.map(entry => entry.remoteName || entry.endpointKey).join('、');
+            return {
+                success: true,
+                message: `✅ 分支已推送；${names} 未启用 CLI 自动创建，已提供手动 PR/MR 链接`,
+                entries,
+            };
+        }
+
+        return {
+            success: true,
+            message: '✅ 分支已推送，已为各远程创建/更新 PR/MR（并已请求自动合并）',
+            entries,
+        };
+    }
+
+    async refreshChangeRequestStatuses(
+        entries: Record<string, FeatureChangeRequestState> | undefined,
+        iterationDir: string,
+    ): Promise<{ entries: Record<string, FeatureChangeRequestState>; allRequiredMerged: boolean }> {
+        this.currentLogDir = iterationDir;
+        const current = entries || {};
+        const endpoints = this.getMonorepoRemoteEndpoints();
+        const endpointMap = new Map(endpoints.map(e => [e.key, e]));
+        const repoDir = this.resolveRepoDescriptors(iterationDir)[0]?.worktreeDir || iterationDir;
+        const updated: Record<string, FeatureChangeRequestState> = {};
+
+        for (const [key, item] of Object.entries(current)) {
+            const endpoint = endpointMap.get(key);
+            if (!endpoint) {
+                updated[key] = { ...item, updatedAt: this.nowIso() };
+                continue;
+            }
+
+            const tokenRefreshed = await this.tryRefreshChangeRequestStatusByToken(endpoint, item);
+            if (tokenRefreshed && tokenRefreshed.state !== 'failed') {
+                updated[key] = tokenRefreshed;
+                continue;
+            }
+
+            if (item.platform === 'github') {
+                if (!item.number || !item.repo) {
+                    const fallback = await this.inferChangeRequestStateByGitGraph(item, repoDir, 'gh');
+                    updated[key] = {
+                        ...item,
+                        state: fallback.state,
+                        updatedAt: this.nowIso(),
+                        mergedAt: fallback.state === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
+                        lastError: fallback.lastError,
+                    };
+                    continue;
+                }
+                const ghReady = await this.isCliAvailable('gh');
+                if (!ghReady) {
+                    const fallback = await this.inferChangeRequestStateByGitGraph(item, repoDir, 'gh');
+                    updated[key] = {
+                        ...item,
+                        state: fallback.state,
+                        updatedAt: this.nowIso(),
+                        mergedAt: fallback.state === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
+                        lastError: fallback.lastError,
+                    };
+                    continue;
+                }
+                const view = await this.execCmdOutput(
+                    `gh pr view ${item.number} --repo "${item.repo}" --json state,url,number`,
+                    repoDir,
+                );
+                if (!view.success) {
+                    updated[key] = {
+                        ...item,
+                        state: 'failed',
+                        updatedAt: this.nowIso(),
+                        lastError: `读取 GitHub PR 状态失败：${this.lastExecError}`,
+                    };
+                    continue;
+                }
+                try {
+                    const parsed = JSON.parse(view.stdout || '{}') as { state?: string; url?: string; number?: number };
+                    const stateRaw = (parsed.state || '').toUpperCase();
+                    const mapped = stateRaw === 'MERGED' ? 'merged' : stateRaw === 'CLOSED' ? 'closed' : 'open';
+                    updated[key] = {
+                        ...item,
+                        number: Number(parsed.number || item.number),
+                        url: String(parsed.url || item.url || ''),
+                        state: mapped,
+                        mergedAt: mapped === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
+                        updatedAt: this.nowIso(),
+                        lastError: undefined,
+                    };
+                } catch {
+                    updated[key] = {
+                        ...item,
+                        state: 'failed',
+                        updatedAt: this.nowIso(),
+                        lastError: '解析 GitHub PR 状态返回失败',
+                    };
+                }
+                continue;
+            }
+
+            if (item.platform === 'gitlab') {
+                if (!item.number || !item.repo) {
+                    const fallback = await this.inferChangeRequestStateByGitGraph(item, repoDir, 'glab');
+                    updated[key] = {
+                        ...item,
+                        state: fallback.state,
+                        updatedAt: this.nowIso(),
+                        mergedAt: fallback.state === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
+                        lastError: fallback.lastError,
+                    };
+                    continue;
+                }
+                const glabReady = await this.isCliAvailable('glab');
+                if (!glabReady) {
+                    const fallback = await this.inferChangeRequestStateByGitGraph(item, repoDir, 'glab');
+                    updated[key] = {
+                        ...item,
+                        state: fallback.state,
+                        updatedAt: this.nowIso(),
+                        mergedAt: fallback.state === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
+                        lastError: fallback.lastError,
+                    };
+                    continue;
+                }
+                const view = await this.execCmdOutput(
+                    `glab mr view ${item.number} --repo "${item.repo}" --output json`,
+                    repoDir,
+                );
+                if (!view.success) {
+                    updated[key] = {
+                        ...item,
+                        state: 'failed',
+                        updatedAt: this.nowIso(),
+                        lastError: `读取 GitLab MR 状态失败：${this.lastExecError}`,
+                    };
+                    continue;
+                }
+                try {
+                    const parsed = JSON.parse(view.stdout || '{}') as { state?: string; web_url?: string; iid?: number };
+                    const stateRaw = (parsed.state || '').toLowerCase();
+                    const mapped = stateRaw === 'merged' ? 'merged' : stateRaw === 'closed' ? 'closed' : 'open';
+                    updated[key] = {
+                        ...item,
+                        number: Number(parsed.iid || item.number),
+                        url: String(parsed.web_url || item.url || ''),
+                        state: mapped,
+                        mergedAt: mapped === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
+                        updatedAt: this.nowIso(),
+                        lastError: undefined,
+                    };
+                } catch {
+                    updated[key] = {
+                        ...item,
+                        state: 'failed',
+                        updatedAt: this.nowIso(),
+                        lastError: '解析 GitLab MR 状态返回失败',
+                    };
+                }
+                continue;
+            }
+
+            updated[key] = {
+                ...item,
+                state: item.state === 'merged' ? 'merged' : 'unsupported',
+                updatedAt: this.nowIso(),
+                lastError: item.platform === 'generic' ? 'generic 平台暂不支持自动状态刷新' : item.lastError,
+            };
+        }
+
+        const requiredKeys = endpoints.filter(e => e.required !== false).map(e => e.key);
+        const allRequiredMerged = requiredKeys.length > 0
+            ? requiredKeys.every(key => updated[key]?.state === 'merged')
+            : false;
+
+        return { entries: updated, allRequiredMerged };
+    }
+
+    /**
+     * CLI-missing fallback: infer open/merged state by checking whether source branch commits
+     * are already reachable from target branch in git graph.
+     */
+    private async inferChangeRequestStateByGitGraph(
+        item: FeatureChangeRequestState,
+        repoDir: string,
+        missingCli: 'gh' | 'glab',
+    ): Promise<{ state: 'open' | 'merged' | 'unsupported'; lastError?: string }> {
+        const remote = (item.remoteName || 'origin').trim();
+        const source = (item.sourceBranch || '').trim();
+        const target = (item.targetBranch || '').trim();
+        if (!remote || !source || !target) {
+            return {
+                state: 'unsupported',
+                lastError: `未检测到 ${missingCli} CLI，且缺少分支信息，无法刷新状态`,
+            };
+        }
+
+        // Best effort fetch so remote refs are fresh before ancestry check.
+        await this.execCmd(`git fetch ${remote}`, repoDir);
+
+        const targetRef = `${remote}/${target}`;
+        const targetOk = await this.execCmd(`git rev-parse --verify --quiet ${targetRef}`, repoDir);
+        if (!targetOk) {
+            return {
+                state: 'unsupported',
+                lastError: `未检测到 ${missingCli} CLI，且目标分支不存在：${targetRef}`,
+            };
+        }
+
+        const sourceRef = `${remote}/${source}`;
+        const remoteSourceOk = await this.execCmd(`git rev-parse --verify --quiet ${sourceRef}`, repoDir);
+        if (!remoteSourceOk) {
+            return {
+                state: 'merged',
+                lastError: `未检测到 ${missingCli} CLI，来源分支 ${sourceRef} 不存在，按已合并处理`,
+            };
+        }
+
+        const ahead = await this.execCmdOutput(`git rev-list --count ${targetRef}..${sourceRef}`, repoDir);
+        if (!ahead.success) {
+            return {
+                state: 'unsupported',
+                lastError: `未检测到 ${missingCli} CLI，且基于 Git 分支关系判定失败：${this.lastExecError}`,
+            };
+        }
+
+        const pending = Number((ahead.stdout || '').trim());
+        if (Number.isFinite(pending) && pending === 0) {
+            return { state: 'merged', lastError: undefined };
+        }
+
+        // Squash/Rebase merge fallback: ancestry can still show source ahead, but if tip-to-tip
+        // content diff is empty, treat as effectively merged.
+        const tipDiff = await this.execCmdOutput(`git diff --name-only ${targetRef}..${sourceRef}`, repoDir);
+        if (tipDiff.success && !(tipDiff.stdout || '').trim()) {
+            return {
+                state: 'merged',
+                lastError: `未检测到 ${missingCli} CLI，已基于 Git 内容一致性判定为已合并（squash/rebase）`,
+            };
+        }
+
+        return {
+            state: 'open',
+            lastError: `未检测到 ${missingCli} CLI，已基于 Git 分支关系判定为未合并`,
+        };
+    }
+
+    private async pushRepoChanges(repoName: string, repoDir: string, commitMessage: string, branch: string, endpoints: MonorepoRemoteEndpoint[]): Promise<string | null> {
         if (!fs.existsSync(repoDir)) {
             return `目录不存在: ${repoDir}`;
         }
@@ -486,9 +1712,9 @@ export class GitService {
             return `git commit 失败: ${this.lastExecError}`;
         }
 
-        const pushCmd = await this.execCmd('git push origin HEAD', repoDir);
-        if (!pushCmd) {
-            return `git push 失败: ${this.lastExecError}`;
+        const pushed = await this.pushBranchToConfiguredEndpoints(repoDir, branch, endpoints);
+        if (!pushed.ok) {
+            return pushed.reason || 'git push 失败';
         }
 
         return null;
@@ -895,7 +2121,7 @@ export class GitService {
         // the user's work is preserved on origin/<sourceBranch>.
         const sourceShas: Record<string, string> = {};
         for (const repo of repos) {
-            const prep = await this.prepareIterationForMerge(repo.worktreeDir, repo.remote, sourceBranch, task);
+            const prep = await this.prepareIterationForMerge(repo.worktreeDir, sourceBranch, task);
             if (!prep.ok) {
                 return {
                     success: false,
@@ -950,23 +2176,48 @@ export class GitService {
         return { success: true, cleanupComplete: true, message: `✅ 已合并到远程基线 ${target} 并清理迭代分支 ${sourceBranch}` };
     }
 
+    async cleanupIterationAfterRemoteMerge(
+        task: Feature,
+        iterationDir: string,
+    ): Promise<{ success: boolean; message: string; cleanupComplete?: boolean }> {
+        this.currentLogDir = iterationDir;
+        const sourceBranch = this.deriveBranchName(task);
+        const target = this.resolveBaseBranch(task);
+        const repos = this.resolveRepoDescriptors(iterationDir);
+        const failures: Array<{ repo: string; reason: string }> = [];
+
+        for (const repo of repos) {
+            const cleanupResult = await this.cleanupMergedBranch(repo.mainDir, repo.worktreeDir, sourceBranch, target);
+            if (!cleanupResult.ok) {
+                failures.push({ repo: repo.label, reason: cleanupResult.reason || '未知错误' });
+            }
+        }
+
+        if (failures.length > 0) {
+            const detail = failures.map(f => `[${f.repo}] ${f.reason}`).join('\n');
+            return {
+                success: true,
+                cleanupComplete: false,
+                message: `✅ 远程已完成合并，但部分清理步骤失败：\n${detail}\n可手动清理本地 worktree/迭代分支。`,
+            };
+        }
+
+        return {
+            success: true,
+            cleanupComplete: true,
+            message: `✅ 远程已完成合并，并清理迭代分支 ${sourceBranch}`,
+        };
+    }
+
     /**
      * Prepare a worktree for merging: auto-commit any pending changes on the iteration branch,
      * push it to remote as a safety backup, and verify the remote SHA matches local.
      * Returns the verified source SHA so the caller can later assert it is an ancestor of the
      * target branch after merge.
      */
-    private async prepareIterationForMerge(worktreeDir: string, remoteUrl: string, sourceBranch: string, task: Feature): Promise<{ ok: boolean; reason?: string; sha?: string }> {
+    private async prepareIterationForMerge(worktreeDir: string, sourceBranch: string, task: Feature): Promise<{ ok: boolean; reason?: string; sha?: string }> {
         if (!fs.existsSync(worktreeDir)) {
             return { ok: false, reason: `worktree 目录不存在：${worktreeDir}` };
-        }
-
-        const originUrl = await this.execCmdOutput('git remote get-url origin', worktreeDir);
-        if (!originUrl.success) {
-            const addedOrigin = await this.execCmd(`git remote add origin ${remoteUrl}`, worktreeDir);
-            if (!addedOrigin) {
-                return { ok: false, reason: `迭代 worktree 缺少 origin，且无法补充主仓库远程：${this.lastExecError}` };
-            }
         }
 
         const branchErr = await this.assertExpectedBranch(worktreeDir, sourceBranch);
@@ -998,33 +2249,12 @@ export class GitService {
             return { ok: false, reason: `worktree 仍有未跟踪/未提交内容：${recheck.stdout.trim() || this.lastExecError}` };
         }
 
-        const pushed = await this.execCmd(`git push -u origin ${sourceBranch}`, worktreeDir);
-        if (!pushed) {
-            return { ok: false, reason: `推送迭代分支到远程失败：${this.lastExecError}` };
+        const endpoints = this.getMonorepoRemoteEndpoints();
+        const pushed = await this.pushBranchToConfiguredEndpoints(worktreeDir, sourceBranch, endpoints);
+        if (!pushed.ok) {
+            return { ok: false, reason: pushed.reason || '推送迭代分支到远程失败' };
         }
-
-        const fetched = await this.execCmd('git fetch origin', worktreeDir);
-        if (!fetched) {
-            return { ok: false, reason: `推送后 fetch origin 失败：${this.lastExecError}` };
-        }
-
-        const localShaOut = await this.execCmdOutput(`git rev-parse ${sourceBranch}`, worktreeDir);
-        if (!localShaOut.success) {
-            return { ok: false, reason: `读取本地 ${sourceBranch} SHA 失败：${this.lastExecError}` };
-        }
-        const remoteShaOut = await this.execCmdOutput(`git rev-parse origin/${sourceBranch}`, worktreeDir);
-        if (!remoteShaOut.success) {
-            return { ok: false, reason: `读取远程 origin/${sourceBranch} SHA 失败：${this.lastExecError}` };
-        }
-        const localSha = localShaOut.stdout.trim();
-        const remoteSha = remoteShaOut.stdout.trim();
-        if (!localSha || !remoteSha || localSha !== remoteSha) {
-            return {
-                ok: false,
-                reason: `远程 origin/${sourceBranch} (${remoteSha || '空'}) 与本地 ${sourceBranch} (${localSha || '空'}) 不一致，推送未真正生效`,
-            };
-        }
-        return { ok: true, sha: localSha };
+        return { ok: true, sha: pushed.localSha };
     }
 
     private async mergeRepoBranch(repoDir: string, sourceBranch: string, targetBranch: string, expectedSourceSha: string): Promise<{ ok: boolean; reason?: string }> {
@@ -1044,14 +2274,25 @@ export class GitService {
             return { ok: false, reason: `主仓库 ${repoDir} 有未提交的改动，请先在主仓库处理后再试。` };
         }
 
-        const fetched = await this.execCmd('git fetch origin', repoDir);
+        const endpoints = this.getMonorepoRemoteEndpoints();
+        const primary = endpoints[0];
+        if (!primary) {
+            return { ok: false, reason: '未配置主远程端点' };
+        }
+
+        const ensurePrimary = await this.ensureRemoteNamed(repoDir, primary.remoteName, primary.url);
+        if (!ensurePrimary) {
+            return { ok: false, reason: `配置主远端 ${primary.remoteName} 失败：${this.lastExecError}` };
+        }
+
+        const fetched = await this.execCmd(`git fetch ${primary.remoteName}`, repoDir);
         if (!fetched) {
-            return { ok: false, reason: `fetch origin 失败：${this.lastExecError}` };
+            return { ok: false, reason: `fetch ${primary.remoteName} 失败：${this.lastExecError}` };
         }
 
         const checkoutTarget = await this.execCmd(`git checkout ${targetBranch}`, repoDir);
         if (!checkoutTarget) {
-            const createFromRemote = await this.execCmd(`git checkout -b ${targetBranch} origin/${targetBranch}`, repoDir);
+            const createFromRemote = await this.execCmd(`git checkout -b ${targetBranch} ${primary.remoteName}/${targetBranch}`, repoDir);
             if (!createFromRemote) {
                 if (/already exists/i.test(this.lastExecError)) {
                     const forceCheckout = await this.execCmd(`git checkout ${targetBranch}`, repoDir);
@@ -1070,11 +2311,11 @@ export class GitService {
         // pull must succeed — proceeding against a stale local target can silently push the
         // wrong history or cause the post-push ancestry check to fail confusingly.
         // Skip pull if remote branch doesn't yet exist (first push of target).
-        const remoteTargetExists = await this.execCmd(`git rev-parse --verify origin/${targetBranch}`, repoDir);
+        const remoteTargetExists = await this.execCmd(`git rev-parse --verify ${primary.remoteName}/${targetBranch}`, repoDir);
         if (remoteTargetExists) {
-            const pulled = await this.execCmd(`git pull origin ${targetBranch}`, repoDir);
+            const pulled = await this.execCmd(`git pull ${primary.remoteName} ${targetBranch}`, repoDir);
             if (!pulled) {
-                return { ok: false, reason: `git pull origin ${targetBranch} 失败：${this.lastExecError}` };
+                return { ok: false, reason: `git pull ${primary.remoteName} ${targetBranch} 失败：${this.lastExecError}` };
             }
         }
 
@@ -1104,45 +2345,41 @@ export class GitService {
             return { ok: false, reason: `本地合并后 HEAD 不包含 ${sourceBranch} 的 commit ${expectedSourceSha}` };
         }
 
-        const pushed = await this.execCmd(`git push origin ${targetBranch}`, repoDir);
-        if (!pushed) {
-            return { ok: false, reason: `push 到 ${targetBranch} 失败：${this.lastExecError}` };
+        const pushed = await this.pushBranchToConfiguredEndpoints(repoDir, targetBranch, endpoints);
+        if (!pushed.ok) {
+            return { ok: false, reason: pushed.reason || `push 到 ${targetBranch} 失败` };
         }
 
         // Verify remote actually advanced.
-        const refetched = await this.execCmd('git fetch origin', repoDir);
+        const refetched = await this.execCmd(`git fetch ${primary.remoteName}`, repoDir);
         if (!refetched) {
-            return { ok: false, reason: `推送后 fetch origin 失败，无法校验远程：${this.lastExecError}` };
+            return { ok: false, reason: `推送后 fetch ${primary.remoteName} 失败，无法校验远程：${this.lastExecError}` };
         }
         const localTargetSha = await this.execCmdOutput(`git rev-parse ${targetBranch}`, repoDir);
         if (!localTargetSha.success) {
             return { ok: false, reason: `读取本地 ${targetBranch} SHA 失败：${this.lastExecError}` };
         }
-        const remoteTargetSha = await this.execCmdOutput(`git rev-parse origin/${targetBranch}`, repoDir);
+        const remoteTargetSha = await this.execCmdOutput(`git rev-parse ${primary.remoteName}/${targetBranch}`, repoDir);
         if (!remoteTargetSha.success) {
-            return { ok: false, reason: `读取远程 origin/${targetBranch} SHA 失败：${this.lastExecError}` };
+            return { ok: false, reason: `读取远程 ${primary.remoteName}/${targetBranch} SHA 失败：${this.lastExecError}` };
         }
         const lts = localTargetSha.stdout.trim();
         const rts = remoteTargetSha.stdout.trim();
         if (!lts || !rts || lts !== rts) {
             return {
                 ok: false,
-                reason: `远程 origin/${targetBranch} (${rts || '空'}) 与本地 ${targetBranch} (${lts || '空'}) 不一致，推送未真正生效`,
+                reason: `远程 ${primary.remoteName}/${targetBranch} (${rts || '空'}) 与本地 ${targetBranch} (${lts || '空'}) 不一致，推送未真正生效`,
             };
         }
 
         // Final verification: the remote target ref must contain the source SHA.
-        const remoteContainsSource = await this.execCmd(`git merge-base --is-ancestor ${expectedSourceSha} origin/${targetBranch}`, repoDir);
+        const remoteContainsSource = await this.execCmd(`git merge-base --is-ancestor ${expectedSourceSha} ${primary.remoteName}/${targetBranch}`, repoDir);
         if (!remoteContainsSource) {
             return {
                 ok: false,
-                reason: `远程 origin/${targetBranch} 不包含 ${sourceBranch} 的 commit ${expectedSourceSha}，合并校验失败`,
+                reason: `远程 ${primary.remoteName}/${targetBranch} 不包含 ${sourceBranch} 的 commit ${expectedSourceSha}，合并校验失败`,
             };
         }
-
-        // Best-effort mirror push: never fails the primary operation, since origin is already
-        // confirmed pushed and verified above.
-        await this.pushToMirror(repoDir, targetBranch);
 
         return { ok: true };
     }

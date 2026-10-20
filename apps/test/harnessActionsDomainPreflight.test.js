@@ -373,10 +373,11 @@ describe('领域预检阻断与引导', () => {
         assert.equal(triggerCalls.every(item => item.worktreePath === tmpDir), true);
     });
 
-    test('打开已有 worktree 时也触发 openFolder 入口 CodeGraph 初始化编排', async () => {
+    test('打开已有 worktree 且已存在 .codegraph 时跳过 openFolder 入口 CodeGraph 初始化编排', async () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
         fs.mkdirSync(path.join(tmpDir, '.git'), { recursive: true });
+        fs.mkdirSync(path.join(tmpDir, '.codegraph'), { recursive: true });
 
         const triggerCalls = [];
         const { service, feature } = createServiceHarness(tmpDir, '去处理', {
@@ -395,9 +396,7 @@ describe('领域预检阻断与引导', () => {
 
         await service.openFolderLocationByFeatureId(feature.id, 'worktree');
 
-        assert.equal(triggerCalls.length, 1);
-        assert.equal(triggerCalls[0].entryPoint, 'openFolderLocationByFeatureId');
-        assert.equal(triggerCalls[0].worktreePath, tmpDir);
+        assert.equal(triggerCalls.length, 0);
     });
 
     test('点击 Sync CodeGraph 时，若未初始化则先自动触发初始化编排', async () => {

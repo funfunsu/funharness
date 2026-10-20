@@ -1,6 +1,6 @@
 ﻿import * as fs from 'fs';
 import * as path from 'path';
-import { AiQuickChatButtonInput, AiQuickChatButtonsSaveResult, BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_ARCHIVE_FILE, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, ITERATION_ARCHIVE_SCHEMA_VERSION, IterationArchiveDocument, IterationArchiveItem, STAGE, Stage, Feature, normalizeAiQuickChatButtons, normalizeCustomButton, resolveSpecFile, resolveFeaturePlanFileForIteration, validateAiQuickChatButtons } from '../models';
+import { AiQuickChatButtonInput, AiQuickChatButtonsSaveResult, BASE, Config, CustomButton, DEFAULT_CONFIG, HARNESS_STATE_ARCHIVE_FILE, HARNESS_STATE_FILE, HARNESS_STATE_FILE_LEGACY, ITERATION_ARCHIVE_SCHEMA_VERSION, IterationArchiveDocument, IterationArchiveItem, STAGE, Stage, Feature, normalizeAiQuickChatButtons, normalizeCustomButton, resolveConfiguredMonorepoRemoteEndpoints, resolveSpecFile, resolveFeaturePlanFileForIteration, validateAiQuickChatButtons } from '../models';
 import { appendHarnessLog } from './harnessLog';
 import { safeRemovePath } from './fileOps';
 import { buildTraceMatrixSnapshot, TraceMatrixSnapshot } from '../specTrace';
@@ -259,6 +259,7 @@ export class FeatureStoreService {
             // deep-merge monorepoDirs so a partially-specified object keeps default subfolders.
             const merged = { ...DEFAULT_CONFIG, ...loaded };
             merged.monorepoGit = typeof loaded.monorepoGit === 'string' ? loaded.monorepoGit : '';
+            merged.monorepoRemotes = resolveConfiguredMonorepoRemoteEndpoints(merged);
             merged.monorepoDirs = { ...DEFAULT_CONFIG.monorepoDirs, ...(loaded.monorepoDirs || {}) };
             // Keep policy booleans stable for legacy/malformed configs.
             merged.autoCodeGraphEnabled = typeof loaded.autoCodeGraphEnabled === 'boolean'
