@@ -1,4 +1,4 @@
-﻿import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubFeature, Feature, FeatureStats, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, DEFAULT_POLL_SCRIPT, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END, normalizeCustomButton } from './models';
+﻿import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubFeature, Feature, FeatureStats, FeatureChangeRequestState, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, DEFAULT_POLL_SCRIPT, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END, normalizeCustomButton } from './models';
 import { HarnessConfigMeta } from './services/featureStoreService';
 import { AutoPollStatus } from './services/autoPollService';
 
@@ -22,6 +22,58 @@ function buildDeltaBadgeHtml(taskId: string, status: MainFeatureViewModel['specD
     const label = status.gateBlocked ? '⛔ 阻断' : status.severity === 'high' ? '⚠ 高风险' : status.severity === 'medium' ? '⚡ 告警' : '✓ 通过';
     const tip = escapeHtml(`${status.summary} | ${status.at.slice(0, 16).replace('T', ' ')}`);
     return `<span class="delta-badge ${cls}" onclick="specReview('${taskId}')" title="${tip}">${label}</span>`;
+}
+
+function mapChangeRequestStateToTag(state: string): { text: string; cls: string } {
+    switch (state) {
+        case 'merged':
+            return { text: '已合并', cls: 'cr-state--merged' };
+        case 'merge-queued':
+            return { text: '自动合并排队中', cls: 'cr-state--queued' };
+        case 'open':
+            return { text: '已创建', cls: 'cr-state--open' };
+        case 'closed':
+            return { text: '已关闭', cls: 'cr-state--closed' };
+        case 'failed':
+            return { text: '失败', cls: 'cr-state--failed' };
+        case 'unsupported':
+            return { text: '平台暂不支持', cls: 'cr-state--unsupported' };
+        default:
+            return { text: state || '未知', cls: 'cr-state--unknown' };
+    }
+}
+
+function buildChangeRequestStatusHtml(task: Feature): string {
+    const entries: FeatureChangeRequestState[] = Object.values(task.changeRequests || {} as Record<string, FeatureChangeRequestState>);
+    if (entries.length === 0) {
+        return '';
+    }
+
+    const rows = entries.map((entry) => {
+        const state = mapChangeRequestStateToTag(String(entry?.state || ''));
+        const remoteName = escapeHtml(String(entry?.remoteName || entry?.endpointKey || '-'));
+        const platform = escapeHtml(String(entry?.platform || 'generic'));
+        const number = typeof entry?.number === 'number' ? `#${entry.number}` : '';
+        const link = entry?.url
+            ? `<a class="cr-link" href="${escapeHtml(String(entry.url))}" target="_blank" rel="noopener">打开${platform.toUpperCase()} ${number || 'PR/MR'}</a>`
+            : `<span class="cr-link cr-link--muted">暂无链接</span>`;
+        const err = entry?.lastError ? `<div class="cr-error">${escapeHtml(String(entry.lastError))}</div>` : '';
+        const updatedAt = entry?.updatedAt ? escapeHtml(String(entry.updatedAt).replace('T', ' ').slice(0, 19)) : '-';
+        return `<div class="cr-row">
+<div class="cr-main">
+<span class="cr-remote">${remoteName}</span>
+<span class="cr-platform">${platform}</span>
+<span class="cr-state ${state.cls}">${state.text}</span>
+</div>
+<div class="cr-meta">${link}<span class="cr-time">更新: ${updatedAt}</span></div>
+${err}
+</div>`;
+    }).join('');
+
+    return `<details class="cr-panel" open>
+<summary>🔀 多远程 PR/MR 状态（${entries.length}）</summary>
+<div class="cr-list">${rows}</div>
+</details>`;
 }
 
 /** Collapsible cross-task Spec Delta domain overview panel (main panel only). */
@@ -96,6 +148,13 @@ export interface MainFeatureViewModel {
     } | null;
 }
 
+export interface RemoteApiTokenStatusView {
+    endpointKey: string;
+    remoteName: string;
+    platform: 'github' | 'gitlab' | 'generic';
+    configured: boolean;
+}
+
 type PanelMode = 'main' | 'worktree';
 type ActionPlacement = 'primary' | 'side' | 'header';
 
@@ -148,14 +207,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_REQUIREMENT],
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','requirements')">📄 查看需求产物</button>`,
-    },
-    {
-        key: 'req-review-prompt',
-        placement: 'side',
-        panels: ['main', 'worktree'],
-        stages: [STAGE.WRITING_REQUIREMENT],
-        render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('requirements')">⚙️ 需求评审 Prompt</button>`,
+        render: () => '',
     },
     {
         key: 'des-previous',
@@ -197,14 +249,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_DESIGN],
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','design')">📄 查看设计产物</button>`,
-    },
-    {
-        key: 'des-review-prompt',
-        placement: 'side',
-        panels: ['main', 'worktree'],
-        stages: [STAGE.WRITING_DESIGN],
-        render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('design')">⚙️ 设计评审 Prompt</button>`,
+        render: () => '',
     },
     {
         key: 'tcs-previous',
@@ -239,21 +284,14 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TESTCASE, STAGE.WRITING_TASKS, STAGE.DEVELOPING],
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','testcase')">📄 查看测试用例</button>`,
-    },
-    {
-        key: 'tcs-review-prompt',
-        placement: 'side',
-        panels: ['main', 'worktree'],
-        stages: [STAGE.WRITING_TESTCASE],
-        render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('testcase')">⚙️ 测试用例评审 Prompt</button>`,
+        render: () => '',
     },
     {
         key: 'test-script-view',
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TESTCASE, STAGE.DEVELOPING],
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','testScript')">🧪 查看测试脚本</button>`,
+        render: () => '',
     },
     {
         key: 'tsk-previous',
@@ -284,26 +322,11 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         render: (ctx) => `<button class="action-btn action-btn--primary" onclick="next('tsk','${ctx.task.id}')">✅ 确认任务拆解</button>`,
     },
     {
-        key: 'tsk-review-prompt',
-        placement: 'side',
-        panels: ['main', 'worktree'],
-        stages: [STAGE.WRITING_TASKS],
-        render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('tasks')">⚙️ 任务拆解评审 Prompt</button>`,
-    },
-    {
         key: 'tasks-view',
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: [STAGE.WRITING_TASKS, STAGE.DEVELOPING, STAGE.READY_FOR_REVIEW],
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="openArtifact('${ctx.task.id}','tasks')">📋 查看任务产物</button>`,
-    },
-    {
-        key: 'dev-tasks-review-prompt',
-        placement: 'side',
-        panels: ['main', 'worktree'],
-        stages: [STAGE.DEVELOPING],
-        when: (ctx) => !ctx.task.quickMode,
-        render: () => `<button class="action-btn action-btn--neutral" onclick="openReviewCustomPrompt('tasks')">⚙️ 任务拆解评审 Prompt</button>`,
+        render: () => '',
     },
     {
         key: 'dev-auto-toggle',
@@ -359,7 +382,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.READY_FOR_REVIEW],
-        render: (ctx) => `<button class="action-btn action-btn--success" onclick="pass('${ctx.task.id}')">🏁 完成任务并合并</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--success" onclick="pass('${ctx.task.id}')">🏁 检查远程已合并并完成任务</button>`,
     },
     {
         key: 'spec-review',
@@ -374,15 +397,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: 'all',
         when: (ctx) => ctx.hasWorktree,
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="syncMainCode('${ctx.task.id}')">🔄 拉取代码</button>`,
-    },
-    {
-        key: 'sync-codegraph',
-        placement: 'side',
-        panels: ['worktree'],
-        stages: 'all',
-        when: (ctx) => ctx.hasWorktree,
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="syncCodeGraph('${ctx.task.id}')">🧩 Sync CodeGraph</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="syncMainCode('${ctx.task.id}')">🔄 拉取</button>`,
     },
     {
         key: 'commit-to-baseline',
@@ -390,7 +405,23 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: 'all',
         when: (ctx) => ctx.hasWorktree,
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="commitToBaseline('${ctx.task.id}')">📤 提交代码</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="commitToBaseline('${ctx.task.id}')">📤 提交PR/MR</button>`,
+    },
+    {
+        key: 'refresh-change-requests',
+        placement: 'side',
+        panels: ['main', 'worktree'],
+        stages: 'all',
+        when: (ctx) => ctx.hasWorktree,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="refreshChangeRequests('${ctx.task.id}')">🔁 刷新PR/MR</button>`,
+    },
+    {
+        key: 'sync-codegraph',
+        placement: 'side',
+        panels: ['worktree'],
+        stages: 'all',
+        when: (ctx) => ctx.hasWorktree,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="syncCodeGraph('${ctx.task.id}')">🧩 图谱同步</button>`,
     },
     // 'open-worktree' is rendered as a fixed button in the task card header, not via the action system.
     {
@@ -405,7 +436,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: 'all',
-        render: (ctx) => `<button class="action-btn action-btn--danger" onclick="resetFeature('${ctx.task.id}')">♻ 重置任务</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--danger" onclick="resetFeature('${ctx.task.id}')">♻ 重置</button>`,
     },
 ];
 
@@ -438,6 +469,74 @@ function collectTaskActions(ctx: FeatureActionContext): { primaryActions: string
     }
 
     return { primaryActions, sideActions, headerActions };
+}
+
+function sanitizeTaskPromptDomId(taskId: string): string {
+    return String(taskId || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function buildTaskPromptActionsHtml(taskId: string): string {
+    const domId = sanitizeTaskPromptDomId(taskId);
+    const moreId = `taskPromptMore-${domId}`;
+    const toggleId = `taskPromptMoreToggle-${domId}`;
+
+    return `
+<div class="task-prompt-section">
+    <div class="action-label">自定义 Prompt</div>
+    <div class="task-prompt-actions">
+        <button class="action-btn action-btn--neutral task-prompt-btn" onclick="openCustomPrompt('req')">需求</button>
+        <button class="action-btn action-btn--neutral task-prompt-btn" onclick="openCustomPrompt('des')">设计</button>
+        <button class="action-btn action-btn--neutral task-prompt-btn" onclick="openCustomPrompt('dev')">开发</button>
+        <button class="action-btn action-btn--neutral task-prompt-more-toggle" id="${toggleId}" onclick="toggleTaskPromptMore('${domId}')" aria-label="更多自定义 Prompt" title="更多">更多</button>
+    </div>
+    <div class="task-prompt-more" id="${moreId}" style="display:none">
+        <button class="action-btn action-btn--neutral task-prompt-btn" onclick="openCustomPrompt('tcs')">测试用例</button>
+        <button class="action-btn action-btn--neutral task-prompt-btn" onclick="openCustomPrompt('tsk')">任务拆解</button>
+        <button class="action-btn action-btn--success task-prompt-btn" onclick="openCustomConstitution()">Constitution</button>
+        <button class="action-btn action-btn--neutral task-prompt-btn" onclick="openReviewCustomPrompt('requirements')">需求评审</button>
+        <button class="action-btn action-btn--neutral task-prompt-btn" onclick="openReviewCustomPrompt('design')">设计评审</button>
+        <button class="action-btn action-btn--neutral task-prompt-btn" onclick="openReviewCustomPrompt('testcase')">测试用例评审</button>
+        <button class="action-btn action-btn--neutral task-prompt-btn" onclick="openReviewCustomPrompt('tasks')">任务评审</button>
+    </div>
+</div>`;
+}
+
+function buildTaskSideActionsHtml(taskId: string, sideActions: string[]): string {
+    if (sideActions.length <= 0) {
+        return '';
+    }
+    const isResetAction = (action: string) => action.includes("resetFeature('");
+    const normalActions = sideActions.filter(action => !isResetAction(action));
+    const resetActions = sideActions.filter(action => isResetAction(action));
+    const orderedActions = [...normalActions, ...resetActions];
+    return `<div class="action-label">旁路操作</div><div class="action-group">${orderedActions.join('')}</div>`;
+}
+
+function buildIterationArtifactsHtml(taskId: string): string {
+    const domId = sanitizeTaskPromptDomId(taskId);
+    const artifactActions = [
+        `<button class="action-btn action-btn--neutral" onclick="openArtifact('${taskId}','requirements')">📄 需求文档</button>`,
+        `<button class="action-btn action-btn--neutral" onclick="openArtifact('${taskId}','design')">📄 设计文档</button>`,
+        `<button class="action-btn action-btn--neutral" onclick="openArtifact('${taskId}','tasks')">📋 任务文档</button>`,
+        `<button class="action-btn action-btn--neutral" onclick="openArtifact('${taskId}','testcase')">🧪 测试用例文档</button>`,
+        `<button class="action-btn action-btn--neutral" onclick="openArtifact('${taskId}','testScript')">🧪 测试脚本</button>`,
+    ];
+    const primaryActions = artifactActions.slice(0, 3).join('');
+    const moreActions = artifactActions.slice(3).join('');
+    return `<div class="iteration-artifact-section"><div class="action-label">迭代产物区</div><div class="action-group">${primaryActions}<button class="action-btn action-btn--neutral action-more-toggle" id="iterationArtifactsMoreToggle-${domId}" onclick="toggleIterationArtifactsMore('${domId}')" aria-label="更多迭代产物" title="更多">更多</button></div><div class="action-group" id="iterationArtifactsMore-${domId}" style="display:none">${moreActions}</div></div>`;
+}
+
+function buildTaskCustomButtonsHtml(taskId: string, customButtonActions: string[]): string {
+    if (customButtonActions.length <= 0) {
+        return '';
+    }
+    const domId = sanitizeTaskPromptDomId(taskId);
+    if (customButtonActions.length <= 3) {
+        return `<div class="custom-button-header"><div class="action-label">自定义按钮</div><button class="custom-button-gear" onclick="openCustomButtonConfigPanel()" title="设置自定义按钮" aria-label="设置自定义按钮">⚙</button></div><div class="action-group">${customButtonActions.join('')}</div>`;
+    }
+    const primaryActions = customButtonActions.slice(0, 3).join('');
+    const moreActions = customButtonActions.slice(3).join('');
+    return `<div class="custom-button-header"><div class="action-label">自定义按钮</div><button class="custom-button-gear" onclick="openCustomButtonConfigPanel()" title="设置自定义按钮" aria-label="设置自定义按钮">⚙</button></div><div class="action-group">${primaryActions}<button class="action-btn action-btn--neutral action-more-toggle" id="customButtonsMoreToggle-${domId}" onclick="toggleTaskCustomButtonsMore('${domId}')" aria-label="更多自定义按钮" title="更多">更多</button></div><div class="action-group" id="customButtonsMore-${domId}" style="display:none">${moreActions}</div>`;
 }
 
 /** Map internal task stage to review stage contract used by review messages (Req-1). */
@@ -474,7 +573,17 @@ function getReviewStageLabel(stage: 'requirements' | 'design' | 'testcase' | 'ta
 export function buildMainPageHtml(
     taskViews: MainFeatureViewModel[],
     dashboard: Record<string, never>,
-    config: { isWorktreeSubview: boolean; aiProvider: string; customButtons: CustomButton[]; aiQuickChatButtons?: import('./models').AiQuickChatButton[]; autoPollEnabled: boolean; autoPoll?: AutoPollStatus }
+    config: {
+        isWorktreeSubview: boolean;
+        aiProvider: string;
+        customButtons: CustomButton[];
+        aiQuickChatButtons?: import('./models').AiQuickChatButton[];
+        autoPollEnabled: boolean;
+        autoPoll?: AutoPollStatus;
+        scriptInventory?: ScriptInventory;
+        readOnly?: boolean;
+        customButtonEditable?: boolean;
+    }
 ): string {
     const customButtons = config.customButtons || [];
     // 'main' buttons render in a dedicated main-panel area belonging to no iteration;
@@ -485,6 +594,19 @@ export function buildMainPageHtml(
         b => b.label.trim().length > 0 && b.content.trim().length > 0
     );
     const isWorktreeSubview = config.isWorktreeSubview === true;
+    const inv = config.scriptInventory || { scriptsSubdir: 'scripts', master: [], repoMono: [], dirs: { master: 'script' } };
+    const readOnly = config.readOnly === true;
+    const customButtonEditable = config.customButtonEditable !== false;
+    const disabled = customButtonEditable ? '' : 'disabled';
+    const isWin = process.platform === 'win32';
+    const scriptExtHint = isWin ? '.ps1 / .bat / .cmd / .js' : '.sh / .bash / .js';
+    const scriptsSubdir = inv.scriptsSubdir;
+    const initialButtons = customButtons.map(normalizeCustomButton).map(b => ({
+        name: b.name,
+        scriptSource: b.scriptSource,
+        script: b.script,
+        args: b.args,
+    }));
     const visibleTaskViews = isWorktreeSubview
         ? taskViews.slice(0, 1)
         : taskViews;
@@ -526,6 +648,12 @@ body{background:#111;color:#eee;padding:14px;font-family:-apple-system;padding-b
 .action-stack{display:flex;flex-direction:column;gap:8px;margin-top:10px}
 .action-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .action-group{display:flex;gap:6px;flex-wrap:wrap}
+.task-prompt-section{display:flex;flex-direction:column;gap:6px}
+.task-prompt-actions{display:flex;gap:6px;flex-wrap:nowrap;align-items:stretch}
+.task-prompt-more{display:flex;gap:6px;flex-wrap:wrap}
+.task-prompt-btn{flex:1 1 0;min-width:0;padding:7px 8px;font-size:10px;white-space:nowrap}
+.task-prompt-more-toggle{flex:0 0 auto;min-width:56px;padding:7px 8px;font-size:10px;white-space:nowrap}
+.action-more-toggle{flex:0 0 auto;min-width:56px;padding:7px 8px;font-size:10px;white-space:nowrap}
 .ai-interaction-section{display:flex;flex-direction:column;gap:6px}
 .action-label{font-size:11px;color:#8f8f94;text-transform:uppercase;letter-spacing:.04em}
 .action-btn{flex:1;min-width:80px;padding:8px 10px;border-radius:8px;border:1px solid transparent;font-size:11px;font-weight:600;line-height:1;display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;transition:background-color .16s ease,border-color .16s ease,color .16s ease,transform .12s ease}
@@ -575,6 +703,32 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .stage-more-actions button{flex:1;padding:8px;border-radius:8px;border:none;font-size:11px;min-width:120px}
 .task-hidden{display:none}
 .mode-banner{margin:10px 0 12px;padding:8px 10px;background:#1d2e3b;border:1px solid #2f556f;border-radius:8px;color:#9ecff0;font-size:12px}
+.custom-btn-settings{margin:0 0 12px;padding:12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
+.custom-btn-settings-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.custom-btn-settings-title{font-weight:600;font-size:13px;color:#f2f2f4}
+.custom-btn-settings-toggle{width:auto;padding:6px 10px;border-radius:8px;border:none;background:#2f2f35;color:#ddd;font-size:12px;cursor:pointer}
+.custom-btn-settings-body{margin-top:10px}
+.custom-btn-settings-body[hidden]{display:none}
+.custom-btn-settings .hint{font-size:12px;color:#a9a9b0;line-height:1.5;margin-bottom:8px}
+.custom-btn-settings .kv{font-size:12px;color:#c8c8ce;line-height:1.6}
+.custom-btn-settings .kv b{color:#fff}
+.custom-btn-settings .inline-actions{display:flex;gap:8px;flex-wrap:wrap}
+.custom-btn-settings .inline-actions button{flex:1;min-width:160px;width:auto;margin-top:0}
+.custom-btn-settings .inline-actions--dual{flex-wrap:nowrap}
+.custom-btn-settings .inline-actions--dual .action-btn{min-width:0;flex:1;padding:8px 10px;font-size:11px}
+.iteration-artifact-section{display:flex;flex-direction:column;gap:6px}
+.custom-button-section{display:flex;flex-direction:column;gap:6px}
+.custom-button-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.custom-button-header .action-label{margin:0}
+.custom-button-gear{width:auto;min-width:auto;padding:4px 8px;font-size:12px;border-radius:8px;border:none;background:#2f2f35;color:#ddd;cursor:pointer}
+.cb-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
+.cb-row input,.cb-row select{margin:0;min-width:0;box-sizing:border-box;padding:8px;border-radius:8px;border:none;background:#2c2c2e;color:#fff}
+.cb-name{flex:1 1 120px}
+.cb-src{flex:1 1 110px}
+.cb-cmd{flex:2 1 150px}
+.cb-args{flex:1 1 110px}
+.cb-del{width:auto;flex:0 0 auto;margin:0;padding:8px 12px;background:#ff3b30;border:none;border-radius:8px;color:#fff}
+.cb-empty{margin:10px 0;padding:10px;border-radius:8px;background:#2b2308;border:1px solid #7a5d00;color:#ffd56a;font-size:12px}
 
 .autopoll-card{margin:0 0 12px;padding:10px 12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
 .autopoll-card.on{border-color:#1f6b3a;background:#13251a}
@@ -611,6 +765,27 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .delta-warn{background:#4a3412;color:#ffd37a}
 .delta-block{background:#4a1818;color:#ff9a9a}
 .delta-none{background:#2c2c2e;color:#8f8f94}
+.cr-panel{margin-top:8px;background:#1a1a1a;border:1px solid #323238;border-radius:8px;padding:6px 8px}
+.cr-panel>summary{cursor:pointer;font-size:12px;color:#cfd6dd;list-style:none}
+.cr-panel>summary::-webkit-details-marker{display:none}
+.cr-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.cr-row{background:#202026;border:1px solid #323238;border-radius:8px;padding:7px 8px}
+.cr-main{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.cr-remote{font-size:11px;font-weight:600;color:#e8e8ec}
+.cr-platform{font-size:10px;padding:1px 6px;border-radius:999px;background:#2f2f35;color:#b8b8bf;text-transform:uppercase}
+.cr-state{font-size:10px;padding:1px 6px;border-radius:999px;font-weight:600}
+.cr-state--merged{background:#163a24;color:#7ee2a8}
+.cr-state--queued{background:#17324a;color:#8fc4ff}
+.cr-state--open{background:#3d330f;color:#ffd37a}
+.cr-state--closed{background:#3a2636;color:#e0a7d3}
+.cr-state--failed{background:#4a1818;color:#ff9a9a}
+.cr-state--unsupported,.cr-state--unknown{background:#2c2c2e;color:#9f9fa6}
+.cr-meta{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap}
+.cr-link{font-size:11px;color:#8fc4ff;text-decoration:none}
+.cr-link:hover{text-decoration:underline}
+.cr-link--muted{color:#8f8f94}
+.cr-time{font-size:10px;color:#8f8f94}
+.cr-error{margin-top:4px;font-size:11px;color:#ffb3b3;line-height:1.4}
 .overview-card{margin:0 0 12px;padding:10px 12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
 .overview-title{font-weight:600;font-size:13px}
 .overview-table{width:100%;border-collapse:collapse;font-size:11px}
@@ -674,6 +849,24 @@ ${isWorktreeSubview ? '<button class="refresh" title="回到主工作区" onclic
 </div>
 
 ${isWorktreeSubview && config.autoPollEnabled && config.autoPoll ? buildAutoPollPanelHtml(config.autoPoll) : ''}
+
+<div class="custom-btn-settings" id="customBtnSettingsPanel">
+<div class="custom-btn-settings-head">
+<div class="custom-btn-settings-title">🧰 自定义按钮设置</div>
+<button class="custom-btn-settings-toggle" id="customBtnSettingsToggle" onclick="toggleCustomButtonConfig()">展开</button>
+</div>
+<div class="custom-btn-settings-body" id="customBtnSettingsBody" hidden>
+${readOnly && customButtonEditable ? '<div class="cb-empty" style="margin-bottom:8px">当前窗口为快照视图；保存将写回主窗口并同步，脚本目录为 scripts/。</div>' : ''}
+${readOnly && !customButtonEditable ? '<div class="cb-empty" style="margin-bottom:8px">当前窗口为快照视图，且未找到可写主工作区，暂时无法修改自定义按钮。</div>' : ''}
+${!readOnly ? '<div class="hint">脚本目录为 scripts/。</div>' : ''}
+<div id="cbEmpty" class="cb-empty" style="display:none">未发现可用脚本。请先创建 ${scriptExtHint} 脚本后再添加按钮。</div>
+<div id="cbList"></div>
+<div class="inline-actions inline-actions--dual">
+<button class="action-btn action-btn--neutral" onclick="addCustomButton()" ${disabled}>添加</button>
+<button class="action-btn action-btn--primary" onclick="saveCustomButtons()" ${disabled}>保存</button>
+</div>
+</div>
+</div>
 
 ${`<div class="todo-card" id="workspace-todo-panel">
 <div class="todo-head">
@@ -749,11 +942,12 @@ ${visibleTaskViews.map(view => {
     const aiQuickActions: string[] = [];
     const canRenderTaskExtraActions = isWorktreeSubview || hasWorktree;
 
+    const customButtonActions: string[] = [];
     // User-defined buttons: same visibility rule (worktree subview always,
     // main panel only when an iteration worktree exists). Resolved server-side by id.
     if (canRenderTaskExtraActions && iterationButtons.length > 0) {
         for (const b of iterationButtons) {
-            sideActions.push(`<button class="action-btn action-btn--neutral" onclick="runCustomButton('${t.id}','${b.id}')">${escapeHtml(b.name)}</button>`);
+            customButtonActions.push(`<button class="action-btn action-btn--neutral" onclick="runCustomButton('${t.id}','${b.id}')">${escapeHtml(b.name)}</button>`);
         }
     }
     // AI quick-chat buttons: render in a dedicated section.
@@ -763,11 +957,18 @@ ${visibleTaskViews.map(view => {
         }
     }
     const showAiQuickInteractionSection = aiQuickActions.length > 0;
+        const taskPromptActionsHtml = buildTaskPromptActionsHtml(t.id);
+        const sideActionsHtml = buildTaskSideActionsHtml(t.id, sideActions);
+        const customButtonsHtml = buildTaskCustomButtonsHtml(t.id, customButtonActions);
+        const iterationArtifactsHtml = buildIterationArtifactsHtml(t.id);
 
     const actionHtml = `
 <div class="action-stack">
     ${(primaryActions.length > 0 || headerActions.length > 0) ? `<div class="action-header"><div class="action-label">主流程操作</div>${headerActions.length > 0 ? `<div class="action-group">${headerActions.join('')}</div>` : ''}</div>${primaryActions.length > 0 ? `<div class="action-group">${primaryActions.join('')}${t.stage === STAGE.DEVELOPING ? `<!-- STAGE=DEVELOPING, primaryCount=${primaryActions.length} -->` : ''}</div>` : ''}` : ''}
-  ${sideActions.length > 0 ? `<div class="action-label">旁路操作</div><div class="action-group">${sideActions.join('')}</div>` : ''}
+    ${sideActionsHtml}
+    ${iterationArtifactsHtml}
+    ${customButtonsHtml ? `<div class="custom-button-section">${customButtonsHtml}</div>` : ''}
+    ${taskPromptActionsHtml}
   ${showAiQuickInteractionSection ? `<div class="ai-interaction-section"><div class="action-label">AI快捷交互区</div><div class="action-group">${aiQuickActions.join('')}</div></div>` : ''}
 </div>`;
 
@@ -798,6 +999,7 @@ placeholder="请输入需求描述"
 ${!t.quickMode ? `<div>阶段：${STAGE_LABEL[t.stage] || t.stage}</div>
 <div class="task-status">原因：${health.summary || '-'}</div>
 ${(t.stage === STAGE.DEVELOPING || t.stage === STAGE.READY_FOR_REVIEW) ? `<div class="health-line" style="margin:4px 0">${buildDeltaBadgeHtml(t.id, view.specDeltaStatus)}</div>` : ''}
+${buildChangeRequestStatusHtml(t)}
 ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.latestFailureReason}</div>` : ''}
 ${outputWarningsPreview.length > 0 ? `<div class="task-status" style="color:#ffb143">输出路径告警：${outputWarningsPreview.map(escapeHtml).join('；')}${outputWarnings.length > outputWarningsPreview.length ? `（+${outputWarnings.length - outputWarningsPreview.length}）` : ''}</div>` : ''}
 <div class="task-status">待办:${stats.todo} 执行中:${stats.doing} 完成:${stats.done}${stats.failed > 0 ? ` 失败:${stats.failed}` : ''}</div>
@@ -895,11 +1097,38 @@ const isWorktreeSubview=${isWorktreeSubview ? 'true' : 'false'};
 const DOMAIN_GOVERNANCE_TASK_ID='${escapeHtml(governanceTaskId)}';
 const TODO_STATE_KEY='workspaceTodoState.v1';
 const DOMAIN_WORKSPACE_STATE_KEY='domainWorkspaceState.v1';
+const CUSTOM_BUTTON_SETTINGS_STATE_KEY='customButtonSettingsState.v1';
 const TODO_SOURCE_PANEL=${isWorktreeSubview ? "'worktree'" : "'master'"};
 const TODO_INITIAL_TODOS=[];
 let todoState=loadTodoState();
 let domainActionLoading='';
 let domainWorkspaceState=loadDomainWorkspaceState();
+const CUSTOM_BUTTON_SETTINGS_EXPAND_TTL_MS=15000;
+
+/** Restore persisted UI state for custom-button settings drawer. */
+function loadCustomButtonSettingsState(){
+    const state=v.getState()||{};
+    const cached=state[CUSTOM_BUTTON_SETTINGS_STATE_KEY];
+    if(!cached||typeof cached!=='object'){
+        return { expanded:false };
+    }
+    const expandedAt=typeof cached.expandedAt==='number'?cached.expandedAt:0;
+    const expandedRecently=cached.expanded===true&&expandedAt>0&&(Date.now()-expandedAt)<=CUSTOM_BUTTON_SETTINGS_EXPAND_TTL_MS;
+    return {
+        expanded:expandedRecently,
+    };
+}
+
+/** Persist custom-button settings drawer UI state. */
+function saveCustomButtonSettingsState(nextState){
+    const state=v.getState()||{};
+    const expanded=nextState&&nextState.expanded===true;
+    state[CUSTOM_BUTTON_SETTINGS_STATE_KEY]={
+        expanded,
+        expandedAt:expanded?Date.now():0,
+    };
+    v.setState(state);
+}
 
 /** Build a default in-memory state for domain workspace interactions. */
 function createDefaultDomainWorkspaceState(){
@@ -1173,6 +1402,60 @@ function openReviewCustomPrompt(stage){
     v.postMessage({type:'openReviewCustomPrompt',stage});
 }
 
+/** Open stage custom prompt file from task card action section. */
+function openCustomPrompt(step){
+    v.postMessage({type:'openCustomPrompt',step});
+}
+
+/** Open constitution prompt file from task card action section. */
+function openCustomConstitution(){
+    v.postMessage({type:'openCustomConstitution'});
+}
+
+/** Toggle task-card custom prompt overflow actions by task-specific DOM id. */
+function toggleTaskPromptMore(domId){
+    const more=document.getElementById('taskPromptMore-'+domId);
+    const toggle=document.getElementById('taskPromptMoreToggle-'+domId);
+    if(!more||!toggle)return;
+    const open=more.style.display==='none';
+    more.style.display=open?'flex':'none';
+    toggle.textContent=open?'收起':'更多';
+    toggle.title=open?'收起':'更多';
+}
+
+/** Toggle task-card side-actions overflow buttons by task-specific DOM id. */
+function toggleTaskSideActionsMore(domId){
+    const more=document.getElementById('sideActionsMore-'+domId);
+    const toggle=document.getElementById('sideActionsMoreToggle-'+domId);
+    if(!more||!toggle)return;
+    const open=more.style.display==='none';
+    more.style.display=open?'flex':'none';
+    toggle.textContent=open?'收起':'更多';
+    toggle.title=open?'收起':'更多';
+}
+
+/** Toggle task-card iteration-artifacts overflow actions by task-specific DOM id. */
+function toggleIterationArtifactsMore(domId){
+    const more=document.getElementById('iterationArtifactsMore-'+domId);
+    const toggle=document.getElementById('iterationArtifactsMoreToggle-'+domId);
+    if(!more||!toggle)return;
+    const open=more.style.display==='none';
+    more.style.display=open?'flex':'none';
+    toggle.textContent=open?'收起':'更多';
+    toggle.title=open?'收起':'更多';
+}
+
+/** Toggle task-card custom-button overflow actions by task-specific DOM id. */
+function toggleTaskCustomButtonsMore(domId){
+    const more=document.getElementById('customButtonsMore-'+domId);
+    const toggle=document.getElementById('customButtonsMoreToggle-'+domId);
+    if(!more||!toggle)return;
+    const open=more.style.display==='none';
+    more.style.display=open?'flex':'none';
+    toggle.textContent=open?'收起':'更多';
+    toggle.title=open?'收起':'更多';
+}
+
 /** Render loading/disabled status for top-level domain-governance actions. */
 function setDomainActionLoading(action){
     domainActionLoading=action||'';
@@ -1308,7 +1591,7 @@ function renderTodoPanel(){
     statusSelect.style.display=todoState.editor.mode==='edit'?'block':'none';
 
     const visibleTodos=isWorktreeSubview
-        ? todoState.todos.filter((todo)=>String(todo.sourcePanel||'master')!=='worktree')
+        ? todoState.todos.filter((todo)=>String(todo.sourcePanel||'master')==='worktree')
         : todoState.todos;
 
     if(visibleTodos.length===0){
@@ -1803,6 +2086,7 @@ function pass(id){v.postMessage({type:'pass',id})}
 function refresh(){v.postMessage({type:'refresh'})}
 function pushAll(id){v.postMessage({type:'pushAndNextStage',id})}
 function commitToBaseline(id){v.postMessage({type:'commitToBaseline',id})}
+function refreshChangeRequests(id){v.postMessage({type:'refreshChangeRequests',id})}
 function startAuto(id){v.postMessage({type:'startAuto',id})}
 function pauseAuto(id){v.postMessage({type:'pauseAuto',id})}
 function nextFeature(id){v.postMessage({type:'nextFeature',id})}
@@ -1810,6 +2094,120 @@ function retry(subId,id){v.postMessage({type:'retryFeature',subId,id})}
 function syncMainCode(id){v.postMessage({type:'syncMainCode',id})}
 function openMasterWorkspace(){v.postMessage({type:'openMasterWorkspace'})}
 function runCustomButton(id,buttonId){v.postMessage({type:'runCustomButton',id,buttonId})}
+function applyCustomButtonSettingsState(){
+    var uiState=loadCustomButtonSettingsState();
+    var body=document.getElementById('customBtnSettingsBody');
+    var toggle=document.getElementById('customBtnSettingsToggle');
+    if(body&&toggle){
+        if(uiState.expanded===true){body.removeAttribute('hidden');toggle.textContent='收起';}
+        else{body.setAttribute('hidden','hidden');toggle.textContent='展开';}
+    }
+}
+function toggleCustomButtonConfig(){
+        var body=document.getElementById('customBtnSettingsBody');
+        var toggle=document.getElementById('customBtnSettingsToggle');
+        if(!body||!toggle){return;}
+        var isHidden=body.hasAttribute('hidden');
+    if(isHidden){body.removeAttribute('hidden');toggle.textContent='收起';saveCustomButtonSettingsState({expanded:true});}
+    else{body.setAttribute('hidden','hidden');toggle.textContent='展开';saveCustomButtonSettingsState({expanded:false});}
+}
+
+function openCustomButtonConfigPanel(){
+    var panel=document.getElementById('customBtnSettingsPanel');
+    var body=document.getElementById('customBtnSettingsBody');
+    var toggle=document.getElementById('customBtnSettingsToggle');
+    if(body&&toggle&&body.hasAttribute('hidden')){
+        body.removeAttribute('hidden');
+        toggle.textContent='收起';
+        saveCustomButtonSettingsState({expanded:true});
+    }
+    if(panel&&typeof panel.scrollIntoView==='function'){
+        panel.scrollIntoView({behavior:'smooth',block:'start'});
+    }
+}
+const INV=${JSON.stringify(inv).replace(/</g, '\u003c')};
+const INIT_BTNS=${JSON.stringify(initialButtons).replace(/</g, '\u003c')};
+const CB_READONLY=${customButtonEditable ? 'false' : 'true'};
+function cbEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function cbListFor(){return INV.repoMono||[];}
+function cbSlot(script){return script;}
+function cbAllScriptCount(){return (INV.repoMono||[]).length;}
+function cbRowHtml(b){
+    b=b||{};
+    var dis=CB_READONLY?' disabled':'';
+    return '<div class="cb-row">'+
+        '<input class="cb-name" placeholder="按钮名称（如 部署）" value="'+cbEsc(b.name||'')+'"'+dis+'>'+
+        '<select class="cb-cmd" title="脚本" data-val="'+cbEsc(b.script||'')+'" onchange="cbOnScriptChange(this)"'+dis+'></select>'+
+        '<input class="cb-args" placeholder="参数(可选)" value="'+cbEsc(b.args||'')+'"'+dis+'>'+
+        '<button class="cb-del" onclick="removeCustomButton(this)"'+dis+'>✕</button>'+
+        '</div>';
+}
+function cbOnScriptChange(el){el.setAttribute('data-val',el.value);cbRefreshScripts();}
+function cbRefreshScripts(){
+    var rows=[].slice.call(document.querySelectorAll('#cbList .cb-row'));
+    var used={};
+    rows.forEach(function(r){
+        var cur=r.querySelector('.cb-cmd').getAttribute('data-val')||'';
+        if(cur){var k=cbSlot(cur);used[k]=(used[k]||0)+1;}
+    });
+    rows.forEach(function(r){
+        var cmd=r.querySelector('.cb-cmd');
+        var cur=cmd.getAttribute('data-val')||'';
+        var avail=cbListFor();
+        var opts='<option value="">（选择脚本）</option>';
+        var matched=false;
+        avail.forEach(function(f){
+            var isCur=(f===cur);
+            if(!isCur){var k=cbSlot(f);if(used[k])return;}
+            if(isCur)matched=true;
+            opts+='<option value="'+cbEsc(f)+'"'+(isCur?' selected':'')+'>'+cbEsc(f)+'</option>';
+        });
+        if(cur&&!matched){opts+='<option value="'+cbEsc(cur)+'" selected>'+cbEsc(cur)+'（缺失）</option>';}
+        cmd.innerHTML=opts;
+        cmd.value=cur;
+        cmd.setAttribute('data-val',cmd.value);
+    });
+}
+function cbUpdateEmpty(){var e=document.getElementById('cbEmpty');if(e)e.style.display=cbAllScriptCount()===0?'block':'none';}
+function cbRenderAll(){
+    var list=document.getElementById('cbList');
+    if(!list)return;
+    list.innerHTML='';
+    (INIT_BTNS||[]).forEach(function(b){list.insertAdjacentHTML('beforeend',cbRowHtml(b));});
+    cbRefreshScripts();
+    cbUpdateEmpty();
+}
+function addCustomButton(){
+    if(CB_READONLY)return;
+    if(cbAllScriptCount()===0){var em=document.getElementById('cbEmpty');if(em){em.style.display='block';}return;}
+    document.getElementById('cbList').insertAdjacentHTML('beforeend',cbRowHtml({}));
+    cbRefreshScripts();
+    var rows=[].slice.call(document.querySelectorAll('#cbList .cb-row'));
+    if(rows.length>0){
+        var newRow=rows[rows.length-1];
+        var newCmd=newRow.querySelector('.cb-cmd');
+        if(newCmd&&!newCmd.value){
+            var firstOpt=[].slice.call(newCmd.options).find(function(o){return o.value;});
+            if(firstOpt){newCmd.setAttribute('data-val',firstOpt.value);cbRefreshScripts();}
+        }
+    }
+}
+function removeCustomButton(btn){if(CB_READONLY)return;var r=btn.closest('.cb-row');if(r)r.remove();cbRefreshScripts();}
+function saveCustomButtons(){
+    if(CB_READONLY)return;
+    var rows=document.querySelectorAll('#cbList .cb-row');
+    var buttons=[];
+    rows.forEach(function(r){
+        var name=r.querySelector('.cb-name').value.trim();
+        var script=r.querySelector('.cb-cmd').value.trim();
+        var args=r.querySelector('.cb-args').value.trim();
+        if(name&&script){buttons.push({name:name,scriptSource:'worktree',script:script,args:args});}
+    });
+    saveCustomButtonSettingsState({expanded:false});
+    v.postMessage({type:'saveCustomButtons',buttons:buttons});
+}
+cbRenderAll();
+applyCustomButtonSettingsState();
 /** Send an AI quick-chat button click to the extension for dispatch. */
 function ensureAiQuickChatNoticeBox(){
     var box=document.getElementById('aiQuickChatNotice');
@@ -1970,32 +2368,29 @@ export function buildSettingsPageHtml(
     config: Config,
     configMeta: HarnessConfigMeta,
     scriptInventory: ScriptInventory,
+    remoteApiTokenStatuses: RemoteApiTokenStatusView[] = [],
 ): string {
     const readOnly = configMeta.readOnly === true;
     const disabled = readOnly ? 'disabled' : '';
     const inv = scriptInventory;
-    const isWin = process.platform === 'win32';
-    const osLabel = isWin ? 'Windows' : (process.platform === 'darwin' ? 'macOS' : 'Linux');
-    const scriptExtHint = isWin ? '.ps1 / .bat / .cmd / .js' : '.sh / .bash / .js';
     const scriptsSubdir = inv.scriptsSubdir;
     const apScriptSelected = config.autoPollScript || DEFAULT_POLL_SCRIPT;
     const apScriptChoices = inv.master.includes(apScriptSelected) ? inv.master : [...inv.master, apScriptSelected];
     const apScriptOptions = apScriptChoices.length
         ? apScriptChoices.map(f => `<option value="${escapeHtml(f)}"${f === apScriptSelected ? ' selected' : ''}>${escapeHtml(f)}${inv.master.includes(f) ? '' : '（缺失）'}</option>`).join('')
         : '<option value="">（暂无脚本，请先点「创建/打开脚本」）</option>';
-    const initialButtons = (config.customButtons || []).map(normalizeCustomButton).map(b => ({
-        name: b.name,
-        scriptSource: b.scriptSource,
-        script: b.script,
-        args: b.args,
-        placement: b.placement,
-    }));
     const initialHooks = (config.lifecycleHooks?.worktreeOpen || []).map(h => ({
         script: h.script || '',
         scriptSource: h.scriptSource || 'worktree',
         args: h.args || '',
     }));
     const monorepoGitValue = config.monorepoGit || '';
+    const tokenRows = remoteApiTokenStatuses.map((item) => {
+        const statusText = item.configured ? '已配置' : '未配置';
+        const statusClass = item.configured ? 'token-status token-status--ok' : 'token-status token-status--warn';
+        const platformLabel = item.platform === 'gitlab' ? 'GitLab' : item.platform === 'github' ? 'GitHub' : 'Generic';
+        return `<div class="token-row"><div class="token-meta"><div><b>${escapeHtml(item.remoteName)}</b> · ${platformLabel}</div><div class="${statusClass}">${statusText}</div></div><div class="token-actions"><button onclick="setRemoteApiToken('${escapeHtml(item.endpointKey)}')">设置 Token</button><button onclick="testRemoteApiToken('${escapeHtml(item.endpointKey)}')">测试连接</button><button onclick="clearRemoteApiToken('${escapeHtml(item.endpointKey)}')">清除</button></div></div>`;
+    }).join('');
     const originLabel = configMeta.origin === 'worktreeSnapshot'
         ? '子 worktree 快照配置'
         : configMeta.origin === 'master'
@@ -2031,10 +2426,13 @@ button{width:100%;padding:10px;border-radius:8px;border:none;color:white;margin-
 .kv b{color:#fff}
 .inline-actions{display:flex;gap:8px;flex-wrap:wrap}
 .inline-actions button{flex:1;min-width:160px}
-.custom-prompt-actions{display:flex;gap:6px;flex-wrap:nowrap;align-items:stretch}
-.custom-prompt-more{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
-.custom-prompt-btn{flex:1 1 0;min-width:0;height:28px;padding:0 8px;border-radius:8px;border:none;font-size:10px;line-height:1;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box}
-.custom-prompt-more-toggle{flex:0 0 28px;width:28px;height:28px;padding:0;border-radius:999px;border:none;color:#fff;font-size:12px;line-height:1;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box}
+.token-row{border:1px solid #34343a;border-radius:8px;padding:10px;background:#232326;margin-bottom:8px}
+.token-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;color:#d8d8dd;font-size:12px}
+.token-actions{display:flex;gap:8px;flex-wrap:wrap}
+.token-actions button{flex:1;min-width:120px;margin-top:0;padding:8px}
+.token-status{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
+.token-status--ok{background:#163a24;color:#7ee2a8}
+.token-status--warn{background:#4a3412;color:#ffd37a}
 .fold{margin-top:10px;background:#1a1a1e;border:1px solid #323238;border-radius:8px;padding:8px}
 .fold>summary{cursor:pointer;color:#d3d3d8;font-size:13px;list-style:none}
 .fold>summary::-webkit-details-marker{display:none}
@@ -2095,6 +2493,13 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 </div>
 
 <div class="section">
+<div class="section-title">PR/MR API Token</div>
+<div class="hint">用于无 CLI 模式下自动创建/刷新 PR/MR。Token 安全存储在 VS Code 凭据库，不写入仓库文件。</div>
+${tokenRows || '<div class="hint">未检测到可用远端，请先完成 Git 配置。</div>'}
+<div class="hint">获取方式：GitLab 在 User Settings → Access Tokens；GitHub 在 Settings → Developer settings → Personal access tokens。</div>
+</div>
+
+<div class="section">
 
 <details class="fold" open>
 <summary>⚙ 高级策略配置</summary>
@@ -2146,26 +2551,6 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 </div>
 <button onclick="saveAdvancedConfig()" style="background:#007aff" ${disabled}>💾 保存高级策略</button>
 </details>
-</div>
-
-<div class="section">
-<div class="section-title">自定义按钮</div>
-<div class="hint">为每个按钮选择<b>脚本来源</b>、<b>显示位置</b>和一个<b>脚本</b>；插件会按当前操作系统（${osLabel}，脚本类型：${scriptExtHint}）自动拼接执行命令。已被其它按钮占用的脚本不会重复出现在下拉框中。</div>
-<div class="hint">脚本来源：<b>主目录(不提交)</b> = <code>script/</code>（随主工作区，不进 git）；<b>迭代脚本</b> = 当前迭代 worktree 中已提交的 <code>${escapeHtml(scriptsSubdir)}/</code>（点哪个任务就用哪个 worktree 的脚本；主面板按钮会回退到主克隆的同名目录）。</div>
-<div class="hint">显示位置：<b>子面板（迭代）</b>显示在每个迭代任务卡片上，终端 cd 到该任务 worktree 迭代目录再运行脚本；<b>主面板</b>显示在主面板顶部独立区域，终端 cd 到主工作区根目录再运行脚本。脚本内部可自行 cd 到具体子目录（如 frontend/backend）。</div>
-<div class="kv">主目录脚本：<b>${escapeHtml(inv.dirs.master)}</b></div>
-${inv.dirs.repoMono ? `<div class="kv">迭代脚本(候选，来自主克隆)：<b>${escapeHtml(inv.dirs.repoMono)}</b></div>` : ''}
-<div class="inline-actions" style="margin-top:8px">
-<button onclick="openScriptDir()" style="background:#6d6d72" ${disabled}>📂 打开主目录 script/</button>
-<button onclick="openHarnessLog()" style="background:#6d6d72" ${disabled}>📋 打开日志</button>
-<button onclick="p('settings')" style="background:#8e8e93">🔄 刷新脚本列表</button>
-</div>
-<div id="cbEmpty" class="cb-empty" style="display:none">未发现可用脚本。请在上面任一脚本目录中创建 ${scriptExtHint} 脚本，然后点「🔄 刷新脚本列表」。</div>
-<div id="cbList"></div>
-<div class="inline-actions">
-<button onclick="addCustomButton()" style="background:#3a3a3f" ${disabled}>➕ 添加按钮</button>
-<button onclick="saveCustomButtons()" style="background:#007aff" ${disabled}>💾 保存自定义按钮</button>
-</div>
 </div>
 
 <div class="section">
@@ -2230,36 +2615,13 @@ ${readOnly ? '<div class="meta-box readonly" style="margin-bottom:8px">当前窗
 </div>
 </div>
 
-<div class="section">
-<div class="section-title">自定义 Prompt</div>
-<div class="hint">点击即可打开对应的 custom prompt 文档。</div>
-<div class="custom-prompt-actions">
-<button class="custom-prompt-btn" onclick="openCustomPrompt('req')" style="background:#007aff" ${disabled}>需求</button>
-<button class="custom-prompt-btn" onclick="openCustomPrompt('des')" style="background:#007aff" ${disabled}>设计</button>
-<button class="custom-prompt-btn" onclick="openCustomPrompt('dev')" style="background:#007aff" ${disabled}>开发</button>
-<button class="custom-prompt-more-toggle" id="customPromptMoreToggle" onclick="toggleCustomPromptMore()" style="background:#444" aria-label="更多 custom prompt" title="更多" ${disabled}>⋯</button>
-</div>
-<div class="custom-prompt-more" id="customPromptMore" style="display:none">
-<button class="custom-prompt-btn" onclick="openCustomPrompt('tcs')" style="background:#007aff" ${disabled}>测试用例</button>
-<button class="custom-prompt-btn" onclick="openCustomPrompt('tsk')" style="background:#007aff" ${disabled}>任务拆解</button>
-<button class="custom-prompt-btn" onclick="openCustomConstitution()" style="background:#0f8f4f" ${disabled}>Constitution</button>
-</div>
-</div>
-
 <script>
 const v=acquireVsCodeApi();
 function p(x){v.postMessage({type:'page',page:x})}
-function openCustomPrompt(step){v.postMessage({type:'openCustomPrompt',step})}
-function openCustomConstitution(){v.postMessage({type:'openCustomConstitution'})}
-function toggleCustomPromptMore(){
-    const more=document.getElementById('customPromptMore');
-    const toggle=document.getElementById('customPromptMoreToggle');
-    if(!more||!toggle)return;
-    const open=more.style.display==='none';
-    more.style.display=open?'flex':'none';
-    toggle.textContent=open?'收起':'更多';
-}
 function saveGit(){v.postMessage({type:'saveGit',bb:document.getElementById('bb').value,mg:document.getElementById('mg').value,gmg:document.getElementById('gmg').value})}
+function setRemoteApiToken(endpointKey){v.postMessage({type:'setRemoteApiToken',endpointKey:endpointKey})}
+function testRemoteApiToken(endpointKey){v.postMessage({type:'testRemoteApiToken',endpointKey:endpointKey})}
+function clearRemoteApiToken(endpointKey){v.postMessage({type:'clearRemoteApiToken',endpointKey:endpointKey})}
 function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',dcm:document.getElementById('dcm').value,ins:document.getElementById('ins').checked,wsd:document.getElementById('wsd').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked,acg:document.getElementById('acg').checked})}
 function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
 function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
@@ -2270,7 +2632,6 @@ function toggleAutoPollDetails(){const d=document.getElementById('ap_details');i
 function toggleAutoPollIdleDetails(){const d=document.getElementById('ap_idle_details');if(d)d.style.display=document.getElementById('ap_idle_only').checked?'block':'none'}
 function createPollScriptTemplate(){v.postMessage({type:'createPollScriptTemplate'})}
 const INV=${JSON.stringify(inv).replace(/</g, '\\u003c')};
-const INIT_BTNS=${JSON.stringify(initialButtons).replace(/</g, '\\u003c')};
 const INIT_HOOKS=${JSON.stringify(initialHooks).replace(/</g, '\\u003c')};
 const INIT_AQC_BTNS=${JSON.stringify((config.aiQuickChatButtons || []).map(b => ({ label: b.label, content: b.content }))).replace(/</g, '\\u003c')};
 const CB_READONLY=${readOnly ? 'true' : 'false'};
@@ -2279,100 +2640,8 @@ function cbListFor(source){
   if(source==='master')return INV.master||[];
   return INV.repoMono||[];
 }
-function cbSlot(source,script){return source+'::'+script;}
-function cbAllScriptCount(){return (INV.master||[]).length+(INV.repoMono||[]).length;}
-function cbSourceOptions(selected){
-  var arr=[['master','主目录(不提交)'],['worktree','迭代脚本(worktree)']];
-  var opts='';
-  arr.forEach(function(p){opts+='<option value="'+p[0]+'"'+(p[0]===selected?' selected':'')+'>'+p[1]+'</option>';});
-  return opts;
-}
 function hookSourceOptions(selected){
     return '<option value="worktree"'+(selected==='worktree'?' selected':'')+'>迭代脚本(scripts)</option>';
-}
-function cbRowHtml(b){
-  b=b||{};
-  var dis=CB_READONLY?' disabled':'';
-  return '<div class="cb-row">'+
-    '<input class="cb-name" placeholder="按钮名称（如 部署）" value="'+cbEsc(b.name||'')+'"'+dis+'>'+
-    '<select class="cb-src" title="脚本来源" onchange="cbOnSourceChange(this)"'+dis+'>'+cbSourceOptions(b.scriptSource||'master')+'</select>'+
-    '<select class="cb-cmd" title="脚本" data-val="'+cbEsc(b.script||'')+'" onchange="cbOnScriptChange(this)"'+dis+'></select>'+
-    '<input class="cb-args" placeholder="参数(可选)" value="'+cbEsc(b.args||'')+'"'+dis+'>'+
-    '<button class="cb-del" onclick="removeCustomButton(this)"'+dis+'>✕</button>'+
-    '</div>';
-}
-function cbOnScriptChange(el){el.setAttribute('data-val',el.value);cbRefreshScripts();}
-function cbOnSourceChange(el){var cmd=el.closest('.cb-row').querySelector('.cb-cmd');cmd.setAttribute('data-val','');cbRefreshScripts();}
-// Rebuild every row's script dropdown from the inventory for its source, hiding any
-// script already bound by ANOTHER row (same source), and preserving a now-missing
-// selection with a （缺失) marker so buttons aren't silently re-pointed.
-function cbRefreshScripts(){
-  var rows=[].slice.call(document.querySelectorAll('#cbList .cb-row'));
-  var used={};
-  rows.forEach(function(r){
-    var src=r.querySelector('.cb-src').value;
-    var cur=r.querySelector('.cb-cmd').getAttribute('data-val')||'';
-    if(cur){var k=cbSlot(src,cur);used[k]=(used[k]||0)+1;}
-  });
-  rows.forEach(function(r){
-    var src=r.querySelector('.cb-src').value;
-    var cmd=r.querySelector('.cb-cmd');
-    var cur=cmd.getAttribute('data-val')||'';
-    var avail=cbListFor(src);
-    var opts='<option value="">（选择脚本）</option>';
-    var matched=false;
-    avail.forEach(function(f){
-      var isCur=(f===cur);
-      if(!isCur){var k=cbSlot(src,f);if(used[k])return;}
-      if(isCur)matched=true;
-      opts+='<option value="'+cbEsc(f)+'"'+(isCur?' selected':'')+'>'+cbEsc(f)+'</option>';
-    });
-    if(cur&&!matched){opts+='<option value="'+cbEsc(cur)+'" selected>'+cbEsc(cur)+'（缺失）</option>';}
-    cmd.innerHTML=opts;
-    cmd.value=cur;
-    cmd.setAttribute('data-val',cmd.value);
-  });
-}
-function cbUpdateEmpty(){var e=document.getElementById('cbEmpty');if(e)e.style.display=cbAllScriptCount()===0?'block':'none';}
-function cbRenderAll(){
-  var list=document.getElementById('cbList');
-  if(!list)return;
-  list.innerHTML='';
-  (INIT_BTNS||[]).forEach(function(b){list.insertAdjacentHTML('beforeend',cbRowHtml(b));});
-  cbRefreshScripts();
-  cbUpdateEmpty();
-}
-function addCustomButton(){
-  if(cbAllScriptCount()===0){var em=document.getElementById('cbEmpty');if(em){em.style.display='block';}return;}
-  document.getElementById('cbList').insertAdjacentHTML('beforeend',cbRowHtml({}));
-  cbRefreshScripts();
-  // Auto-select first available script for the newly added row so the user doesn't
-  // have to manually open the dropdown and click — otherwise saving without clicking
-  // would record 0 buttons (empty script value is filtered out on save).
-  var rows=[].slice.call(document.querySelectorAll('#cbList .cb-row'));
-  if(rows.length>0){
-    var newRow=rows[rows.length-1];
-    var newCmd=newRow.querySelector('.cb-cmd');
-    if(newCmd&&!newCmd.value){
-      var firstOpt=[].slice.call(newCmd.options).find(function(o){return o.value;});
-      if(firstOpt){newCmd.setAttribute('data-val',firstOpt.value);cbRefreshScripts();}
-    }
-  }
-}
-function removeCustomButton(btn){var r=btn.closest('.cb-row');if(r)r.remove();cbRefreshScripts();}
-function openScriptDir(){v.postMessage({type:'openScriptDir'});}
-function openHarnessLog(){v.postMessage({type:'openHarnessLog'});}
-function saveCustomButtons(){
-  var rows=document.querySelectorAll('#cbList .cb-row');
-  var buttons=[];
-  rows.forEach(function(r){
-    var name=r.querySelector('.cb-name').value.trim();
-    var scriptSource=r.querySelector('.cb-src').value;
-    var script=r.querySelector('.cb-cmd').value.trim();
-    var args=r.querySelector('.cb-args').value.trim();
-    if(name&&script){buttons.push({name:name,scriptSource:scriptSource,script:script,args:args});}
-  });
-  v.postMessage({type:'saveCustomButtons',buttons:buttons});
 }
 // Lifecycle Hooks (worktree-open)
 function hookOnScriptChange(el){el.setAttribute('data-val',el.value);}
@@ -2545,7 +2814,6 @@ function saveAiQuickChatButtons(){
     try{v.postMessage({type:'saveAiQuickChatButtons',taskId:'',buttons:buttons});}
     catch(error){setAiQuickChatSaveError('AI 快捷对话按钮保存请求失败：'+String(error&&error.message?error.message:error||'unknown'));}
 }
-cbRenderAll();
 renderLifecycleHooks();
 renderAiQuickChatButtons();
 </script>

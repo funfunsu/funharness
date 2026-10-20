@@ -5,6 +5,7 @@ import { CodeGraphInstallProbe } from './codeGraphInstallProbe';
 import { CodeGraphBuildRunner } from './codeGraphBuildRunner';
 import { CodeGraphRunLedger } from './codeGraphRunLedger';
 import { CodeGraphEvidenceSnapshotWriter } from './codeGraphEvidenceSnapshotWriter';
+import { CodeGraphAgentsGuideUpdater } from './codeGraphAgentsGuideUpdater';
 
 export type CodeGraphInitEntryPoint = 'openFolderLocationByFeatureId' | 'runCustomButtonByFeatureId' | 'syncCodeGraphByFeatureId';
 
@@ -37,6 +38,7 @@ export class CodeGraphInitOrchestrator {
         private readonly buildRunner: CodeGraphBuildRunner = new CodeGraphBuildRunner(),
         private readonly runLedger: CodeGraphRunLedger = new CodeGraphRunLedger(),
         private readonly evidenceSnapshotWriter: CodeGraphEvidenceSnapshotWriter = new CodeGraphEvidenceSnapshotWriter(),
+        private readonly agentsGuideUpdater: CodeGraphAgentsGuideUpdater = new CodeGraphAgentsGuideUpdater(),
     ) {}
 
     /**
@@ -73,11 +75,12 @@ export class CodeGraphInitOrchestrator {
             const codeGraphDir = path.join(input.worktreePath, '.codegraph');
             if (fs.existsSync(codeGraphDir)) {
                 const snapshot = this.evidenceSnapshotWriter.writeSnapshot(input.worktreePath);
+                const guide = this.agentsGuideUpdater.ensureUsageGuide(input.worktreePath);
                 return this.persistAndReturn(input, runId, worktreeId, {
                     status: 'deduped',
                     summary: snapshot.persisted
-                        ? 'codegraph already initialized; skip rebuild; evidence snapshot refreshed'
-                        : `codegraph already initialized; skip rebuild; ${snapshot.summary}`,
+                        ? `codegraph already initialized; skip rebuild; evidence snapshot refreshed; ${guide.summary}`
+                        : `codegraph already initialized; skip rebuild; ${snapshot.summary}; ${guide.summary}`,
                     startedAt,
                     endedAt: new Date().toISOString(),
                 }, 'already initialized', snapshot.persisted ? undefined : snapshot.summary);
@@ -113,11 +116,12 @@ export class CodeGraphInitOrchestrator {
             const entry = input.entryPoint;
             const installSummary = cli.installedNow ? 'installed-now' : 'already-available';
             const snapshot = this.evidenceSnapshotWriter.writeSnapshot(input.worktreePath);
+            const guide = this.agentsGuideUpdater.ensureUsageGuide(input.worktreePath);
             return this.persistAndReturn(input, runId, worktreeId, {
                 status: 'success',
                 summary: snapshot.persisted
-                    ? `init completed (${entry}, ${installSummary}); evidence snapshot refreshed`
-                    : `init completed (${entry}, ${installSummary}); ${snapshot.summary}`,
+                    ? `init completed (${entry}, ${installSummary}); evidence snapshot refreshed; ${guide.summary}`
+                    : `init completed (${entry}, ${installSummary}); ${snapshot.summary}; ${guide.summary}`,
                 startedAt,
                 endedAt: build.endedAt,
             }, undefined, snapshot.persisted ? undefined : snapshot.summary);

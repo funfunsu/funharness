@@ -74,6 +74,8 @@ export class HarnessActionsService {
     private domainRegistryService?: DomainRegistryService;
     /** Prevent duplicate prompt dispatch for the same (task, step) while one is in-flight. */
     private readonly inFlightStageDispatchKeys: Set<string> = new Set();
+    /** Prevent duplicate git/push/merge actions for the same task while one is in-flight. */
+    private readonly inFlightGitActionKeys: Set<string> = new Set();
     private readonly artifactRepairTimers: Map<string, NodeJS.Timeout> = new Map();
     private readonly codeGraphEvidenceSnapshotWriter = new CodeGraphEvidenceSnapshotWriter();
     private static readonly DOMAIN_BLOCK_AUTO_FIX = '自动补';
@@ -606,37 +608,87 @@ export class HarnessActionsService {
         this.deps.saveAndRender();
     }
 
+    private async runExclusiveGitAction(task: Feature, action: string, runner: () => Promise<void>): Promise<void> {
+        const key = `${task.id}:${action}`;
+        if (this.inFlightGitActionKeys.has(key)) {
+            vscode.window.showWarningMessage(`已忽略重复触发：${task.name} 的 ${action} 正在执行中`);
+            return;
+        }
+        this.inFlightGitActionKeys.add(key);
+        try {
+            await runner();
+        } finally {
+            this.inFlightGitActionKeys.delete(key);
+        }
+    }
+
     async pushAllByFeatureId(featureId: string): Promise<void> {
         const task = this.getFeatureById(featureId);
         if (!task) return;
-        const iterDir = this.deps.getIterationDir(task);
-        vscode.window.showInformationMessage('正在推送代码...');
-        const result = await this.deps.gitService.pushAll(task, iterDir);
-        if (!result.success) {
-            vscode.window.showErrorMessage(result.message, { modal: true });
-        } else {
-            vscode.window.showInformationMessage(result.message);
-        }
+        await this.runExclusiveGitAction(task, 'pushAll', async () => {
+            const iterDir = this.deps.getIterationDir(task);
+            vscode.window.showInformationMessage('正在推送代码...');
+            const result = await this.deps.gitService.pushAll(task, iterDir);
+            if (!result.success) {
+                vscode.window.showErrorMessage(result.message, { modal: true });
+            } else {
+                vscode.window.showInformationMessage(result.message);
+            }
+        });
     }
 
     async commitToBaselineByFeatureId(featureId: string): Promise<void> {
         const task = this.getFeatureById(featureId);
         if (!task) return;
-        const passed = await this.runDevDriftGateWithRepair(task);
-        if (!passed) {
-            return;
-        }
-        const iterDir = this.deps.getIterationDir(task);
-        vscode.window.showInformationMessage('正在提交并合并到基线...');
-        const result = await this.deps.gitService.mergeIterationToTarget(task, iterDir, { cleanup: false, operation: 'save' });
-        if (!result.success) {
-            const lines = (result.message || '未知错误').split('\n');
-            const brief = lines[0];
-            const extra = lines.slice(1).join('\n');
-            vscode.window.showErrorMessage(brief, { detail: extra || undefined, modal: true });
-            return;
-        }
-        vscode.window.showInformationMessage(result.message);
+        await this.runExclusiveGitAction(task, 'commitToBaseline', async () => {
+            const passed = await this.runDevDriftGateWithRepair(task);
+            if (!passed) {
+                return;
+            }
+            const iterDir = this.deps.getIterationDir(task);
+            vscode.window.showInformationMessage('正在提交代码并创建/更新各远程 PR/MR...');
+            const result = await this.deps.gitService.submitBranchForChangeRequests(task, iterDir);
+            task.changeRequests = result.entries;
+            this.deps.saveAndRender();
+            if (!result.success) {
+                const lines = (result.message || '未知错误').split('\n');
+                const brief = lines[0];
+                const extra = lines.slice(1).join('\n');
+                vscode.window.showErrorMessage(brief, { detail: extra || undefined, modal: true });
+                return;
+            }
+            vscode.window.showInformationMessage(result.message);
+        });
+    }
+
+    async refreshChangeRequestsByFeatureId(featureId: string): Promise<void> {
+        const task = this.getFeatureById(featureId);
+        if (!task) return;
+
+        await this.runExclusiveGitAction(task, 'refreshChangeRequests', async () => {
+            const hasEntries = task.changeRequests && Object.keys(task.changeRequests).length > 0;
+            if (!hasEntries) {
+                vscode.window.showInformationMessage('当前任务尚未创建任何远程 PR/MR，请先执行「提交并创建/更新 PR/MR」。');
+                return;
+            }
+
+            const iterDir = this.deps.getIterationDir(task);
+            vscode.window.showInformationMessage('正在刷新各远程 PR/MR 状态...');
+            const refreshed = await this.deps.gitService.refreshChangeRequestStatuses(task.changeRequests, iterDir);
+            task.changeRequests = refreshed.entries;
+            this.deps.saveAndRender();
+
+            if (refreshed.allRequiredMerged) {
+                vscode.window.showInformationMessage('✅ 所有必需远程端点均已合并。');
+                return;
+            }
+
+            const pending = Object.values(refreshed.entries)
+                .filter(entry => entry.state !== 'merged')
+                .map(entry => `${entry.remoteName}: ${entry.state}${entry.lastError ? `（${entry.lastError}）` : ''}`)
+                .join('；');
+            vscode.window.showWarningMessage(`仍有未合并端点：${pending || '请查看任务卡状态面板'}`);
+        });
     }
 
     async runAgentByFeatureId(featureId: string, step: HarnessStep, repairFeedback?: string): Promise<void> {
@@ -1467,74 +1519,79 @@ export class HarnessActionsService {
     async passByFeatureId(featureId: string): Promise<void> {
         const task = this.getFeatureById(featureId);
         if (!task) return;
+        await this.runExclusiveGitAction(task, 'pass', async () => {
+            const passed = await this.runDevDriftGateWithRepair(task);
+            if (!passed) {
+                return;
+            }
 
-        const passed = await this.runDevDriftGateWithRepair(task);
-        if (!passed) {
-            return;
-        }
+            const iterDir = this.deps.getIterationDir(task);
+            const finalGate = await this.runFinalExecutionGate(task, iterDir);
+            if (!finalGate.passed) {
+                appendHarnessLog(iterDir, 'execution-gate', `[${task.id}] ❌ final-gate failed: ${finalGate.summary}`);
+                vscode.window.showErrorMessage(
+                    `执行门禁未通过：${finalGate.summary}`,
+                    {
+                        modal: true,
+                        detail: finalGate.outputTail || '请先启动依赖服务并重试。',
+                    },
+                );
+                return;
+            }
+            if (!finalGate.skipped) {
+                appendHarnessLog(iterDir, 'execution-gate', `[${task.id}] ✅ final-gate passed: ${finalGate.summary}`);
+                vscode.window.showInformationMessage(finalGate.summary);
+            }
 
-        const iterDir = this.deps.getIterationDir(task);
-        const finalGate = await this.runFinalExecutionGate(task, iterDir);
-        if (!finalGate.passed) {
-            appendHarnessLog(iterDir, 'execution-gate', `[${task.id}] ❌ final-gate failed: ${finalGate.summary}`);
-            vscode.window.showErrorMessage(
-                `执行门禁未通过：${finalGate.summary}`,
-                {
-                    modal: true,
-                    detail: finalGate.outputTail || '请先启动依赖服务并重试。',
-                },
-            );
-            return;
-        }
-        if (!finalGate.skipped) {
-            appendHarnessLog(iterDir, 'execution-gate', `[${task.id}] ✅ final-gate passed: ${finalGate.summary}`);
-            vscode.window.showInformationMessage(finalGate.summary);
-        }
+            const refreshed = await this.deps.gitService.refreshChangeRequestStatuses(task.changeRequests, iterDir);
+            task.changeRequests = refreshed.entries;
+            this.deps.saveAndRender();
 
-        const mergeResult = await this.deps.gitService.mergeIterationToTarget(task, iterDir, { operation: 'complete' });
-        if (!mergeResult.success) {
-            const detail = mergeResult.message || '未知错误';
-            const lines = detail.split('\n');
-            const brief = lines[0];
-            const extra = lines.slice(1).join('\n');
-            vscode.window.showErrorMessage(
-                `合并失败（${task.name}）：${brief}`,
-                { detail: extra || undefined, modal: true }
-            );
-            return;
-        }
+            if (!refreshed.allRequiredMerged) {
+                const unresolved = Object.values(refreshed.entries)
+                    .filter(entry => entry.state !== 'merged')
+                    .map(entry => `${entry.remoteName}: ${entry.state}${entry.lastError ? `（${entry.lastError}）` : ''}`)
+                    .join('\n');
+                vscode.window.showWarningMessage(
+                    `尚未全部合并到远程主干，请稍后重试通过：\n${unresolved || '存在未完成端点'}`,
+                    { modal: true },
+                );
+                return;
+            }
 
-        task.stage = STAGE.DONE;
-        this.deps.onPass(task);
-        this.deps.saveAndRender();
-        if (mergeResult.message) {
-            vscode.window.showInformationMessage(mergeResult.message);
-        }
+            const cleanupResult = await this.deps.gitService.cleanupIterationAfterRemoteMerge(task, iterDir);
+            task.stage = STAGE.DONE;
+            this.deps.onPass(task);
+            this.deps.saveAndRender();
+            if (cleanupResult.message) {
+                vscode.window.showInformationMessage(cleanupResult.message);
+            }
 
-        // Only purge the iteration directory when git-level cleanup (worktrees + branches) fully
-        // succeeded. If something failed there, leave the iteration dir on disk so the user can
-        // diagnose without losing local state.
-        if (mergeResult.cleanupComplete) {
-            const isSubview = this.deps.isWorktreeSubview();
-            if (isSubview) {
-                // VSCode still has iterDir as its workspace root. Defer the rm to a detached
-                // child that survives this extension instance, so deletion happens after the
-                // window is closed and file handles are released.
-                this.scheduleDetachedIterDirCleanup(iterDir);
-            } else {
-                try {
-                    this.deps.gitService.safeRemovePath(iterDir, { recursive: true });
-                } catch (error) {
-                    const message = error instanceof Error ? error.message : String(error);
-                    vscode.window.showWarningMessage(`迭代目录清理失败，请手动删除：${iterDir}（${message}）`);
+            // Only purge the iteration directory when git-level cleanup (worktrees + branches) fully
+            // succeeded. If something failed there, leave the iteration dir on disk so the user can
+            // diagnose without losing local state.
+            if (cleanupResult.cleanupComplete) {
+                const isSubview = this.deps.isWorktreeSubview();
+                if (isSubview) {
+                    // VSCode still has iterDir as its workspace root. Defer the rm to a detached
+                    // child that survives this extension instance, so deletion happens after the
+                    // window is closed and file handles are released.
+                    this.scheduleDetachedIterDirCleanup(iterDir);
+                } else {
+                    try {
+                        this.deps.gitService.safeRemovePath(iterDir, { recursive: true });
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        vscode.window.showWarningMessage(`迭代目录清理失败，请手动删除：${iterDir}（${message}）`);
+                    }
                 }
             }
-        }
 
-        if (this.deps.isWorktreeSubview()) {
-            await vscode.window.showInformationMessage('当前 worktree 任务已结束，正在关闭窗口...');
-            await vscode.commands.executeCommand('workbench.action.closeWindow');
-        }
+            if (this.deps.isWorktreeSubview()) {
+                await vscode.window.showInformationMessage('当前 worktree 任务已结束，正在关闭窗口...');
+                await vscode.commands.executeCommand('workbench.action.closeWindow');
+            }
+        });
     }
 
     private scheduleDetachedIterDirCleanup(iterDir: string): void {
@@ -1678,6 +1735,12 @@ export class HarnessActionsService {
         wasNewlyCreated: boolean,
         entryPoint: 'openFolderLocationByFeatureId' | 'runCustomButtonByFeatureId' | 'syncCodeGraphByFeatureId',
     ): Promise<void> {
+        if (entryPoint === 'openFolderLocationByFeatureId' && !wasNewlyCreated) {
+            const codeGraphDir = path.join(iterDir, '.codegraph');
+            if (fs.existsSync(codeGraphDir)) {
+                return;
+            }
+        }
         const shouldRun = entryPoint === 'openFolderLocationByFeatureId' || entryPoint === 'syncCodeGraphByFeatureId' || wasNewlyCreated;
         if (!shouldRun) {
             return;
@@ -1829,39 +1892,41 @@ export class HarnessActionsService {
     async completeDevWithPush(featureId: string): Promise<void> {
         const task = this.getFeatureById(featureId);
         if (!task) return;
+        await this.runExclusiveGitAction(task, 'completeDevWithPush', async () => {
+            const iterDir = this.deps.getIterationDir(task);
 
-        const iterDir = this.deps.getIterationDir(task);
-        
-        // First: Push all code to remote
-        vscode.window.showInformationMessage('正在推送代码...');
-        const result = await this.deps.gitService.pushAll(task, iterDir);
-        if (!result.success) {
-            vscode.window.showErrorMessage(result.message, { modal: true });
-            return;
-        }
+            // First: Push all code to remote
+            vscode.window.showInformationMessage('正在推送代码...');
+            const result = await this.deps.gitService.pushAll(task, iterDir);
+            if (!result.success) {
+                vscode.window.showErrorMessage(result.message, { modal: true });
+                return;
+            }
 
-        // Then: Mark as complete development (change to READY_FOR_REVIEW)
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        await this.nextStageByFeatureId(featureId, 'dev');
+            // Then: Mark as complete development (change to READY_FOR_REVIEW)
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            await this.nextStageByFeatureId(featureId, 'dev');
+        });
     }
 
     async pushAndNextStage(featureId: string): Promise<void> {
         const task = this.getFeatureById(featureId);
         if (!task) return;
+        await this.runExclusiveGitAction(task, 'pushAndNextStage', async () => {
+            const iterDir = this.deps.getIterationDir(task);
 
-        const iterDir = this.deps.getIterationDir(task);
-        
-        // First: Push all code to remote
-        vscode.window.showInformationMessage('正在推送代码...');
-        const result = await this.deps.gitService.pushAll(task, iterDir);
-        if (!result.success) {
-            vscode.window.showErrorMessage(result.message, { modal: true });
-            return;
-        }
+            // First: Push all code to remote
+            vscode.window.showInformationMessage('正在推送代码...');
+            const result = await this.deps.gitService.pushAll(task, iterDir);
+            if (!result.success) {
+                vscode.window.showErrorMessage(result.message, { modal: true });
+                return;
+            }
 
-        // Then: Change to READY_FOR_REVIEW stage
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        await this.nextStageByFeatureId(featureId, 'dev');
+            // Then: Change to READY_FOR_REVIEW stage
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            await this.nextStageByFeatureId(featureId, 'dev');
+        });
     }
 
     getFeatureSpecDeltaStatus(featureId: string): { severity: 'low' | 'medium' | 'high'; gateBlocked: boolean; at: string; summary: string; digestPath: string } | null {

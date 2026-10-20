@@ -91,6 +91,9 @@ export type HarnessMessage =
     | { type: 'getLatestReviewStatus'; stage: ReviewStage }
     | { type: 'openCustomConstitution' }
     | { type: 'saveGit'; bb: string; mg?: string; gmg?: string }
+    | { type: 'setRemoteApiToken'; endpointKey: string }
+    | { type: 'testRemoteApiToken'; endpointKey: string }
+    | { type: 'clearRemoteApiToken'; endpointKey: string }
     | { type: 'saveAdvancedConfig'; dcm: 'batch' | 'single'; ins: boolean; wsd: string; prm: 'local' | 'local+ai'; srd: string; gl: 'relaxed' | 'standard' | 'strict'; cct: string; afm: boolean; pas: boolean; acg: boolean; cai?: boolean }
     | { type: 'initProjectStructure' }
     | { type: 'applyProjectStructurePreview' }
@@ -124,6 +127,7 @@ export type HarnessMessage =
     | { type: 'completeDevWithPush'; id: string }
     | { type: 'pushAndNextStage'; id: string }
     | { type: 'commitToBaseline'; id: string }
+    | { type: 'refreshChangeRequests'; id: string }
     | { type: 'saveCustomButtons'; buttons: { name: string; script?: string; args?: string; scriptSource?: string; command?: string }[] }
     | { type: 'saveAiQuickChatButtons'; taskId: string; buttons: import('./models').AiQuickChatButtonInput[] }
     | { type: 'runAiQuickChatButton'; taskId: string; buttonId: string }
