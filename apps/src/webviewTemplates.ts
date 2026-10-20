@@ -71,7 +71,7 @@ ${err}
     }).join('');
 
     return `<details class="cr-panel" open>
-<summary>🔀 多远程 PR/MR 状态（${entries.length}）</summary>
+<summary>🔀 远程 PR/MR 状态（${entries.length}）</summary>
 <div class="cr-list">${rows}</div>
 </details>`;
 }
@@ -151,6 +151,9 @@ export interface MainFeatureViewModel {
 export interface RemoteApiTokenStatusView {
     endpointKey: string;
     remoteName: string;
+    remoteUrl: string;
+    domain: string;
+    boundRemotes: string[];
     platform: 'github' | 'gitlab' | 'generic';
     configured: boolean;
 }
@@ -2385,12 +2388,28 @@ export function buildSettingsPageHtml(
         args: h.args || '',
     }));
     const monorepoGitValue = config.monorepoGit || '';
-    const tokenRows = remoteApiTokenStatuses.map((item) => {
+    const primaryTokenStatuses = remoteApiTokenStatuses.filter(item => (item.boundRemotes || []).includes('origin'));
+    const mirrorTokenStatuses = remoteApiTokenStatuses.filter(item => !(item.boundRemotes || []).includes('origin'));
+    const primaryConfigured = primaryTokenStatuses.some(item => item.configured);
+    const mirrorConfigured = mirrorTokenStatuses.some(item => item.configured);
+    const primaryToggleLabel = primaryConfigured ? '已配置' : '未配置';
+    const mirrorToggleLabel = mirrorConfigured ? '已配置' : '未配置';
+    const primaryToggleClass = primaryConfigured ? 'git-token-toggle git-token-toggle--configured' : 'git-token-toggle git-token-toggle--unconfigured';
+    const mirrorToggleClass = mirrorConfigured ? 'git-token-toggle git-token-toggle--configured' : 'git-token-toggle git-token-toggle--unconfigured';
+    const renderTokenRow = (item: RemoteApiTokenStatusView) => {
         const statusText = item.configured ? '已配置' : '未配置';
         const statusClass = item.configured ? 'token-status token-status--ok' : 'token-status token-status--warn';
         const platformLabel = item.platform === 'gitlab' ? 'GitLab' : item.platform === 'github' ? 'GitHub' : 'Generic';
-        return `<div class="token-row"><div class="token-meta"><div><b>${escapeHtml(item.remoteName)}</b> · ${platformLabel}</div><div class="${statusClass}">${statusText}</div></div><div class="token-actions"><button onclick="setRemoteApiToken('${escapeHtml(item.endpointKey)}')">设置 Token</button><button onclick="testRemoteApiToken('${escapeHtml(item.endpointKey)}')">测试连接</button><button onclick="clearRemoteApiToken('${escapeHtml(item.endpointKey)}')">清除</button></div></div>`;
-    }).join('');
+        const remotes = (item.boundRemotes || []).filter(Boolean).join('、');
+        const remotesHint = remotes ? `关联远端：${escapeHtml(remotes)}` : '';
+        return `<div class="token-row"><div class="token-meta"><div><b>${escapeHtml(item.domain || item.remoteName)}</b> · ${platformLabel}</div><div class="${statusClass}">${statusText}</div></div>${remotesHint ? `<div class="hint" style="margin-bottom:6px">${remotesHint}</div>` : ''}<div class="token-actions"><button type="button" class="token-btn token-btn--set" onclick="setRemoteApiToken('${escapeHtml(item.endpointKey)}')">设置 Token</button><button type="button" class="token-btn token-btn--test" onclick="testRemoteApiToken('${escapeHtml(item.endpointKey)}')">测试连接</button><button type="button" class="token-btn token-btn--clear" onclick="clearRemoteApiToken('${escapeHtml(item.endpointKey)}')">清除</button></div></div>`;
+    };
+    const primaryTokenRows = primaryTokenStatuses.length > 0
+        ? primaryTokenStatuses.map(renderTokenRow).join('')
+        : '<div class="hint">未检测到主仓域名，请先保存 Git 配置。</div>';
+    const mirrorTokenRows = mirrorTokenStatuses.length > 0
+        ? mirrorTokenStatuses.map(renderTokenRow).join('')
+        : '<div class="hint">当前镜像地址未形成可配置域名。</div>';
     const originLabel = configMeta.origin === 'worktreeSnapshot'
         ? '子 worktree 快照配置'
         : configMeta.origin === 'master'
@@ -2426,10 +2445,23 @@ button{width:100%;padding:10px;border-radius:8px;border:none;color:white;margin-
 .kv b{color:#fff}
 .inline-actions{display:flex;gap:8px;flex-wrap:wrap}
 .inline-actions button{flex:1;min-width:160px}
+.git-input-row{display:flex;gap:8px;align-items:stretch;margin-bottom:8px}
+.git-input-row input{flex:1;margin:0}
+.git-token-toggle{width:auto;min-width:72px;margin:0;padding:8px 12px;border-radius:8px;background:#2d2d33;color:#fff;border:1px solid #3d3d45;font-size:12px;cursor:pointer}
+.git-token-toggle:hover{background:#373740}
+.git-token-toggle--configured{background:#185c37;border-color:#2c7a4b;color:#d7fbe4}
+.git-token-toggle--configured:hover{background:#1f7244}
+.git-token-toggle--unconfigured{background:#6b4e16;border-color:#8a6521;color:#ffecbf}
+.git-token-toggle--unconfigured:hover{background:#7d5c1a}
+.git-token-panel{display:none;margin:0 0 8px 0;padding:8px;background:#202024;border:1px solid #34343a;border-radius:8px}
 .token-row{border:1px solid #34343a;border-radius:8px;padding:10px;background:#232326;margin-bottom:8px}
 .token-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;color:#d8d8dd;font-size:12px}
 .token-actions{display:flex;gap:8px;flex-wrap:wrap}
 .token-actions button{flex:1;min-width:120px;margin-top:0;padding:8px}
+.token-btn{color:#fff;border:1px solid transparent}
+.token-btn--set{background:#1f6feb;border-color:#2f81f7}
+.token-btn--test{background:#0e7490;border-color:#0891b2}
+.token-btn--clear{background:#9f1239;border-color:#be123c}
 .token-status{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
 .token-status--ok{background:#163a24;color:#7ee2a8}
 .token-status--warn{background:#4a3412;color:#ffd37a}
@@ -2480,23 +2512,29 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 <div class="section">
 <div class="section-title">Git 配置</div>
 <h5>单一仓库（Monorepo）Git 地址</h5>
+<div class="git-input-row">
 <input id="mg" value="${monorepoGitValue}" placeholder="代码、文档、脚本位于同一仓库" ${disabled}>
-<div style="font-size:12px;opacity:0.7;margin:4px 0 8px">funharness 会将该仓库克隆到 <b>repos/mono-main</b> 作为主仓库，并在主仓库与每个迭代 worktree 中按需补齐目录骨架（默认：<b>apps/</b> 代码、<b>docs/</b> 文档、<b>scripts/</b> 项目脚本）。迭代任务以 git worktree 形式生成在 <b>worktrees/&lt;english-slug&gt;/</b>（根即迭代目录，避免中文路径问题）。若填写了基线分支但远程不存在，系统会在本地主仓库自动创建该分支。</div>
+<button id="tokenTogglePrimary" type="button" class="${primaryToggleClass}" data-collapsed-label="${primaryToggleLabel}" onclick="toggleTokenPanel('tokenPanelPrimary','tokenTogglePrimary')" ${disabled}>${primaryToggleLabel}</button>
+</div>
+<div id="tokenPanelPrimary" class="git-token-panel">
+${primaryTokenRows}
+</div>
 
 <h5>基线分支（如 main、master 或 yourname/integration）</h5>
 <input id="bb" value="${config.baseBranch || ''}" placeholder="如 main 或 yourname/integration" ${disabled}>
 <details class="fold">
 <summary>多镜像仓库地址（可选，推送基线分支时会同时推送到该仓库）</summary>
+<div class="git-input-row">
 <input id="gmg" value="${config.githubMirrorGit || ''}" placeholder="如 https://github.com/yourname/yourrepo.git" ${disabled}>
-</details>
-<button onclick="saveGit()" style="background:#007aff" ${disabled}>💾 保存 Git 配置并初始化代码</button>
+<button id="tokenToggleMirror" type="button" class="${mirrorToggleClass}" data-collapsed-label="${mirrorToggleLabel}" onclick="toggleTokenPanel('tokenPanelMirror','tokenToggleMirror')" ${disabled}>${mirrorToggleLabel}</button>
 </div>
-
-<div class="section">
-<div class="section-title">PR/MR API Token</div>
-<div class="hint">用于无 CLI 模式下自动创建/刷新 PR/MR。Token 安全存储在 VS Code 凭据库，不写入仓库文件。</div>
-${tokenRows || '<div class="hint">未检测到可用远端，请先完成 Git 配置。</div>'}
+<div id="tokenPanelMirror" class="git-token-panel">
+${mirrorTokenRows}
+</div>
+</details>
+<div class="hint">Token 安全存储在 VS Code 凭据库，不写入仓库文件。</div>
 <div class="hint">获取方式：GitLab 在 User Settings → Access Tokens；GitHub 在 Settings → Developer settings → Personal access tokens。</div>
+<button onclick="saveGit()" style="background:#007aff" ${disabled}>💾 保存 Git 配置并初始化代码</button>
 </div>
 
 <div class="section">
@@ -2619,6 +2657,7 @@ ${readOnly ? '<div class="meta-box readonly" style="margin-bottom:8px">当前窗
 const v=acquireVsCodeApi();
 function p(x){v.postMessage({type:'page',page:x})}
 function saveGit(){v.postMessage({type:'saveGit',bb:document.getElementById('bb').value,mg:document.getElementById('mg').value,gmg:document.getElementById('gmg').value})}
+function toggleTokenPanel(panelId,btnId){var panel=document.getElementById(panelId);if(!panel)return;var btn=document.getElementById(btnId);var open=panel.style.display!=='block';panel.style.display=open?'block':'none';if(btn){var collapsed=btn.getAttribute('data-collapsed-label')||'设置';btn.textContent=open?'收起':collapsed;btn.title=open?'收起':collapsed;}}
 function setRemoteApiToken(endpointKey){v.postMessage({type:'setRemoteApiToken',endpointKey:endpointKey})}
 function testRemoteApiToken(endpointKey){v.postMessage({type:'testRemoteApiToken',endpointKey:endpointKey})}
 function clearRemoteApiToken(endpointKey){v.postMessage({type:'clearRemoteApiToken',endpointKey:endpointKey})}
