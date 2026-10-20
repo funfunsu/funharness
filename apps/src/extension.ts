@@ -1109,14 +1109,61 @@ class Harness {
         }
     }
 
-    private buildRemoteApiTokenSecretKey(endpointKey: string): string {
+    private parseEndpointDomain(endpoint: MonorepoRemoteEndpoint): string {
+        const raw = (endpoint.url || '').trim();
+        if (!raw) {
+            return '';
+        }
+        const httpMatch = /^https?:\/\/([^/]+)\/?/i.exec(raw);
+        if (httpMatch && httpMatch[1]) {
+            return httpMatch[1].toLowerCase();
+        }
+        const sshMatch = /^[^@]+@([^:]+):.+$/i.exec(raw);
+        if (sshMatch && sshMatch[1]) {
+            return sshMatch[1].toLowerCase();
+        }
+        return '';
+    }
+
+    private buildRemoteApiTokenScopeKey(endpoint: MonorepoRemoteEndpoint): string {
+        const domain = this.parseEndpointDomain(endpoint) || 'unknown-domain';
+        const platform = endpoint.platform || 'generic';
+        return `${platform}@${domain}`;
+    }
+
+    private buildRemoteApiTokenSecretKey(scopeKey: string): string {
         const rootFingerprint = crypto.createHash('sha256').update(this.getMasterRoot()).digest('hex').slice(0, 16);
-        return `fun-harness.remote-api-token.${rootFingerprint}.${endpointKey}`;
+        return `fun-harness.remote-api-token.${rootFingerprint}.${scopeKey}`;
+    }
+
+    private resolveEndpointForTokenScope(scopeKeyOrEndpointKey: string): MonorepoRemoteEndpoint | null {
+        const endpoints = this.getConfiguredRemoteEndpoints();
+        const byEndpointKey = endpoints.find(item => item.key === scopeKeyOrEndpointKey);
+        if (byEndpointKey) {
+            return byEndpointKey;
+        }
+        const byScopeKey = endpoints.find(item => this.buildRemoteApiTokenScopeKey(item) === scopeKeyOrEndpointKey);
+        return byScopeKey || null;
     }
 
     private async getRemoteApiTokenValue(endpointKey: string): Promise<string | undefined> {
-        const key = this.buildRemoteApiTokenSecretKey(endpointKey);
-        const token = await this.context.secrets.get(key);
+        const endpoint = this.resolveEndpointForTokenScope(endpointKey);
+        if (!endpoint) {
+            return undefined;
+        }
+        const scopeKey = this.buildRemoteApiTokenScopeKey(endpoint);
+        const key = this.buildRemoteApiTokenSecretKey(scopeKey);
+        let token = await this.context.secrets.get(key);
+        if (!token) {
+            // Backward compatibility: migrate legacy endpoint-key scoped token.
+            const legacyKey = this.buildRemoteApiTokenSecretKey(endpoint.key);
+            const legacyToken = await this.context.secrets.get(legacyKey);
+            if (legacyToken && legacyToken.trim()) {
+                await this.context.secrets.store(key, legacyToken.trim());
+                await this.context.secrets.delete(legacyKey);
+                token = legacyToken;
+            }
+        }
         const normalized = (token || '').trim();
         return normalized ? normalized : undefined;
     }
@@ -1131,21 +1178,40 @@ class Harness {
 
     private async buildRemoteApiTokenStatuses(): Promise<RemoteApiTokenStatusView[]> {
         const endpoints = this.getConfiguredRemoteEndpoints();
-        const rows: RemoteApiTokenStatusView[] = [];
+        const grouped = new Map<string, { endpoint: MonorepoRemoteEndpoint; remotes: string[] }>();
         for (const endpoint of endpoints) {
-            const configured = Boolean(await this.getRemoteApiTokenValue(endpoint.key));
+            const scopeKey = this.buildRemoteApiTokenScopeKey(endpoint);
+            const found = grouped.get(scopeKey);
+            if (!found) {
+                grouped.set(scopeKey, {
+                    endpoint,
+                    remotes: [endpoint.remoteName],
+                });
+                continue;
+            }
+            if (!found.remotes.includes(endpoint.remoteName)) {
+                found.remotes.push(endpoint.remoteName);
+            }
+        }
+
+        const rows: RemoteApiTokenStatusView[] = [];
+        for (const [scopeKey, item] of grouped.entries()) {
+            const configured = Boolean(await this.getRemoteApiTokenValue(item.endpoint.key));
             rows.push({
-                endpointKey: endpoint.key,
-                remoteName: endpoint.remoteName,
-                platform: endpoint.platform,
+                endpointKey: scopeKey,
+                remoteName: item.endpoint.remoteName,
+                remoteUrl: item.endpoint.url,
+                platform: item.endpoint.platform,
                 configured,
+                domain: this.parseEndpointDomain(item.endpoint) || '(unknown)',
+                boundRemotes: item.remotes,
             });
         }
         return rows;
     }
 
     private async resolveEndpointForTokenAction(endpointKey: string): Promise<MonorepoRemoteEndpoint | null> {
-        const endpoint = this.getConfiguredRemoteEndpoints().find(item => item.key === endpointKey);
+        const endpoint = this.resolveEndpointForTokenScope(endpointKey);
         if (!endpoint) {
             vscode.window.showWarningMessage('未找到对应远端，请先保存 Git 配置');
             return null;
@@ -1178,9 +1244,11 @@ class Harness {
             return;
         }
 
-        const key = this.buildRemoteApiTokenSecretKey(endpoint.key);
+        const scopeKey = this.buildRemoteApiTokenScopeKey(endpoint);
+        const key = this.buildRemoteApiTokenSecretKey(scopeKey);
         await this.context.secrets.store(key, token.trim());
-        vscode.window.showInformationMessage(`✅ 已保存 ${endpoint.remoteName} 的 API Token`);
+        const domain = this.parseEndpointDomain(endpoint) || endpoint.remoteName;
+        vscode.window.showInformationMessage(`✅ 已保存 ${domain} 的 API Token`);
         if (this.currentPage === 'settings') {
             void this.renderSettings();
         }
@@ -1197,7 +1265,7 @@ class Harness {
         }
 
         const confirmed = await vscode.window.showWarningMessage(
-            `确认清除 ${endpoint.remoteName} 的 API Token？`,
+            `确认清除 ${this.parseEndpointDomain(endpoint) || endpoint.remoteName} 的 API Token？`,
             { modal: true },
             '清除',
         );
@@ -1205,9 +1273,10 @@ class Harness {
             return;
         }
 
-        const key = this.buildRemoteApiTokenSecretKey(endpoint.key);
+        const scopeKey = this.buildRemoteApiTokenScopeKey(endpoint);
+        const key = this.buildRemoteApiTokenSecretKey(scopeKey);
         await this.context.secrets.delete(key);
-        vscode.window.showInformationMessage(`已清除 ${endpoint.remoteName} 的 API Token`);
+        vscode.window.showInformationMessage(`已清除 ${this.parseEndpointDomain(endpoint) || endpoint.remoteName} 的 API Token`);
         if (this.currentPage === 'settings') {
             void this.renderSettings();
         }
@@ -1220,16 +1289,16 @@ class Harness {
         }
         const token = await this.getRemoteApiTokenValue(endpoint.key);
         if (!token) {
-            vscode.window.showWarningMessage(`请先为 ${endpoint.remoteName} 设置 API Token`);
+            vscode.window.showWarningMessage(`请先为 ${this.parseEndpointDomain(endpoint) || endpoint.remoteName} 设置 API Token`);
             return;
         }
 
         const result = await this.gitService.testRemoteApiToken(endpoint, token);
         if (result.ok) {
-            vscode.window.showInformationMessage(`✅ ${endpoint.remoteName} Token 连接测试通过`);
+            vscode.window.showInformationMessage(`✅ ${this.parseEndpointDomain(endpoint) || endpoint.remoteName} Token 连接测试通过`);
             return;
         }
-        vscode.window.showErrorMessage(`❌ ${endpoint.remoteName} Token 测试失败：${result.message}`);
+        vscode.window.showErrorMessage(`❌ ${this.parseEndpointDomain(endpoint) || endpoint.remoteName} Token 测试失败：${result.message}`);
     }
 
     private handleSaveAdvancedConfig(msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>): void {

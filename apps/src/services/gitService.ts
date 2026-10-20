@@ -5,6 +5,7 @@ import { Config, DEFAULT_MONOREPO_DIRS, Feature, FeatureChangeRequestState, Mono
 import { appendHarnessLog } from './harnessLog';
 import { clearDirChildrenPreserving, safeRemovePath } from './fileOps';
 import { deriveIterationBranchNameWithOptions } from './branchName';
+import { createRemoteApiPlatformStrategy, RemoteApiPlatformStrategy } from './gitProviders/remoteApiPlatformStrategy';
 
 /**
  * Describes the single git repository the harness manages for an iteration. In monorepo mode,
@@ -120,11 +121,12 @@ export class GitService {
             return '';
         }
 
-        const httpsMatch = /^https?:\/\/([^/]+)\/(.+?)(?:\.git)?$/i.exec(raw);
-        if (httpsMatch && httpsMatch[1] && httpsMatch[2]) {
-            const host = httpsMatch[1].replace(/^\/+|\/+$/g, '');
-            const repoPath = httpsMatch[2].replace(/^\/+|\/+$/g, '');
-            return `https://${host}/${repoPath}`;
+        const httpMatch = /^(https?):\/\/([^/]+)\/(.+?)(?:\.git)?$/i.exec(raw);
+        if (httpMatch && httpMatch[1] && httpMatch[2] && httpMatch[3]) {
+            const protocol = httpMatch[1].toLowerCase();
+            const host = httpMatch[2].replace(/^\/+|\/+$/g, '');
+            const repoPath = httpMatch[3].replace(/^\/+|\/+$/g, '');
+            return `${protocol}://${host}/${repoPath}`;
         }
 
         const sshMatch = /^[^@]+@([^:]+):(.+?)(?:\.git)?$/i.exec(raw);
@@ -132,6 +134,25 @@ export class GitService {
             const host = sshMatch[1].replace(/^\/+|\/+$/g, '');
             const repoPath = sshMatch[2].replace(/^\/+|\/+$/g, '');
             return `https://${host}/${repoPath}`;
+        }
+
+        return '';
+    }
+
+    private parseRemoteOrigin(endpoint: MonorepoRemoteEndpoint): string {
+        const raw = (endpoint.url || '').trim();
+        if (!raw) {
+            return '';
+        }
+
+        const httpMatch = /^(https?):\/\/([^/]+)\/?/i.exec(raw);
+        if (httpMatch && httpMatch[1] && httpMatch[2]) {
+            return `${httpMatch[1].toLowerCase()}://${httpMatch[2]}`;
+        }
+
+        const sshMatch = /^[^@]+@([^:]+):.+$/i.exec(raw);
+        if (sshMatch && sshMatch[1]) {
+            return `https://${sshMatch[1]}`;
         }
 
         return '';
@@ -151,11 +172,21 @@ export class GitService {
     }
 
     private githubApiBase(endpoint: MonorepoRemoteEndpoint): string {
+        const origin = this.parseRemoteOrigin(endpoint);
         const host = this.parseRemoteHost(endpoint).toLowerCase();
         if (!host || host === 'github.com') {
             return 'https://api.github.com';
         }
-        return `https://${host}/api/v3`;
+        return `${origin || `https://${host}`}/api/v3`;
+    }
+
+    private gitlabApiBase(endpoint: MonorepoRemoteEndpoint): string {
+        const origin = this.parseRemoteOrigin(endpoint);
+        const host = this.parseRemoteHost(endpoint);
+        if (!origin && !host) {
+            return '';
+        }
+        return `${origin || `https://${host}`}/api/v4`;
     }
 
     private async getRemoteApiToken(endpointKey: string): Promise<string | undefined> {
@@ -267,6 +298,18 @@ export class GitService {
         return Number.isFinite(parsed) ? parsed : undefined;
     }
 
+    private getRemoteApiPlatformStrategy(endpoint: MonorepoRemoteEndpoint): RemoteApiPlatformStrategy | null {
+        return createRemoteApiPlatformStrategy(endpoint, {
+            nowIso: () => this.nowIso(),
+            buildEntryBase: (targetEndpoint, sourceBranch, targetBranch) =>
+                this.buildChangeRequestEntryBase(targetEndpoint, sourceBranch, targetBranch),
+            parseRepoId: (targetEndpoint) => this.parseRepoId(targetEndpoint),
+            githubApiBase: (targetEndpoint) => this.githubApiBase(targetEndpoint),
+            gitlabApiBase: (targetEndpoint) => this.gitlabApiBase(targetEndpoint),
+            fetchJson: async (url, init) => this.fetchJson(url, init),
+        });
+    }
+
     async testRemoteApiToken(
         endpoint: MonorepoRemoteEndpoint,
         token: string,
@@ -275,219 +318,11 @@ export class GitService {
         if (!normalizedToken) {
             return { ok: false, message: 'Token 不能为空' };
         }
-
-        if (endpoint.platform === 'github') {
-            const apiBase = this.githubApiBase(endpoint);
-            const response = await this.fetchJson(`${apiBase}/user`, {
-                method: 'GET',
-                headers: {
-                    Authorization: `Bearer ${normalizedToken}`,
-                    Accept: 'application/vnd.github+json',
-                    'X-GitHub-Api-Version': '2022-11-28',
-                    'User-Agent': 'fun-harness',
-                },
-            });
-            if (!response.ok) {
-                return { ok: false, message: `GitHub API 响应 ${response.status}` };
-            }
-            return { ok: true, message: 'ok' };
+        const strategy = this.getRemoteApiPlatformStrategy(endpoint);
+        if (!strategy) {
+            return { ok: false, message: `当前平台不支持 Token 测试：${endpoint.platform}` };
         }
-
-        if (endpoint.platform === 'gitlab') {
-            const host = this.parseRemoteHost(endpoint);
-            if (!host) {
-                return { ok: false, message: `无法解析 GitLab host：${endpoint.url}` };
-            }
-            const response = await this.fetchJson(`https://${host}/api/v4/user`, {
-                method: 'GET',
-                headers: {
-                    'PRIVATE-TOKEN': normalizedToken,
-                },
-            });
-            if (!response.ok) {
-                return { ok: false, message: `GitLab API 响应 ${response.status}` };
-            }
-            return { ok: true, message: 'ok' };
-        }
-
-        return { ok: false, message: `当前平台不支持 Token 测试：${endpoint.platform}` };
-    }
-
-    private async createOrUpdateGithubPullByToken(
-        endpoint: MonorepoRemoteEndpoint,
-        task: Feature,
-        sourceBranch: string,
-        targetBranch: string,
-        token: string,
-    ): Promise<FeatureChangeRequestState> {
-        const base = this.buildChangeRequestEntryBase(endpoint, sourceBranch, targetBranch);
-        const repo = base.repo;
-        if (!repo) {
-            return {
-                ...base,
-                state: 'failed',
-                updatedAt: this.nowIso(),
-                lastError: `无法从远程地址解析仓库标识：${endpoint.url}`,
-            };
-        }
-
-        const owner = repo.split('/')[0] || '';
-        const title = `chore: ${task.name}`;
-        const body = [
-            'Auto-generated by Fun Harness',
-            `Task: ${task.id} ${task.name}`,
-            `Branch: ${sourceBranch} -> ${targetBranch}`,
-        ].join('\n');
-
-        const commonHeaders = {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            'User-Agent': 'fun-harness',
-        };
-        const apiBase = this.githubApiBase(endpoint);
-
-        const listUrl = `${apiBase}/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${sourceBranch}`)}&base=${encodeURIComponent(targetBranch)}&per_page=1`;
-        const list = await this.fetchJson(listUrl, { method: 'GET', headers: commonHeaders });
-        if (list.ok && Array.isArray(list.json) && list.json.length > 0) {
-            const existing = list.json[0] as { number?: number; html_url?: string };
-            const number = Number(existing.number || 0) || undefined;
-            const url = String(existing.html_url || '');
-            return {
-                ...base,
-                number,
-                url,
-                state: 'open',
-                updatedAt: this.nowIso(),
-            };
-        }
-
-        const create = await this.fetchJson(`${apiBase}/repos/${repo}/pulls`, {
-            method: 'POST',
-            headers: {
-                ...commonHeaders,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                title,
-                head: sourceBranch,
-                base: targetBranch,
-                body,
-            }),
-        });
-
-        if (!create.ok) {
-            return {
-                ...base,
-                state: 'failed',
-                updatedAt: this.nowIso(),
-                lastError: `GitHub API 创建 PR 失败（${create.status}）`,
-            };
-        }
-
-        const number = Number((create.json && create.json.number) || 0) || undefined;
-        const url = String((create.json && create.json.html_url) || '');
-        return {
-            ...base,
-            number,
-            url,
-            state: 'open',
-            updatedAt: this.nowIso(),
-        };
-    }
-
-    private async createOrUpdateGitlabMergeByToken(
-        endpoint: MonorepoRemoteEndpoint,
-        task: Feature,
-        sourceBranch: string,
-        targetBranch: string,
-        token: string,
-    ): Promise<FeatureChangeRequestState> {
-        const base = this.buildChangeRequestEntryBase(endpoint, sourceBranch, targetBranch);
-        const repo = base.repo;
-        if (!repo) {
-            return {
-                ...base,
-                state: 'failed',
-                updatedAt: this.nowIso(),
-                lastError: `无法从远程地址解析仓库标识：${endpoint.url}`,
-            };
-        }
-
-        const host = this.parseRemoteHost(endpoint);
-        if (!host) {
-            return {
-                ...base,
-                state: 'failed',
-                updatedAt: this.nowIso(),
-                lastError: `无法解析 GitLab host：${endpoint.url}`,
-            };
-        }
-
-        const title = `chore: ${task.name}`;
-        const body = [
-            'Auto-generated by Fun Harness',
-            `Task: ${task.id} ${task.name}`,
-            `Branch: ${sourceBranch} -> ${targetBranch}`,
-        ].join('\n');
-
-        const baseApi = `https://${host}/api/v4/projects/${encodeURIComponent(repo)}`;
-        const listUrl = `${baseApi}/merge_requests?state=opened&source_branch=${encodeURIComponent(sourceBranch)}&target_branch=${encodeURIComponent(targetBranch)}&per_page=1`;
-        const list = await this.fetchJson(listUrl, {
-            method: 'GET',
-            headers: {
-                'PRIVATE-TOKEN': token,
-            },
-        });
-
-        if (list.ok && Array.isArray(list.json) && list.json.length > 0) {
-            const existing = list.json[0] as { iid?: number; web_url?: string };
-            const number = Number(existing.iid || 0) || undefined;
-            const url = String(existing.web_url || '');
-            return {
-                ...base,
-                number,
-                url,
-                state: 'open',
-                updatedAt: this.nowIso(),
-            };
-        }
-
-        const create = await this.fetchJson(`${baseApi}/merge_requests`, {
-            method: 'POST',
-            headers: {
-                'PRIVATE-TOKEN': token,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                source_branch: sourceBranch,
-                target_branch: targetBranch,
-                title,
-                description: body,
-                squash: true,
-                merge_when_pipeline_succeeds: true,
-                remove_source_branch: true,
-            }),
-        });
-
-        if (!create.ok) {
-            return {
-                ...base,
-                state: 'failed',
-                updatedAt: this.nowIso(),
-                lastError: `GitLab API 创建 MR 失败（${create.status}）`,
-            };
-        }
-
-        const number = Number((create.json && create.json.iid) || 0) || undefined;
-        const url = String((create.json && create.json.web_url) || '');
-        return {
-            ...base,
-            number,
-            url,
-            state: 'open',
-            updatedAt: this.nowIso(),
-        };
+        return strategy.testToken(normalizedToken);
     }
 
     private async tryCreateOrUpdateChangeRequestByToken(
@@ -496,165 +331,30 @@ export class GitService {
         sourceBranch: string,
         targetBranch: string,
     ): Promise<FeatureChangeRequestState | null> {
-        if (endpoint.platform !== 'github' && endpoint.platform !== 'gitlab') {
+        const strategy = this.getRemoteApiPlatformStrategy(endpoint);
+        if (!strategy) {
             return null;
         }
         const token = await this.getRemoteApiToken(endpoint.key);
         if (!token) {
             return null;
         }
-
-        if (endpoint.platform === 'github') {
-            return this.createOrUpdateGithubPullByToken(endpoint, task, sourceBranch, targetBranch, token);
-        }
-        return this.createOrUpdateGitlabMergeByToken(endpoint, task, sourceBranch, targetBranch, token);
-    }
-
-    private async queryGithubPullStatusByToken(
-        endpoint: MonorepoRemoteEndpoint,
-        item: FeatureChangeRequestState,
-        token: string,
-    ): Promise<FeatureChangeRequestState> {
-        const repo = (item.repo || this.parseRepoId(endpoint)).trim();
-        if (!repo) {
-            return { ...item, state: 'failed', updatedAt: this.nowIso(), lastError: '缺少 GitHub 仓库标识' };
-        }
-
-        const headers = {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            'User-Agent': 'fun-harness',
-        };
-        const apiBase = this.githubApiBase(endpoint);
-
-        if (item.number) {
-            const view = await this.fetchJson(`${apiBase}/repos/${repo}/pulls/${item.number}`, {
-                method: 'GET',
-                headers,
-            });
-            if (!view.ok) {
-                return { ...item, state: 'failed', updatedAt: this.nowIso(), lastError: `GitHub API 读取 PR 失败（${view.status}）` };
-            }
-            const stateRaw = String((view.json && view.json.state) || '').toLowerCase();
-            const merged = Boolean(view.json && view.json.merged);
-            const mapped: FeatureChangeRequestState['state'] = merged ? 'merged' : stateRaw === 'closed' ? 'closed' : 'open';
-            return {
-                ...item,
-                repo,
-                number: Number((view.json && view.json.number) || item.number),
-                url: String((view.json && view.json.html_url) || item.url || ''),
-                state: mapped,
-                mergedAt: mapped === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
-                updatedAt: this.nowIso(),
-                lastError: undefined,
-            };
-        }
-
-        const owner = repo.split('/')[0] || '';
-        const list = await this.fetchJson(
-            `${apiBase}/repos/${repo}/pulls?state=all&head=${encodeURIComponent(`${owner}:${item.sourceBranch}`)}&base=${encodeURIComponent(item.targetBranch)}&per_page=1`,
-            { method: 'GET', headers },
-        );
-        if (!list.ok || !Array.isArray(list.json) || list.json.length === 0) {
-            return { ...item, state: 'unsupported', updatedAt: this.nowIso(), lastError: 'GitHub API 未查询到匹配 PR' };
-        }
-        const found = list.json[0] as { number?: number; html_url?: string; state?: string; merged_at?: string | null };
-        const stateRaw = String(found.state || '').toLowerCase();
-        const mapped: FeatureChangeRequestState['state'] = found.merged_at ? 'merged' : stateRaw === 'closed' ? 'closed' : 'open';
-        return {
-            ...item,
-            repo,
-            number: Number(found.number || 0) || item.number,
-            url: String(found.html_url || item.url || ''),
-            state: mapped,
-            mergedAt: mapped === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
-            updatedAt: this.nowIso(),
-            lastError: undefined,
-        };
-    }
-
-    private async queryGitlabMergeStatusByToken(
-        endpoint: MonorepoRemoteEndpoint,
-        item: FeatureChangeRequestState,
-        token: string,
-    ): Promise<FeatureChangeRequestState> {
-        const repo = (item.repo || this.parseRepoId(endpoint)).trim();
-        if (!repo) {
-            return { ...item, state: 'failed', updatedAt: this.nowIso(), lastError: '缺少 GitLab 仓库标识' };
-        }
-        const host = this.parseRemoteHost(endpoint);
-        if (!host) {
-            return { ...item, state: 'failed', updatedAt: this.nowIso(), lastError: `无法解析 GitLab host：${endpoint.url}` };
-        }
-
-        const headers = { 'PRIVATE-TOKEN': token };
-        const baseApi = `https://${host}/api/v4/projects/${encodeURIComponent(repo)}`;
-
-        if (item.number) {
-            const view = await this.fetchJson(`${baseApi}/merge_requests/${item.number}`, {
-                method: 'GET',
-                headers,
-            });
-            if (!view.ok) {
-                return { ...item, state: 'failed', updatedAt: this.nowIso(), lastError: `GitLab API 读取 MR 失败（${view.status}）` };
-            }
-            const stateRaw = String((view.json && view.json.state) || '').toLowerCase();
-            const mapped: FeatureChangeRequestState['state'] = stateRaw === 'merged' ? 'merged' : stateRaw === 'closed' ? 'closed' : 'open';
-            return {
-                ...item,
-                repo,
-                number: Number((view.json && view.json.iid) || item.number),
-                url: String((view.json && view.json.web_url) || item.url || ''),
-                state: mapped,
-                mergedAt: mapped === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
-                updatedAt: this.nowIso(),
-                lastError: undefined,
-            };
-        }
-
-        const list = await this.fetchJson(
-            `${baseApi}/merge_requests?state=all&source_branch=${encodeURIComponent(item.sourceBranch)}&target_branch=${encodeURIComponent(item.targetBranch)}&per_page=1`,
-            { method: 'GET', headers },
-        );
-        if (!list.ok || !Array.isArray(list.json) || list.json.length === 0) {
-            return { ...item, state: 'unsupported', updatedAt: this.nowIso(), lastError: 'GitLab API 未查询到匹配 MR' };
-        }
-        const found = list.json[0] as { iid?: number; web_url?: string; state?: string; merged_at?: string | null };
-        const stateRaw = String(found.state || '').toLowerCase();
-        const mapped: FeatureChangeRequestState['state'] = stateRaw === 'merged' || Boolean(found.merged_at)
-            ? 'merged'
-            : stateRaw === 'closed'
-                ? 'closed'
-                : 'open';
-        return {
-            ...item,
-            repo,
-            number: Number(found.iid || 0) || item.number,
-            url: String(found.web_url || item.url || ''),
-            state: mapped,
-            mergedAt: mapped === 'merged' ? (item.mergedAt || this.nowIso()) : item.mergedAt,
-            updatedAt: this.nowIso(),
-            lastError: undefined,
-        };
+        return strategy.createOrUpdate(task, sourceBranch, targetBranch, token);
     }
 
     private async tryRefreshChangeRequestStatusByToken(
         endpoint: MonorepoRemoteEndpoint,
         item: FeatureChangeRequestState,
     ): Promise<FeatureChangeRequestState | null> {
-        if (endpoint.platform !== 'github' && endpoint.platform !== 'gitlab') {
+        const strategy = this.getRemoteApiPlatformStrategy(endpoint);
+        if (!strategy) {
             return null;
         }
         const token = await this.getRemoteApiToken(endpoint.key);
         if (!token) {
             return null;
         }
-
-        if (endpoint.platform === 'github') {
-            return this.queryGithubPullStatusByToken(endpoint, item, token);
-        }
-        return this.queryGitlabMergeStatusByToken(endpoint, item, token);
+        return strategy.queryStatus(item, token);
     }
 
     private async createOrUpdateChangeRequestForEndpoint(
@@ -713,10 +413,10 @@ export class GitService {
                     updatedAt: this.nowIso(),
                     mergedAt: mergedByGitGraph ? this.nowIso() : undefined,
                     lastError: mergedByGitGraph
-                        ? '未检测到 gh CLI，已基于 Git 分支关系判定为已合并'
+                        ? '自动通道不可用，已基于 Git 分支关系判定为已合并'
                         : (manualUrl
-                            ? '未检测到 gh CLI，已生成手动创建 PR 链接'
-                            : '未检测到 gh CLI，且无法生成手动创建 PR 链接'),
+                            ? '自动通道不可用，已生成手动创建 PR 链接'
+                            : '自动通道不可用，且无法生成手动创建 PR 链接'),
                 };
             }
 
@@ -829,10 +529,10 @@ export class GitService {
                     updatedAt: this.nowIso(),
                     mergedAt: mergedByGitGraph ? this.nowIso() : undefined,
                     lastError: mergedByGitGraph
-                        ? '未检测到 glab CLI，已基于 Git 分支关系判定为已合并'
+                        ? '自动通道不可用，已基于 Git 分支关系判定为已合并'
                         : (manualUrl
-                            ? '未检测到 glab CLI，已生成手动创建 MR 链接'
-                            : '未检测到 glab CLI，且无法生成手动创建 MR 链接'),
+                            ? '自动通道不可用，已生成手动创建 MR 链接'
+                            : '自动通道不可用，且无法生成手动创建 MR 链接'),
                 };
             }
 
@@ -1441,7 +1141,7 @@ export class GitService {
             const names = manualFallbacks.map(entry => entry.remoteName || entry.endpointKey).join('、');
             return {
                 success: true,
-                message: `✅ 分支已推送；${names} 未启用 CLI 自动创建，已提供手动 PR/MR 链接`,
+                message: `✅ 分支已推送；${names} 自动创建通道不可用，已提供手动 PR/MR 链接`,
                 entries,
             };
         }
@@ -1630,7 +1330,7 @@ export class GitService {
         if (!remote || !source || !target) {
             return {
                 state: 'unsupported',
-                lastError: `未检测到 ${missingCli} CLI，且缺少分支信息，无法刷新状态`,
+                lastError: `自动状态通道不可用，且缺少分支信息，无法刷新状态`,
             };
         }
 
@@ -1642,7 +1342,7 @@ export class GitService {
         if (!targetOk) {
             return {
                 state: 'unsupported',
-                lastError: `未检测到 ${missingCli} CLI，且目标分支不存在：${targetRef}`,
+                lastError: `自动状态通道不可用，且目标分支不存在：${targetRef}`,
             };
         }
 
@@ -1651,7 +1351,7 @@ export class GitService {
         if (!remoteSourceOk) {
             return {
                 state: 'merged',
-                lastError: `未检测到 ${missingCli} CLI，来源分支 ${sourceRef} 不存在，按已合并处理`,
+                lastError: `自动状态通道不可用，来源分支 ${sourceRef} 不存在，按已合并处理`,
             };
         }
 
@@ -1659,7 +1359,7 @@ export class GitService {
         if (!ahead.success) {
             return {
                 state: 'unsupported',
-                lastError: `未检测到 ${missingCli} CLI，且基于 Git 分支关系判定失败：${this.lastExecError}`,
+                lastError: `自动状态通道不可用，且基于 Git 分支关系判定失败：${this.lastExecError}`,
             };
         }
 
@@ -1674,13 +1374,13 @@ export class GitService {
         if (tipDiff.success && !(tipDiff.stdout || '').trim()) {
             return {
                 state: 'merged',
-                lastError: `未检测到 ${missingCli} CLI，已基于 Git 内容一致性判定为已合并（squash/rebase）`,
+                lastError: '自动状态通道不可用，已基于 Git 内容一致性判定为已合并（squash/rebase）',
             };
         }
 
         return {
             state: 'open',
-            lastError: `未检测到 ${missingCli} CLI，已基于 Git 分支关系判定为未合并`,
+            lastError: '自动状态通道不可用，已基于 Git 分支关系判定为未合并',
         };
     }
 
