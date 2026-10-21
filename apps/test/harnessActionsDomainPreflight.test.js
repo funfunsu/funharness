@@ -420,4 +420,46 @@ describe('领域预检阻断与引导', () => {
         assert.equal(triggerCalls[0].entryPoint, 'syncCodeGraphByFeatureId');
         assert.equal(triggerCalls[0].worktreePath, tmpDir);
     });
+
+    test('点击提交 PR/MR 前先触发现有 Sync CodeGraph 流程（异步，不阻塞提交）', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+
+        let submitCalls = 0;
+        const { service, feature } = createServiceHarness(tmpDir, '去处理', {
+            gitServiceOverrides: {
+                async submitBranchForChangeRequests() {
+                    submitCalls += 1;
+                    return {
+                        success: true,
+                        message: 'ok',
+                        entries: {},
+                    };
+                },
+            },
+        });
+
+        let syncCalls = 0;
+        let releaseSync;
+        const syncPending = new Promise(resolve => {
+            releaseSync = resolve;
+        });
+        service.syncCodeGraphByFeatureId = async () => {
+            syncCalls += 1;
+            await syncPending;
+        };
+        service.runDevDriftGateWithRepair = async () => true;
+
+        const commitPromise = service.commitToBaselineByFeatureId(feature.id);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Submit should proceed even while CodeGraph sync is still pending.
+        assert.equal(submitCalls, 1);
+
+        releaseSync();
+        await commitPromise;
+
+        assert.equal(syncCalls, 1);
+    });
 });
