@@ -122,7 +122,7 @@ export type HarnessMessage =
     | { type: 'next'; id: string; step: HarnessStep; targetStage?: HarnessStep }
     | { type: 'previous'; id: string; step: HarnessStep }
     | { type: 'rollbackDev'; id: string }
-    | { type: 'pass'; id: string }
+    | { type: 'pass'; id: string; direct?: boolean }
     | { type: 'syncMainCode'; id: string }
     | { type: 'completeDevWithPush'; id: string }
     | { type: 'pushAndNextStage'; id: string }

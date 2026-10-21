@@ -399,7 +399,7 @@ class Harness {
                 nextStage: async (featureId, step, targetStage) => this.actionsService.nextStageByFeatureId(featureId, step, targetStage),
                 previousStage: async (featureId, step) => this.actionsService.previousStageByFeatureId(featureId, step),
                 rollbackDev: async (featureId) => this.actionsService.rollbackDevByFeatureId(featureId),
-                pass: async (featureId) => this.actionsService.passByFeatureId(featureId),
+                pass: async (featureId, direct) => this.actionsService.passByFeatureId(featureId, direct === true),
                 syncMainCode: async (featureId) => this.actionsService.syncMainCodeByFeatureId(featureId),
                 completeDevWithPush: async (featureId) => this.actionsService.completeDevWithPush(featureId),
                 pushAndNextStage: async (featureId) => this.actionsService.pushAndNextStage(featureId),

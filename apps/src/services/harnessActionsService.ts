@@ -1580,37 +1580,55 @@ export class HarnessActionsService {
         return changed;
     }
 
-    async passByFeatureId(featureId: string): Promise<void> {
+    async passByFeatureId(featureId: string, directComplete = false): Promise<void> {
         const task = this.getFeatureById(featureId);
         if (!task) return;
         await this.runExclusiveGitAction(task, 'pass', async () => {
-            if (task.stage === STAGE.DEVELOPING) {
-                const submitted = await this.submitBranchForReview(task, featureId);
+            let activeTask: Feature = task;
+            let skipReadyDriftGate = false;
+
+            if (activeTask.stage === STAGE.DEVELOPING) {
+                const submitted = await this.submitBranchForReview(activeTask, featureId);
                 if (!submitted) {
                     return;
                 }
+
                 await this.nextStageByFeatureId(featureId, 'dev');
                 const latest = this.getFeatureById(featureId);
                 if (latest?.stage === STAGE.READY_FOR_REVIEW) {
-                    vscode.window.showInformationMessage('开发阶段已完成，已进入待评审阶段。');
+                    if (!directComplete) {
+                        vscode.window.showInformationMessage('提交完成，已进入待评审阶段。');
+                    }
+                    activeTask = latest;
+                } else {
+                    vscode.window.showWarningMessage('已提交 PR/MR，但当前阶段未进入待评审，请检查门禁或手动重试。');
+                    return;
                 }
-                return;
+
+                if (!directComplete) {
+                    return;
+                }
+
+                skipReadyDriftGate = true;
+                vscode.window.showInformationMessage('正在执行直接完成：检查远程合并与最终门禁...');
             }
 
-            if (task.stage !== STAGE.READY_FOR_REVIEW) {
+            if (activeTask.stage !== STAGE.READY_FOR_REVIEW) {
                 vscode.window.showWarningMessage('仅开发中或待评审阶段支持「完成」操作。');
                 return;
             }
 
-            const passed = await this.runDevDriftGateWithRepair(task);
-            if (!passed) {
-                return;
+            if (!skipReadyDriftGate) {
+                const passed = await this.runDevDriftGateWithRepair(activeTask);
+                if (!passed) {
+                    return;
+                }
             }
 
-            const iterDir = this.deps.getIterationDir(task);
+            const iterDir = this.deps.getIterationDir(activeTask);
             const finalGate = await this.runFinalExecutionGate(task, iterDir);
             if (!finalGate.passed) {
-                appendHarnessLog(iterDir, 'execution-gate', `[${task.id}] ❌ final-gate failed: ${finalGate.summary}`);
+                appendHarnessLog(iterDir, 'execution-gate', `[${activeTask.id}] ❌ final-gate failed: ${finalGate.summary}`);
                 vscode.window.showErrorMessage(
                     `执行门禁未通过：${finalGate.summary}`,
                     {
@@ -1621,12 +1639,12 @@ export class HarnessActionsService {
                 return;
             }
             if (!finalGate.skipped) {
-                appendHarnessLog(iterDir, 'execution-gate', `[${task.id}] ✅ final-gate passed: ${finalGate.summary}`);
+                appendHarnessLog(iterDir, 'execution-gate', `[${activeTask.id}] ✅ final-gate passed: ${finalGate.summary}`);
                 vscode.window.showInformationMessage(finalGate.summary);
             }
 
-            const refreshed = await this.deps.gitService.refreshChangeRequestStatuses(task.changeRequests, iterDir);
-            task.changeRequests = refreshed.entries;
+            const refreshed = await this.deps.gitService.refreshChangeRequestStatuses(activeTask.changeRequests, iterDir);
+            activeTask.changeRequests = refreshed.entries;
             this.deps.saveAndRender();
 
             if (!refreshed.allRequiredMerged) {
@@ -1641,9 +1659,9 @@ export class HarnessActionsService {
                 return;
             }
 
-            const cleanupResult = await this.deps.gitService.cleanupIterationAfterRemoteMerge(task, iterDir);
-            task.stage = STAGE.DONE;
-            this.deps.onPass(task);
+            const cleanupResult = await this.deps.gitService.cleanupIterationAfterRemoteMerge(activeTask, iterDir);
+            activeTask.stage = STAGE.DONE;
+            this.deps.onPass(activeTask);
             this.deps.saveAndRender();
             if (cleanupResult.message) {
                 vscode.window.showInformationMessage(cleanupResult.message);
@@ -1651,15 +1669,15 @@ export class HarnessActionsService {
 
             const warmArchive = this.runWarmArchiveCleanup(iterDir);
             if (warmArchive.failures.length > 0) {
-                appendHarnessLog(iterDir, 'archive', `[${task.id}] ⚠ warm-archive failure: ${warmArchive.failures.join('；')}`);
+                appendHarnessLog(iterDir, 'archive', `[${activeTask.id}] ⚠ warm-archive failure: ${warmArchive.failures.join('；')}`);
                 vscode.window.showWarningMessage(`温归档有部分目录清理失败：${warmArchive.failures[0]}`);
             } else if (warmArchive.removedCount > 0) {
-                appendHarnessLog(iterDir, 'archive', `[${task.id}] ✅ warm-archive cleaned ${warmArchive.removedCount} directories`);
+                appendHarnessLog(iterDir, 'archive', `[${activeTask.id}] ✅ warm-archive cleaned ${warmArchive.removedCount} directories`);
                 vscode.window.showInformationMessage(`温归档完成：已清理 ${warmArchive.removedCount} 个可再生目录。`);
             }
 
             if (cleanupResult.cleanupComplete) {
-                appendHarnessLog(iterDir, 'archive', `[${task.id}] ℹ git cleanups finished; iteration folder kept for warm-archive policy`);
+                appendHarnessLog(iterDir, 'archive', `[${activeTask.id}] ℹ git cleanups finished; iteration folder kept for warm-archive policy`);
             }
 
             if (this.deps.isWorktreeSubview()) {

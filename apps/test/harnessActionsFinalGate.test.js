@@ -249,6 +249,24 @@ describe('最终执行门禁回归覆盖基线', () => {
         assert.equal(sink.errors.length, 0);
     });
 
+    test('direct-complete closes task from developing in one click', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+
+        const sink = { errors: [], infos: [] };
+        const { service, feature, calls } = createServiceHarness(tmpDir, {}, sink);
+        feature.stage = STAGE.DEVELOPING;
+
+        await service.passByFeatureId(feature.id, true);
+
+        assert.equal(calls.submit, 1);
+        assert.equal(calls.refresh, 1);
+        assert.equal(calls.cleanup, 1);
+        assert.equal(feature.stage, STAGE.DONE);
+        assert.equal(calls.onPass, 1);
+        assert.equal(sink.errors.length, 0);
+    });
+
     test('runs warm archive cleanup after final completion', async () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);

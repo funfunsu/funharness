@@ -100,7 +100,7 @@ interface HarnessMessageControllerDeps {
     nextStage: (featureId: string, step: Extract<HarnessMessage, { type: 'next' }>['step'], targetStage?: Extract<HarnessMessage, { type: 'next' }>['targetStage']) => Promise<void>;
     previousStage: (featureId: string, step: Extract<HarnessMessage, { type: 'previous' }>['step']) => Promise<void>;
     rollbackDev: (featureId: string) => Promise<void>;
-    pass: (featureId: string) => Promise<void>;
+    pass: (featureId: string, direct?: boolean) => Promise<void>;
     syncMainCode: (featureId: string) => Promise<void>;
     completeDevWithPush: (featureId: string) => Promise<void>;
     pushAndNextStage: (featureId: string) => Promise<void>;
@@ -767,7 +767,7 @@ export class HarnessMessageController {
                 await this.deps.rollbackDev(msg.id);
                 return;
             case 'pass':
-                await this.deps.pass(msg.id);
+                await this.deps.pass(msg.id, msg.direct === true);
                 return;
             case 'syncMainCode':
                 await this.deps.syncMainCode(msg.id);

@@ -365,7 +365,14 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
-        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="pass('${ctx.task.id}')">✅ 完成</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="pass('${ctx.task.id}', false, this)">📤 提交并待评审</button>`,
+    },
+    {
+        key: 'dev-direct-pass',
+        placement: 'primary',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.DEVELOPING],
+        render: (ctx) => `<button class="action-btn action-btn--warning" onclick="pass('${ctx.task.id}', true, this)">⚡ 直接完成</button>`,
     },
     {
         key: 'dev-rollback-to-task-split',
@@ -386,7 +393,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.READY_FOR_REVIEW],
-        render: (ctx) => `<button class="action-btn action-btn--success" onclick="pass('${ctx.task.id}')">✅ 完成（检查远程已合并）</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--success" onclick="pass('${ctx.task.id}', false, this)">✅ 完成（检查远程已合并）</button>`,
     },
     {
         key: 'spec-review',
@@ -2090,7 +2097,34 @@ function runAgent(s,id){v.postMessage({type:'runAgent',step:s,id})}
 function next(s,id,ts){v.postMessage({type:'next',step:s,id,...(ts?{targetStage:ts}:{})})}
 function previousStage(s,id){v.postMessage({type:'previous',step:s,id})}
 function rollbackDev(id){v.postMessage({type:'rollbackDev',id})}
-function pass(id){v.postMessage({type:'pass',id})}
+const __passPendingTaskIds=new Set();
+function pass(id,direct,el){
+    var taskId=String(id||'');
+    if(__passPendingTaskIds.has(taskId)){return;}
+    __passPendingTaskIds.add(taskId);
+    if(el&&typeof el==='object'){
+        try{
+            if(!el.dataset){el.dataset={};}
+            el.dataset.prevText=el.textContent||'';
+            el.disabled=true;
+            el.textContent='处理中...';
+            el.style.opacity='0.75';
+            el.style.cursor='wait';
+        }catch{}
+    }
+    v.postMessage({type:'pass',id,direct:direct===true});
+    setTimeout(function(){
+        __passPendingTaskIds.delete(taskId);
+        if(el&&typeof el==='object'){
+            try{
+                el.disabled=false;
+                el.textContent=(el.dataset&&el.dataset.prevText)?el.dataset.prevText:el.textContent;
+                el.style.opacity='';
+                el.style.cursor='';
+            }catch{}
+        }
+    },20000);
+}
 function refresh(){v.postMessage({type:'refresh'})}
 function pushAll(id){v.postMessage({type:'pushAndNextStage',id})}
 function commitToBaseline(id){v.postMessage({type:'commitToBaseline',id})}
