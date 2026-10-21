@@ -1,0 +1,203 @@
+{
+  "iterationId": "codegraph-20261014",
+  "basedOnBaselineVersion": "v-64be60be348e",
+  "sourceRevisionSet": {
+    "registryRevision": "2d7529de779daca8",
+    "indexRevision": "",
+    "domainDocRevisions": {
+      "domain-knowledge": "",
+      "project-structure-init": "",
+      "ai-quick-chat": ""
+    }
+  },
+  "updatedAt": "2026-10-21T02:50:41.414Z",
+  "domainChanges": [
+    {
+      "canonicalDomain": "project-structure-init",
+      "rawDomain": "project-structure-init",
+      "reqId": "Req-1",
+      "title": "CodeGraph 自动构建能力",
+      "userStory": "作为开发者，我希望在主流程入口首次真实创建 worktree 后自动触发本地 CodeGraph 构建，并在已有 worktree 但图谱缺失时进行补偿触发，以便于 AI 在后续阶段直接获取结构化代码上下文。",
+      "changeType": "add",
+      "status": "active",
+      "contracts": [
+        {
+          "id": "API-1",
+          "reqId": "Req-1",
+          "method": "EVENT",
+          "path": "/internal/codegraph/init/run-once",
+          "requestShape": {
+            "featureId": "string",
+            "taskName": "string",
+            "worktreePath": "string",
+            "entryPoint": "openFolderLocationByFeatureId|runCustomButtonByFeatureId|syncCodeGraphByFeatureId",
+            "sessionId": "string",
+            "autoCodeGraphEnabled": "boolean",
+            "autoInstallEnabled": "boolean"
+          },
+          "responseShape": {
+            "status": "success|warning|deduped",
+            "summary": "string",
+            "startedAt": "string",
+            "endedAt": "string"
+          }
+        },
+        {
+          "id": "API-4",
+          "reqId": "Req-1",
+          "method": "EVENT",
+          "path": "/internal/codegraph/sync/manual",
+          "requestShape": {
+            "featureId": "string"
+          },
+          "responseShape": {
+            "status": "success|warning",
+            "summary": "string"
+          }
+        }
+      ],
+      "invariants": [
+        {
+          "id": "INV-1",
+          "reqId": "Req-1",
+          "text": "wasNewlyCreated=true 且 autoCodeGraphEnabled=true 时，必须触发一次初始化编排；已有 worktree/缺图场景允许补偿触发。"
+        }
+      ]
+    },
+    {
+      "canonicalDomain": "project-structure-init",
+      "rawDomain": "project-structure-init",
+      "reqId": "Req-2",
+      "title": "自动 CodeGraph 控制能力",
+      "userStory": "作为产品管理员，我希望在高级设置中有一个默认开启的 CodeGraph 开关，以便于按项目策略统一控制自动构建行为。",
+      "changeType": "add",
+      "status": "active",
+      "contracts": [
+        {
+          "id": "API-2",
+          "reqId": "Req-2",
+          "method": "EVENT",
+          "path": "/internal/codegraph/config/normalize-policy",
+          "requestShape": {
+            "configRef": "Config"
+          },
+          "responseShape": {
+            "autoCodeGraphEnabled": "boolean",
+            "autoInstallEnabled": "boolean",
+            "scope": "git-config-compatible",
+            "normalizedWithAutoCodeGraph": "boolean"
+          }
+        }
+      ],
+      "invariants": [
+        {
+          "id": "INV-2",
+          "reqId": "Req-2",
+          "text": "配置缺省时自动构建开关为开启；关闭后禁止触发；重开后恢复触发。"
+        }
+      ]
+    },
+    {
+      "canonicalDomain": "project-structure-init",
+      "rawDomain": "project-structure-init",
+      "reqId": "Req-3",
+      "title": "CodeGraph 安装与流程持续能力",
+      "userStory": "作为开发者，我希望系统在检测到本机缺少 codegraph 命令时自动尝试安装，以便于减少手工准备步骤并提高初始化成功率。",
+      "changeType": "add",
+      "status": "active",
+      "contracts": [],
+      "invariants": [
+        {
+          "id": "INV-3",
+          "reqId": "Req-3",
+          "text": "CLI 缺失且自动安装策略开启时必须尝试一次安装并记录，不得阻断主流程。"
+        }
+      ]
+    },
+    {
+      "canonicalDomain": "project-structure-init",
+      "rawDomain": "project-structure-init",
+      "reqId": "Req-4",
+      "title": "CodeGraph 失败处理与追踪能力",
+      "userStory": "作为研发负责人，我希望 CodeGraph 构建失败时不阻断主流程但有完整可追踪记录，以便于在不影响开发推进的前提下持续修复环境问题。",
+      "changeType": "add",
+      "status": "active",
+      "contracts": [
+        {
+          "id": "API-5",
+          "reqId": "Req-4",
+          "method": "EVENT",
+          "path": "/internal/codegraph/process/append-run-record",
+          "requestShape": {
+            "worktreeId": "string",
+            "worktreePath": "string",
+            "entryPoint": "openFolderLocationByFeatureId|runCustomButtonByFeatureId|syncCodeGraphByFeatureId",
+            "startedAt": "string",
+            "endedAt": "string",
+            "status": "success|warning|deduped",
+            "summary": "string",
+            "errorDigest": "string?",
+            "dedupeReason": "string?"
+          },
+          "responseShape": {
+            "persisted": "boolean",
+            "logPath": "string"
+          }
+        }
+      ],
+      "invariants": [
+        {
+          "id": "INV-4",
+          "reqId": "Req-4",
+          "text": "成功/告警/去重等常规分支必须写入一条完整过程记录；异常抛出分支需额外兜底保障。"
+        },
+        {
+          "id": "INV-5",
+          "reqId": "Req-4",
+          "text": "同一 sessionId+worktreePath 初始化窗口内活跃构建并发数不得超过 1。"
+        }
+      ]
+    },
+    {
+      "canonicalDomain": "domain-knowledge",
+      "rawDomain": "domain-knowledge",
+      "reqId": "Req-5",
+      "title": "图谱证据包注入能力",
+      "userStory": "作为需求与开发协作团队，我希望 CodeGraph 结果被整理为可控体量的证据包并注入各阶段 prompt，以便于减少接缝遗漏与错误改动范围判断。",
+      "changeType": "add",
+      "status": "active",
+      "contracts": [
+        {
+          "id": "API-3",
+          "reqId": "Req-5",
+          "method": "EVENT",
+          "path": "/internal/codegraph/evidence/get-stage-evidence",
+          "requestShape": {
+            "worktreePath": "string",
+            "stage": "req|des|tcs|tsk|dev",
+            "budgetTokens": "number",
+            "freshnessPolicy": "latest-success-record"
+          },
+          "responseShape": {
+            "usable": "boolean",
+            "freshness": "fresh|stale|missing",
+            "anchors": "[string]",
+            "- caller": "string",
+            "callee": "string",
+            "relation": "string",
+            "impactSet": "[string]",
+            "bundlePath": "string",
+            "warning": "string?"
+          }
+        }
+      ],
+      "invariants": [
+        {
+          "id": "INV-6",
+          "reqId": "Req-5",
+          "text": "证据缺失或过期时必须告警降级，禁止将未查询到节点推断为不存在业务关系。"
+        }
+      ]
+    }
+  ]
+}

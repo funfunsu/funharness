@@ -43,7 +43,7 @@ function mapChangeRequestStateToTag(state: string): { text: string; cls: string 
     }
 }
 
-function buildChangeRequestStatusHtml(task: Feature): string {
+function buildChangeRequestStatusHtml(task: Feature, tokenAutoMergeEnabled: boolean): string {
     const entries: FeatureChangeRequestState[] = Object.values(task.changeRequests || {} as Record<string, FeatureChangeRequestState>);
     if (entries.length === 0) {
         return '';
@@ -70,8 +70,9 @@ ${err}
 </div>`;
     }).join('');
 
-    return `<details class="cr-panel" open>
-<summary>🔀 远程 PR/MR 状态（${entries.length}）</summary>
+    const autoMergeLabel = tokenAutoMergeEnabled ? '开' : '关';
+    return `<details class="cr-panel">
+<summary><span class="cr-summary-main">🔀 远程 PR/MR 状态（${entries.length}）</span><span class="cr-summary-hint">自动合并：${autoMergeLabel}</span></summary>
 <div class="cr-list">${rows}</div>
 </details>`;
 }
@@ -364,7 +365,14 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
-        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="${ctx.isWorktreeSubview ? 'pushDev' : 'pushAll'}('${ctx.task.id}')">🚀 推送</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="pass('${ctx.task.id}', false, this)">📤 提交并待评审</button>`,
+    },
+    {
+        key: 'dev-direct-pass',
+        placement: 'primary',
+        panels: ['main', 'worktree'],
+        stages: [STAGE.DEVELOPING],
+        render: (ctx) => `<button class="action-btn action-btn--warning" onclick="pass('${ctx.task.id}', true, this)">⚡ 直接完成</button>`,
     },
     {
         key: 'dev-rollback-to-task-split',
@@ -385,7 +393,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.READY_FOR_REVIEW],
-        render: (ctx) => `<button class="action-btn action-btn--success" onclick="pass('${ctx.task.id}')">🏁 检查远程已合并并完成任务</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--success" onclick="pass('${ctx.task.id}', false, this)">✅ 完成（检查远程已合并）</button>`,
     },
     {
         key: 'spec-review',
@@ -582,6 +590,7 @@ export function buildMainPageHtml(
         customButtons: CustomButton[];
         aiQuickChatButtons?: import('./models').AiQuickChatButton[];
         autoPollEnabled: boolean;
+        tokenAutoMergeEnabled?: boolean;
         autoPoll?: AutoPollStatus;
         scriptInventory?: ScriptInventory;
         readOnly?: boolean;
@@ -769,8 +778,10 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .delta-block{background:#4a1818;color:#ff9a9a}
 .delta-none{background:#2c2c2e;color:#8f8f94}
 .cr-panel{margin-top:8px;background:#1a1a1a;border:1px solid #323238;border-radius:8px;padding:6px 8px}
-.cr-panel>summary{cursor:pointer;font-size:12px;color:#cfd6dd;list-style:none}
+.cr-panel>summary{cursor:pointer;font-size:12px;color:#cfd6dd;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .cr-panel>summary::-webkit-details-marker{display:none}
+.cr-summary-main{display:inline-flex;align-items:center}
+.cr-summary-hint{font-size:10px;color:#8f8f94}
 .cr-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
 .cr-row{background:#202026;border:1px solid #323238;border-radius:8px;padding:7px 8px}
 .cr-main{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
@@ -1002,7 +1013,6 @@ placeholder="请输入需求描述"
 ${!t.quickMode ? `<div>阶段：${STAGE_LABEL[t.stage] || t.stage}</div>
 <div class="task-status">原因：${health.summary || '-'}</div>
 ${(t.stage === STAGE.DEVELOPING || t.stage === STAGE.READY_FOR_REVIEW) ? `<div class="health-line" style="margin:4px 0">${buildDeltaBadgeHtml(t.id, view.specDeltaStatus)}</div>` : ''}
-${buildChangeRequestStatusHtml(t)}
 ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.latestFailureReason}</div>` : ''}
 ${outputWarningsPreview.length > 0 ? `<div class="task-status" style="color:#ffb143">输出路径告警：${outputWarningsPreview.map(escapeHtml).join('；')}${outputWarnings.length > outputWarningsPreview.length ? `（+${outputWarnings.length - outputWarningsPreview.length}）` : ''}</div>` : ''}
 <div class="task-status">待办:${stats.todo} 执行中:${stats.doing} 完成:${stats.done}${stats.failed > 0 ? ` 失败:${stats.failed}` : ''}</div>
@@ -1059,6 +1069,8 @@ ${subTasks.map(st => {
 </details>
 ` : ''}
 
+${buildChangeRequestStatusHtml(t, config.tokenAutoMergeEnabled === true)}
+
 <div class="action">
 ${actionHtml}
 </div>
@@ -1096,6 +1108,55 @@ ${!isWorktreeSubview ? `<div class="fixed-bottom">
 
 <script>
 const v=acquireVsCodeApi();
+const __fhPostRaw=v.postMessage.bind(v);
+const __fhBusyTimers=new WeakMap();
+function __fhResolveButton(explicitButton){
+    if(explicitButton&&String(explicitButton.tagName||'').toUpperCase()==='BUTTON'){
+        return explicitButton;
+    }
+    try{
+        const evt=window.event;
+        const src=evt&&(evt.currentTarget||evt.target);
+        if(src&&typeof src.closest==='function'){
+            return src.closest('button');
+        }
+    }catch{}
+    return null;
+}
+function __fhMarkButtonBusy(button,label,timeoutMs,onRestore){
+    if(!button){return;}
+    try{
+        const existing=__fhBusyTimers.get(button);
+        if(existing){clearTimeout(existing);}
+        if(!button.dataset.fhPrevText){
+            button.dataset.fhPrevText=button.textContent||'';
+        }
+        button.disabled=true;
+        button.textContent=label||'处理中...';
+        button.style.opacity='0.75';
+        button.style.cursor='wait';
+        const timer=setTimeout(function(){
+            try{
+                button.disabled=false;
+                button.textContent=button.dataset.fhPrevText||button.textContent;
+                delete button.dataset.fhPrevText;
+                button.style.opacity='';
+                button.style.cursor='';
+            }catch{}
+            try{if(typeof onRestore==='function'){onRestore();}}catch{}
+            __fhBusyTimers.delete(button);
+        },Math.max(600,timeoutMs||15000));
+        __fhBusyTimers.set(button,timer);
+    }catch{}
+}
+function postHarnessMessage(payload,options){
+    const opts=options||{};
+    if(opts.busy!==false){
+        const btn=__fhResolveButton(opts.button);
+        __fhMarkButtonBusy(btn,opts.label||'处理中...',opts.timeoutMs,opts.onRestore);
+    }
+    __fhPostRaw(payload);
+}
 const isWorktreeSubview=${isWorktreeSubview ? 'true' : 'false'};
 const DOMAIN_GOVERNANCE_TASK_ID='${escapeHtml(governanceTaskId)}';
 const TODO_STATE_KEY='workspaceTodoState.v1';
@@ -1367,7 +1428,7 @@ function requestDomainWorkspaceContext(){
     domainWorkspaceState.error='';
     saveDomainWorkspaceState();
     renderDomainWorkspacePanel();
-    v.postMessage({
+    postHarnessMessage({
         type:'loadDomainKnowledgeContext',
         repoRoot:domainWorkspaceState.repoRoot,
         iterationId:domainWorkspaceState.iterationId,
@@ -1397,22 +1458,22 @@ function reloadDomainWorkspaceContext(){
 
 /** Trigger a stage review; result is surfaced via VS Code notification. */
 function triggerStageReview(taskId,stage){
-    v.postMessage({type:'runStageReview',stage,context:{taskId:String(taskId||''),taskStage:String(stage||'')}});
+    postHarnessMessage({type:'runStageReview',stage,context:{taskId:String(taskId||''),taskStage:String(stage||'')}});
 }
 
 /** Open the user-custom review prompt file for editing (same convention as other stage prompts). */
 function openReviewCustomPrompt(stage){
-    v.postMessage({type:'openReviewCustomPrompt',stage});
+    postHarnessMessage({type:'openReviewCustomPrompt',stage});
 }
 
 /** Open stage custom prompt file from task card action section. */
 function openCustomPrompt(step){
-    v.postMessage({type:'openCustomPrompt',step});
+    postHarnessMessage({type:'openCustomPrompt',step});
 }
 
 /** Open constitution prompt file from task card action section. */
 function openCustomConstitution(){
-    v.postMessage({type:'openCustomConstitution'});
+    postHarnessMessage({type:'openCustomConstitution'});
 }
 
 /** Toggle task-card custom prompt overflow actions by task-specific DOM id. */
@@ -1479,7 +1540,7 @@ function setDomainActionLoading(action){
 function postDomainGovernanceAction(type){
     if(!DOMAIN_GOVERNANCE_TASK_ID||domainActionLoading){return;}
     setDomainActionLoading(type);
-    v.postMessage({type,id:DOMAIN_GOVERNANCE_TASK_ID});
+    postHarnessMessage({type,id:DOMAIN_GOVERNANCE_TASK_ID});
     setTimeout(()=>setDomainActionLoading(''),1500);
 }
 
@@ -1556,7 +1617,7 @@ function requestTodoList(){
     todoState.loading=true;
     saveTodoState();
     renderTodoPanel();
-    v.postMessage({type:'todo.list'});
+    postHarnessMessage({type:'todo.list'});
 }
 
 /** Return current todo item by id from local widget state. */
@@ -1686,7 +1747,7 @@ function submitTodoEditor(){
             ? {...todo,title,description:description||null,status,updatedAt:new Date().toISOString()}
             : todo);
         todoState.todos=nextTodos;
-        v.postMessage({
+        postHarnessMessage({
             type:'todo.update',
             id:todoState.editor.id,
             title,
@@ -1694,7 +1755,7 @@ function submitTodoEditor(){
             status,
         });
     }else{
-        v.postMessage({
+        postHarnessMessage({
             type:'todo.create',
             sourcePanel:TODO_SOURCE_PANEL,
             title,
@@ -1716,7 +1777,7 @@ function toggleTodoStatus(id,nextStatus){
     todoState.error=null;
     saveTodoState();
     renderTodoPanel();
-    v.postMessage({
+    postHarnessMessage({
         type:'todo.update',
         id,
         title:todo.title,
@@ -1735,7 +1796,7 @@ function deleteTodo(id){
     todoState.error=null;
     saveTodoState();
     renderTodoPanel();
-    v.postMessage({type:'todo.delete',id});
+    postHarnessMessage({type:'todo.delete',id});
 }
 
 /** Promote a todo into a new iteration task and remove it from the todo list. */
@@ -1748,7 +1809,7 @@ function promoteTodoToFeature(id){
     todoState.error=null;
     saveTodoState();
     renderTodoPanel();
-    v.postMessage({
+    postHarnessMessage({
         type:'todo.promoteToFeature',
         todoId:id,
         promotionPolicy:'remove',
@@ -1854,7 +1915,7 @@ function triggerDetectDomainConflicts(){
     domainWorkspaceState.notice='';
     saveDomainWorkspaceState();
     renderDomainWorkspacePanel();
-    v.postMessage({
+    postHarnessMessage({
         type:'detectDomainConflicts',
         changeSet:changeSet,
         baselineVersion:domainWorkspaceState.baselineVersion||(changeSet.basedOnBaselineVersion||''),
@@ -1892,7 +1953,7 @@ function resolveDomainConflictAction(conflictId,action,domId){
         decision={action:'choose-value',field:'canonicalDomain',chosenValue:''};
     }
     if(!decision){return;}
-    v.postMessage({type:'resolveDomainConflict',conflictId:conflictId,decision:decision,changeSet:domainWorkspaceState.changeSet});
+    postHarnessMessage({type:'resolveDomainConflict',conflictId:conflictId,decision:decision,changeSet:domainWorkspaceState.changeSet});
 }
 
 /** Handle conflict detection results pushed from the extension. */
@@ -1951,7 +2012,7 @@ function triggerCommitDomainKnowledge(){
     domainWorkspaceState.notice='';
     saveDomainWorkspaceState();
     renderDomainWorkspacePanel();
-    v.postMessage({
+    postHarnessMessage({
         type:'commitDomainKnowledgeChanges',
         changeSet:changeSet,
         baselineVersion:domainWorkspaceState.baselineVersion||(changeSet.basedOnBaselineVersion||''),
@@ -1984,7 +2045,7 @@ function triggerRefreshBaseline(){
     domainWorkspaceState.notice='正在拉取最新基线并重投影…';
     saveDomainWorkspaceState();
     renderDomainWorkspacePanel();
-    v.postMessage({
+    postHarnessMessage({
         type:'refreshBaselineAndReproject',
         changeSet:changeSet,
         currentBaselineVersion:domainWorkspaceState.baselineVersion||(changeSet.basedOnBaselineVersion||''),
@@ -2070,33 +2131,47 @@ document.addEventListener('click',(event)=>{
     else if(action==='delete'){deleteTodo(id);}
 });
 
-function p(x){v.postMessage({type:'page',page:x})}
+function p(x){postHarnessMessage({type:'page',page:x})}
 function create(){
     const name=document.getElementById('name').value.trim();
     const desc=document.getElementById('desc').value.trim();
     if(!name){var ni=document.getElementById('name');if(ni){ni.style.outline='2px solid #ff3b30';ni.placeholder='请输入迭代名称（英文）';setTimeout(function(){ni.style.outline='';ni.placeholder='迭代名称（英文）';},2000);}return;}
     const quickMode=document.getElementById('quickMode').checked;
-    v.postMessage({type:'create',name,desc,quickMode});
+    postHarnessMessage({type:'create',name,desc,quickMode});
     document.getElementById('name').value='';
     document.getElementById('desc').value='';
     document.getElementById('quickMode').checked=false;
 }
-function runAgent(s,id){v.postMessage({type:'runAgent',step:s,id})}
-function next(s,id,ts){v.postMessage({type:'next',step:s,id,...(ts?{targetStage:ts}:{})})}
-function previousStage(s,id){v.postMessage({type:'previous',step:s,id})}
-function rollbackDev(id){v.postMessage({type:'rollbackDev',id})}
-function pass(id){v.postMessage({type:'pass',id})}
-function refresh(){v.postMessage({type:'refresh'})}
-function pushAll(id){v.postMessage({type:'pushAndNextStage',id})}
-function commitToBaseline(id){v.postMessage({type:'commitToBaseline',id})}
-function refreshChangeRequests(id){v.postMessage({type:'refreshChangeRequests',id})}
-function startAuto(id){v.postMessage({type:'startAuto',id})}
-function pauseAuto(id){v.postMessage({type:'pauseAuto',id})}
-function nextFeature(id){v.postMessage({type:'nextFeature',id})}
-function retry(subId,id){v.postMessage({type:'retryFeature',subId,id})}
-function syncMainCode(id){v.postMessage({type:'syncMainCode',id})}
-function openMasterWorkspace(){v.postMessage({type:'openMasterWorkspace'})}
-function runCustomButton(id,buttonId){v.postMessage({type:'runCustomButton',id,buttonId})}
+function runAgent(s,id){postHarnessMessage({type:'runAgent',step:s,id})}
+function next(s,id,ts){postHarnessMessage({type:'next',step:s,id,...(ts?{targetStage:ts}:{})})}
+function previousStage(s,id){postHarnessMessage({type:'previous',step:s,id})}
+function rollbackDev(id){postHarnessMessage({type:'rollbackDev',id})}
+const __passPendingTaskIds=new Set();
+function pass(id,direct,el){
+    var taskId=String(id||'');
+    if(__passPendingTaskIds.has(taskId)){return;}
+    __passPendingTaskIds.add(taskId);
+    postHarnessMessage(
+        {type:'pass',id,direct:direct===true},
+        {
+            button:el,
+            label:'处理中...',
+            timeoutMs:20000,
+            onRestore:function(){__passPendingTaskIds.delete(taskId);},
+        },
+    );
+}
+function refresh(){postHarnessMessage({type:'refresh'})}
+function pushAll(id){postHarnessMessage({type:'pushAndNextStage',id})}
+function commitToBaseline(id){postHarnessMessage({type:'commitToBaseline',id})}
+function refreshChangeRequests(id){postHarnessMessage({type:'refreshChangeRequests',id})}
+function startAuto(id){postHarnessMessage({type:'startAuto',id})}
+function pauseAuto(id){postHarnessMessage({type:'pauseAuto',id})}
+function nextFeature(id){postHarnessMessage({type:'nextFeature',id})}
+function retry(subId,id){postHarnessMessage({type:'retryFeature',subId,id})}
+function syncMainCode(id){postHarnessMessage({type:'syncMainCode',id})}
+function openMasterWorkspace(){postHarnessMessage({type:'openMasterWorkspace'})}
+function runCustomButton(id,buttonId){postHarnessMessage({type:'runCustomButton',id,buttonId})}
 function applyCustomButtonSettingsState(){
     var uiState=loadCustomButtonSettingsState();
     var body=document.getElementById('customBtnSettingsBody');
@@ -2207,7 +2282,7 @@ function saveCustomButtons(){
         if(name&&script){buttons.push({name:name,scriptSource:'worktree',script:script,args:args});}
     });
     saveCustomButtonSettingsState({expanded:false});
-    v.postMessage({type:'saveCustomButtons',buttons:buttons});
+    postHarnessMessage({type:'saveCustomButtons',buttons:buttons});
 }
 cbRenderAll();
 applyCustomButtonSettingsState();
@@ -2233,14 +2308,14 @@ function showAiQuickChatNotice(message){
 /** Send an AI quick-chat button click to the extension for dispatch. */
 function runAiQuickChatButton(taskId,buttonId){
     if(!taskId||!buttonId){showAiQuickChatNotice('AI 快捷对话按钮参数缺失，无法发送');return;}
-    try{v.postMessage({type:'runAiQuickChatButton',taskId,buttonId});}
+    try{postHarnessMessage({type:'runAiQuickChatButton',taskId,buttonId});}
     catch(error){showAiQuickChatNotice('AI 快捷对话发送请求失败：'+String(error&&error.message?error.message:error||'unknown'));}
 }
 
-function toggleAutoPoll(enable){v.postMessage({type:'toggleAutoPoll',enable})}
-function setSubStatus(id,subId,status){v.postMessage({type:'setSubFeatureStatus',id,subId,status})}
+function toggleAutoPoll(enable){postHarnessMessage({type:'toggleAutoPoll',enable})}
+function setSubStatus(id,subId,status){postHarnessMessage({type:'setSubFeatureStatus',id,subId,status})}
 function logWebviewEvent(id,event,detail){
-    try{v.postMessage({type:'logWebviewEvent',id,event,detail});}catch{}
+    try{postHarnessMessage({type:'logWebviewEvent',id,event,detail});}catch{}
 }
 function getTaskDescNodes(id){
     return {
@@ -2302,7 +2377,7 @@ function commitFeatureDescEditor(id){
         }
         desc.innerText=nextDesc;
         if(root){root.classList.remove('editing');}
-        v.postMessage({type:'updateFeatureDesc',id:id,desc:nextDesc});
+        postHarnessMessage({type:'updateFeatureDesc',id:id,desc:nextDesc});
         logWebviewEvent(id,'taskDescEditor.save.postMessage','len='+nextDesc.length);
     }catch(error){
         var message=error&&error.message?error.message:String(error);
@@ -2310,15 +2385,15 @@ function commitFeatureDescEditor(id){
         logWebviewEvent(id,'taskDescEditor.save.error.alert',message);
     }
 }
-function resetFeature(id){v.postMessage({type:'resetFeature',id})}
-function openArtifact(id,artifact){v.postMessage({type:'openArtifact',id,artifact})}
-function openFolderLocation(id,location){v.postMessage({type:'openFolderLocation',id,location})}
-function syncCodeGraph(id){v.postMessage({type:'syncCodeGraph',id})}
-function setFeatureAutomation(id,aa){v.postMessage({type:'setFeatureAutomation',id,aa})}
-function setSpecDriftRepair(id,enabled){v.postMessage({type:'setSpecDriftRepair',id,enabled})}
-function setFeatureAiProvider(id,ap){v.postMessage({type:'setFeatureAiProvider',id,ap})}
-function pushDev(id){v.postMessage({type:'pushAndNextStage',id})}
-function specReview(id){v.postMessage({type:'specDeltaReview',id})}
+function resetFeature(id){postHarnessMessage({type:'resetFeature',id})}
+function openArtifact(id,artifact){postHarnessMessage({type:'openArtifact',id,artifact})}
+function openFolderLocation(id,location){postHarnessMessage({type:'openFolderLocation',id,location})}
+function syncCodeGraph(id){postHarnessMessage({type:'syncCodeGraph',id})}
+function setFeatureAutomation(id,aa){postHarnessMessage({type:'setFeatureAutomation',id,aa})}
+function setSpecDriftRepair(id,enabled){postHarnessMessage({type:'setSpecDriftRepair',id,enabled})}
+function setFeatureAiProvider(id,ap){postHarnessMessage({type:'setFeatureAiProvider',id,ap})}
+function pushDev(id){postHarnessMessage({type:'pushAndNextStage',id})}
+function specReview(id){postHarnessMessage({type:'specDeltaReview',id})}
 function openDomainKnowledgeWorkspace(id){
     domainWorkspaceState.visible=true;
     domainWorkspaceState.loading=true;
@@ -2327,7 +2402,7 @@ function openDomainKnowledgeWorkspace(id){
     saveDomainWorkspaceState();
     renderDomainWorkspacePanel();
     // Send taskId; iterationPath will be resolved server-side from taskId.
-    v.postMessage({type:'openDomainKnowledgeWorkspace',taskId:id,iterationPath:''})
+    postHarnessMessage({type:'openDomainKnowledgeWorkspace',taskId:id,iterationPath:''})
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
@@ -2337,7 +2412,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(document.getElementById('workspace-todo-panel')){
         todoState.error=null;
         renderTodoPanel();
-        v.postMessage({type:'todo.list'});
+        postHarnessMessage({type:'todo.list'});
     }
     const domainPanel=document.getElementById('domain-workspace-panel');
     if(domainPanel){
@@ -2357,10 +2432,10 @@ document.addEventListener('DOMContentLoaded',()=>{
     });
 });
 window.addEventListener('error',(event)=>{
-    try{v.postMessage({type:'logWebviewEvent',id:'__global__',event:'webview.error',detail:String(event.message||'unknown')});}catch{}
+    try{postHarnessMessage({type:'logWebviewEvent',id:'__global__',event:'webview.error',detail:String(event.message||'unknown')});}catch{}
 });
 window.addEventListener('unhandledrejection',(event)=>{
-    try{v.postMessage({type:'logWebviewEvent',id:'__global__',event:'webview.unhandledrejection',detail:String(event.reason||'unknown')});}catch{}
+    try{postHarnessMessage({type:'logWebviewEvent',id:'__global__',event:'webview.unhandledrejection',detail:String(event.reason||'unknown')});}catch{}
 });
 </script>
 </body>
@@ -2533,6 +2608,7 @@ ${mirrorTokenRows}
 </div>
 </details>
 <div class="hint">Token 安全存储在 VS Code 凭据库，不写入仓库文件。</div>
+<div class="hint">Token 按「平台 + 域名」全局复用：同一 VS Code 用户下，跨项目/跨 workspace 无需重复设置。</div>
 <div class="hint">获取方式：GitLab 在 User Settings → Access Tokens；GitHub 在 Settings → Developer settings → Personal access tokens。</div>
 <button onclick="saveGit()" style="background:#007aff" ${disabled}>💾 保存 Git 配置并初始化代码</button>
 </div>
@@ -2577,6 +2653,10 @@ ${mirrorTokenRows}
 <input id="afm" type="checkbox" ${config.aiFallbackToManual !== false ? 'checked' : ''} ${disabled}>
 </div>
 <div class="toggle-row">
+<span>Token 模式自动请求合并（受审批/CI/保护分支约束）</span>
+<input id="tam" type="checkbox" ${config.tokenAutoMergeEnabled === true ? 'checked' : ''} ${disabled}>
+</div>
+<div class="toggle-row">
 <span>Claude Code (面板) 预填后自动回车发送（仅 macOS，需授予编辑器「辅助功能」权限）</span>
 <input id="pas" type="checkbox" ${config.aiPanelAutoSubmit !== false ? 'checked' : ''} ${disabled}>
 </div>
@@ -2587,6 +2667,12 @@ ${mirrorTokenRows}
 <div class="toggle-row">
 <span>CodeGraph 开启时，若本机缺少 CLI 将自动尝试安装（无需单独开关）</span>
 </div>
+<div class="toggle-row">
+<span>启用定期冷归档策略（周级调度）</span>
+<input id="cae" type="checkbox" ${config.coldArchiveEnabled !== false ? 'checked' : ''} ${disabled}>
+</div>
+<h5>冷归档保留迭代数量（最小 1，默认 10）</h5>
+<input id="car" type="number" min="1" value="${Math.max(1, Number(config.coldArchiveRetentionCount || 10))}" ${disabled}>
 <button onclick="saveAdvancedConfig()" style="background:#007aff" ${disabled}>💾 保存高级策略</button>
 </details>
 </div>
@@ -2655,21 +2741,70 @@ ${readOnly ? '<div class="meta-box readonly" style="margin-bottom:8px">当前窗
 
 <script>
 const v=acquireVsCodeApi();
-function p(x){v.postMessage({type:'page',page:x})}
-function saveGit(){v.postMessage({type:'saveGit',bb:document.getElementById('bb').value,mg:document.getElementById('mg').value,gmg:document.getElementById('gmg').value})}
+const __fhPostRaw=v.postMessage.bind(v);
+const __fhBusyTimers=new WeakMap();
+function __fhResolveButton(explicitButton){
+    if(explicitButton&&String(explicitButton.tagName||'').toUpperCase()==='BUTTON'){
+        return explicitButton;
+    }
+    try{
+        const evt=window.event;
+        const src=evt&&(evt.currentTarget||evt.target);
+        if(src&&typeof src.closest==='function'){
+            return src.closest('button');
+        }
+    }catch{}
+    return null;
+}
+function __fhMarkButtonBusy(button,label,timeoutMs,onRestore){
+    if(!button){return;}
+    try{
+        const existing=__fhBusyTimers.get(button);
+        if(existing){clearTimeout(existing);}
+        if(!button.dataset.fhPrevText){
+            button.dataset.fhPrevText=button.textContent||'';
+        }
+        button.disabled=true;
+        button.textContent=label||'处理中...';
+        button.style.opacity='0.75';
+        button.style.cursor='wait';
+        const timer=setTimeout(function(){
+            try{
+                button.disabled=false;
+                button.textContent=button.dataset.fhPrevText||button.textContent;
+                delete button.dataset.fhPrevText;
+                button.style.opacity='';
+                button.style.cursor='';
+            }catch{}
+            try{if(typeof onRestore==='function'){onRestore();}}catch{}
+            __fhBusyTimers.delete(button);
+        },Math.max(600,timeoutMs||15000));
+        __fhBusyTimers.set(button,timer);
+    }catch{}
+}
+function postHarnessMessage(payload,options){
+    const opts=options||{};
+    if(opts.busy!==false){
+        const btn=__fhResolveButton(opts.button);
+        __fhMarkButtonBusy(btn,opts.label||'处理中...',opts.timeoutMs,opts.onRestore);
+    }
+    __fhPostRaw(payload);
+}
+function p(x){postHarnessMessage({type:'page',page:x})}
+function saveGit(){postHarnessMessage({type:'saveGit',bb:document.getElementById('bb').value,mg:document.getElementById('mg').value,gmg:document.getElementById('gmg').value})}
 function toggleTokenPanel(panelId,btnId){var panel=document.getElementById(panelId);if(!panel)return;var btn=document.getElementById(btnId);var open=panel.style.display!=='block';panel.style.display=open?'block':'none';if(btn){var collapsed=btn.getAttribute('data-collapsed-label')||'设置';btn.textContent=open?'收起':collapsed;btn.title=open?'收起':collapsed;}}
-function setRemoteApiToken(endpointKey){v.postMessage({type:'setRemoteApiToken',endpointKey:endpointKey})}
-function testRemoteApiToken(endpointKey){v.postMessage({type:'testRemoteApiToken',endpointKey:endpointKey})}
-function clearRemoteApiToken(endpointKey){v.postMessage({type:'clearRemoteApiToken',endpointKey:endpointKey})}
-function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',dcm:document.getElementById('dcm').value,ins:document.getElementById('ins').checked,wsd:document.getElementById('wsd').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked,acg:document.getElementById('acg').checked})}
-function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
-function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
-function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}
-function testAiProvider(){v.postMessage({type:'testAiProvider'})}
-function saveAutoPollConfig(){v.postMessage({type:'saveAutoPollConfig',enabled:document.getElementById('ap_enabled').checked,interval:parseInt(document.getElementById('ap_int').value)||60,script:document.getElementById('ap_script').value.trim(),prompt:document.getElementById('ap_prompt').value,skipMarkers:document.getElementById('ap_skip').value,idleOnly:document.getElementById('ap_idle_only').checked,idleWeekdayStart:document.getElementById('ap_idle_start').value,idleWeekdayEnd:document.getElementById('ap_idle_end').value})}
+function setRemoteApiToken(endpointKey){postHarnessMessage({type:'setRemoteApiToken',endpointKey:endpointKey})}
+function testRemoteApiToken(endpointKey){postHarnessMessage({type:'testRemoteApiToken',endpointKey:endpointKey})}
+function clearRemoteApiToken(endpointKey){postHarnessMessage({type:'clearRemoteApiToken',endpointKey:endpointKey})}
+function saveAdvancedConfig(){postHarnessMessage({type:'saveAdvancedConfig',dcm:document.getElementById('dcm').value,ins:document.getElementById('ins').checked,wsd:document.getElementById('wsd').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,tam:document.getElementById('tam').checked,pas:document.getElementById('pas').checked,acg:document.getElementById('acg').checked,cae:document.getElementById('cae').checked,car:parseInt(document.getElementById('car').value,10)||10})}
+function initProjectStructure(){postHarnessMessage({type:'initProjectStructure'})}
+function applyProjectStructurePreview(){postHarnessMessage({type:'applyProjectStructurePreview'})}
+function openArtifactsIndex(){postHarnessMessage({type:'openArtifactsIndex'})}
+function testAiProvider(){postHarnessMessage({type:'testAiProvider'})}
+function saveAutoPollConfig(){postHarnessMessage({type:'saveAutoPollConfig',enabled:document.getElementById('ap_enabled').checked,interval:parseInt(document.getElementById('ap_int').value)||60,script:document.getElementById('ap_script').value.trim(),prompt:document.getElementById('ap_prompt').value,skipMarkers:document.getElementById('ap_skip').value,idleOnly:document.getElementById('ap_idle_only').checked,idleWeekdayStart:document.getElementById('ap_idle_start').value,idleWeekdayEnd:document.getElementById('ap_idle_end').value})}
 function toggleAutoPollDetails(){const d=document.getElementById('ap_details');if(d)d.style.display=document.getElementById('ap_enabled').checked?'block':'none'}
 function toggleAutoPollIdleDetails(){const d=document.getElementById('ap_idle_details');if(d)d.style.display=document.getElementById('ap_idle_only').checked?'block':'none'}
-function createPollScriptTemplate(){v.postMessage({type:'createPollScriptTemplate'})}
+function createPollScriptTemplate(){postHarnessMessage({type:'createPollScriptTemplate'})}
 const INV=${JSON.stringify(inv).replace(/</g, '\\u003c')};
 const INIT_HOOKS=${JSON.stringify(initialHooks).replace(/</g, '\\u003c')};
 const INIT_AQC_BTNS=${JSON.stringify((config.aiQuickChatButtons || []).map(b => ({ label: b.label, content: b.content }))).replace(/</g, '\\u003c')};
@@ -2750,7 +2885,7 @@ function saveLifecycleHooks(){
     var args=r.querySelector('.hook-args').value.trim();
     if(script){hooks.push({script:script,scriptSource:scriptSource,args:args});}
   });
-  v.postMessage({type:'saveLifecycleHooks',hooks:hooks});
+  postHarnessMessage({type:'saveLifecycleHooks',hooks:hooks});
 }
 // ── AI 快捷对话按钮 ──────────────────────────────────────────────────
 function aqcRowHtml(b){
@@ -2850,7 +2985,7 @@ function saveAiQuickChatButtons(){
     return;
   }
     setAiQuickChatSaveError('');
-    try{v.postMessage({type:'saveAiQuickChatButtons',taskId:'',buttons:buttons});}
+    try{postHarnessMessage({type:'saveAiQuickChatButtons',taskId:'',buttons:buttons});}
     catch(error){setAiQuickChatSaveError('AI 快捷对话按钮保存请求失败：'+String(error&&error.message?error.message:error||'unknown'));}
 }
 renderLifecycleHooks();
@@ -3181,3 +3316,4 @@ ${latestVersionNote}
 ${syncBtn}
 </div>`;
 }
+

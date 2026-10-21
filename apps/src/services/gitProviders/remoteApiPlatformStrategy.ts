@@ -9,9 +9,11 @@ interface FetchJsonResult {
 
 interface RemoteApiPlatformStrategyDeps {
     nowIso: () => string;
+    tokenAutoMergeEnabled: boolean;
     buildEntryBase: (endpoint: MonorepoRemoteEndpoint, sourceBranch: string, targetBranch: string) => FeatureChangeRequestState;
     parseRepoId: (endpoint: MonorepoRemoteEndpoint) => string;
     githubApiBase: (endpoint: MonorepoRemoteEndpoint) => string;
+    githubGraphqlEndpoint: (endpoint: MonorepoRemoteEndpoint) => string;
     gitlabApiBase: (endpoint: MonorepoRemoteEndpoint) => string;
     fetchJson: (url: string, init: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<FetchJsonResult>;
 }
@@ -115,10 +117,54 @@ async function createOrUpdateGithubPullByToken(
 
     const listUrl = `${apiBase}/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${sourceBranch}`)}&base=${encodeURIComponent(targetBranch)}&per_page=1`;
     const list = await deps.fetchJson(listUrl, { method: 'GET', headers: commonHeaders });
+    let number: number | undefined;
+    let url = '';
+    let nodeId = '';
     if (list.ok && Array.isArray(list.json) && list.json.length > 0) {
-        const existing = list.json[0] as { number?: number; html_url?: string };
-        const number = Number(existing.number || 0) || undefined;
-        const url = String(existing.html_url || '');
+        const existing = list.json[0] as { number?: number; html_url?: string; node_id?: string };
+        number = Number(existing.number || 0) || undefined;
+        url = String(existing.html_url || '');
+        nodeId = String(existing.node_id || '');
+    } else {
+        const create = await deps.fetchJson(`${apiBase}/repos/${repo}/pulls`, {
+            method: 'POST',
+            headers: {
+                ...commonHeaders,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                title,
+                head: sourceBranch,
+                base: targetBranch,
+                body,
+            }),
+        });
+
+        if (!create.ok) {
+            return {
+                ...base,
+                state: 'failed',
+                updatedAt: deps.nowIso(),
+                lastError: `GitHub API 创建 PR 失败（${create.status}）`,
+            };
+        }
+
+        number = Number((create.json && create.json.number) || 0) || undefined;
+        url = String((create.json && create.json.html_url) || '');
+        nodeId = String((create.json && create.json.node_id) || '');
+    }
+
+    if (!number) {
+        return {
+            ...base,
+            state: 'open',
+            updatedAt: deps.nowIso(),
+            url,
+            lastError: 'PR 已创建但未解析到编号，自动合并请求已跳过',
+        };
+    }
+
+    if (!deps.tokenAutoMergeEnabled) {
         return {
             ...base,
             number,
@@ -128,36 +174,63 @@ async function createOrUpdateGithubPullByToken(
         };
     }
 
-    const create = await deps.fetchJson(`${apiBase}/repos/${repo}/pulls`, {
-        method: 'POST',
-        headers: {
-            ...commonHeaders,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            title,
-            head: sourceBranch,
-            base: targetBranch,
-            body,
-        }),
-    });
+    if (!nodeId) {
+        const view = await deps.fetchJson(`${apiBase}/repos/${repo}/pulls/${number}`, {
+            method: 'GET',
+            headers: commonHeaders,
+        });
+        if (view.ok) {
+            nodeId = String((view.json && view.json.node_id) || '');
+            url = String((view.json && view.json.html_url) || url);
+        }
+    }
 
-    if (!create.ok) {
+    if (!nodeId) {
         return {
             ...base,
-            state: 'failed',
+            number,
+            url,
+            state: 'open',
             updatedAt: deps.nowIso(),
-            lastError: `GitHub API 创建 PR 失败（${create.status}）`,
+            lastError: '未获取到 PR node_id，自动合并请求已跳过',
         };
     }
 
-    const number = Number((create.json && create.json.number) || 0) || undefined;
-    const url = String((create.json && create.json.html_url) || '');
+    const gql = await deps.fetchJson(deps.githubGraphqlEndpoint(endpoint), {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+            'User-Agent': 'fun-harness',
+        },
+        body: JSON.stringify({
+            query: 'mutation EnableAutoMerge($prId: ID!) { enablePullRequestAutoMerge(input: { pullRequestId: $prId, mergeMethod: SQUASH }) { pullRequest { number } } }',
+            variables: { prId: nodeId },
+        }),
+    });
+
+    const gqlErrors = Array.isArray(gql.json?.errors) ? gql.json.errors : [];
+    if (!gql.ok || gqlErrors.length > 0) {
+        const gqlMessage = gqlErrors.length > 0
+            ? String(gqlErrors[0]?.message || '')
+            : `HTTP ${gql.status}`;
+        return {
+            ...base,
+            number,
+            url,
+            state: 'open',
+            updatedAt: deps.nowIso(),
+            lastError: `PR 已创建，但自动合并请求失败：${gqlMessage}`,
+        };
+    }
+
     return {
         ...base,
         number,
         url,
-        state: 'open',
+        state: 'merge-queued',
+        autoMergeRequestedAt: deps.nowIso(),
         updatedAt: deps.nowIso(),
     };
 }
@@ -211,6 +284,38 @@ async function createOrUpdateGitlabMergeByToken(
         const existing = list.json[0] as { iid?: number; web_url?: string };
         const number = Number(existing.iid || 0) || undefined;
         const url = String(existing.web_url || '');
+        if (deps.tokenAutoMergeEnabled && number) {
+            const mergeRequest = await deps.fetchJson(`${baseApi}/merge_requests/${number}/merge`, {
+                method: 'PUT',
+                headers: {
+                    'PRIVATE-TOKEN': token,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    squash: true,
+                    merge_when_pipeline_succeeds: true,
+                    should_remove_source_branch: true,
+                }),
+            });
+            if (mergeRequest.ok) {
+                return {
+                    ...base,
+                    number,
+                    url,
+                    state: 'merge-queued',
+                    autoMergeRequestedAt: deps.nowIso(),
+                    updatedAt: deps.nowIso(),
+                };
+            }
+            return {
+                ...base,
+                number,
+                url,
+                state: 'open',
+                updatedAt: deps.nowIso(),
+                lastError: `MR 已存在，但自动合并请求失败（${mergeRequest.status}）`,
+            };
+        }
         return {
             ...base,
             number,
@@ -220,21 +325,25 @@ async function createOrUpdateGitlabMergeByToken(
         };
     }
 
+    const createPayload: Record<string, unknown> = {
+        source_branch: sourceBranch,
+        target_branch: targetBranch,
+        title,
+        description: body,
+        squash: true,
+        remove_source_branch: true,
+    };
+    if (deps.tokenAutoMergeEnabled) {
+        createPayload.merge_when_pipeline_succeeds = true;
+    }
+
     const create = await deps.fetchJson(`${baseApi}/merge_requests`, {
         method: 'POST',
         headers: {
             'PRIVATE-TOKEN': token,
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-            source_branch: sourceBranch,
-            target_branch: targetBranch,
-            title,
-            description: body,
-            squash: true,
-            merge_when_pipeline_succeeds: true,
-            remove_source_branch: true,
-        }),
+        body: JSON.stringify(createPayload),
     });
 
     if (!create.ok) {
@@ -252,7 +361,8 @@ async function createOrUpdateGitlabMergeByToken(
         ...base,
         number,
         url,
-        state: 'open',
+        state: deps.tokenAutoMergeEnabled ? 'merge-queued' : 'open',
+        autoMergeRequestedAt: deps.tokenAutoMergeEnabled ? deps.nowIso() : undefined,
         updatedAt: deps.nowIso(),
     };
 }

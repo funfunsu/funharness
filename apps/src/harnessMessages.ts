@@ -94,7 +94,7 @@ export type HarnessMessage =
     | { type: 'setRemoteApiToken'; endpointKey: string }
     | { type: 'testRemoteApiToken'; endpointKey: string }
     | { type: 'clearRemoteApiToken'; endpointKey: string }
-    | { type: 'saveAdvancedConfig'; dcm: 'batch' | 'single'; ins: boolean; wsd: string; prm: 'local' | 'local+ai'; srd: string; gl: 'relaxed' | 'standard' | 'strict'; cct: string; afm: boolean; pas: boolean; acg: boolean; cai?: boolean }
+    | { type: 'saveAdvancedConfig'; dcm: 'batch' | 'single'; ins: boolean; wsd: string; prm: 'local' | 'local+ai'; srd: string; gl: 'relaxed' | 'standard' | 'strict'; cct: string; afm: boolean; tam: boolean; pas: boolean; acg: boolean; cae?: boolean; car?: number; cai?: boolean }
     | { type: 'initProjectStructure' }
     | { type: 'applyProjectStructurePreview' }
     | { type: 'openArtifactsIndex' }
@@ -122,7 +122,7 @@ export type HarnessMessage =
     | { type: 'next'; id: string; step: HarnessStep; targetStage?: HarnessStep }
     | { type: 'previous'; id: string; step: HarnessStep }
     | { type: 'rollbackDev'; id: string }
-    | { type: 'pass'; id: string }
+    | { type: 'pass'; id: string; direct?: boolean }
     | { type: 'syncMainCode'; id: string }
     | { type: 'completeDevWithPush'; id: string }
     | { type: 'pushAndNextStage'; id: string }
