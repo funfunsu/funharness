@@ -1,4 +1,4 @@
-﻿import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubFeature, Feature, FeatureStats, FeatureChangeRequestState, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, DEFAULT_POLL_SCRIPT, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END, normalizeCustomButton } from './models';
+import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubFeature, Feature, FeatureStats, FeatureChangeRequestState, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, DEFAULT_POLL_SCRIPT, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END, normalizeCustomButton } from './models';
 import { HarnessConfigMeta } from './services/featureStoreService';
 import { AutoPollStatus } from './services/autoPollService';
 
@@ -1379,7 +1379,7 @@ function requestDomainWorkspaceContext(){
     domainWorkspaceState.error='';
     saveDomainWorkspaceState();
     renderDomainWorkspacePanel();
-    v.postMessage({
+    postHarnessMessage({
         type:'loadDomainKnowledgeContext',
         repoRoot:domainWorkspaceState.repoRoot,
         iterationId:domainWorkspaceState.iterationId,
@@ -1409,22 +1409,22 @@ function reloadDomainWorkspaceContext(){
 
 /** Trigger a stage review; result is surfaced via VS Code notification. */
 function triggerStageReview(taskId,stage){
-    v.postMessage({type:'runStageReview',stage,context:{taskId:String(taskId||''),taskStage:String(stage||'')}});
+    postHarnessMessage({type:'runStageReview',stage,context:{taskId:String(taskId||''),taskStage:String(stage||'')}});
 }
 
 /** Open the user-custom review prompt file for editing (same convention as other stage prompts). */
 function openReviewCustomPrompt(stage){
-    v.postMessage({type:'openReviewCustomPrompt',stage});
+    postHarnessMessage({type:'openReviewCustomPrompt',stage});
 }
 
 /** Open stage custom prompt file from task card action section. */
 function openCustomPrompt(step){
-    v.postMessage({type:'openCustomPrompt',step});
+    postHarnessMessage({type:'openCustomPrompt',step});
 }
 
 /** Open constitution prompt file from task card action section. */
 function openCustomConstitution(){
-    v.postMessage({type:'openCustomConstitution'});
+    postHarnessMessage({type:'openCustomConstitution'});
 }
 
 /** Toggle task-card custom prompt overflow actions by task-specific DOM id. */
@@ -1491,7 +1491,7 @@ function setDomainActionLoading(action){
 function postDomainGovernanceAction(type){
     if(!DOMAIN_GOVERNANCE_TASK_ID||domainActionLoading){return;}
     setDomainActionLoading(type);
-    v.postMessage({type,id:DOMAIN_GOVERNANCE_TASK_ID});
+    postHarnessMessage({type,id:DOMAIN_GOVERNANCE_TASK_ID});
     setTimeout(()=>setDomainActionLoading(''),1500);
 }
 
@@ -1568,7 +1568,7 @@ function requestTodoList(){
     todoState.loading=true;
     saveTodoState();
     renderTodoPanel();
-    v.postMessage({type:'todo.list'});
+    postHarnessMessage({type:'todo.list'});
 }
 
 /** Return current todo item by id from local widget state. */
@@ -1698,7 +1698,7 @@ function submitTodoEditor(){
             ? {...todo,title,description:description||null,status,updatedAt:new Date().toISOString()}
             : todo);
         todoState.todos=nextTodos;
-        v.postMessage({
+        postHarnessMessage({
             type:'todo.update',
             id:todoState.editor.id,
             title,
@@ -1706,7 +1706,7 @@ function submitTodoEditor(){
             status,
         });
     }else{
-        v.postMessage({
+        postHarnessMessage({
             type:'todo.create',
             sourcePanel:TODO_SOURCE_PANEL,
             title,
@@ -1728,7 +1728,7 @@ function toggleTodoStatus(id,nextStatus){
     todoState.error=null;
     saveTodoState();
     renderTodoPanel();
-    v.postMessage({
+    postHarnessMessage({
         type:'todo.update',
         id,
         title:todo.title,
@@ -1747,7 +1747,7 @@ function deleteTodo(id){
     todoState.error=null;
     saveTodoState();
     renderTodoPanel();
-    v.postMessage({type:'todo.delete',id});
+    postHarnessMessage({type:'todo.delete',id});
 }
 
 /** Promote a todo into a new iteration task and remove it from the todo list. */
@@ -1760,7 +1760,7 @@ function promoteTodoToFeature(id){
     todoState.error=null;
     saveTodoState();
     renderTodoPanel();
-    v.postMessage({
+    postHarnessMessage({
         type:'todo.promoteToFeature',
         todoId:id,
         promotionPolicy:'remove',
@@ -1866,7 +1866,7 @@ function triggerDetectDomainConflicts(){
     domainWorkspaceState.notice='';
     saveDomainWorkspaceState();
     renderDomainWorkspacePanel();
-    v.postMessage({
+    postHarnessMessage({
         type:'detectDomainConflicts',
         changeSet:changeSet,
         baselineVersion:domainWorkspaceState.baselineVersion||(changeSet.basedOnBaselineVersion||''),
@@ -1904,7 +1904,7 @@ function resolveDomainConflictAction(conflictId,action,domId){
         decision={action:'choose-value',field:'canonicalDomain',chosenValue:''};
     }
     if(!decision){return;}
-    v.postMessage({type:'resolveDomainConflict',conflictId:conflictId,decision:decision,changeSet:domainWorkspaceState.changeSet});
+    postHarnessMessage({type:'resolveDomainConflict',conflictId:conflictId,decision:decision,changeSet:domainWorkspaceState.changeSet});
 }
 
 /** Handle conflict detection results pushed from the extension. */
@@ -1963,7 +1963,7 @@ function triggerCommitDomainKnowledge(){
     domainWorkspaceState.notice='';
     saveDomainWorkspaceState();
     renderDomainWorkspacePanel();
-    v.postMessage({
+    postHarnessMessage({
         type:'commitDomainKnowledgeChanges',
         changeSet:changeSet,
         baselineVersion:domainWorkspaceState.baselineVersion||(changeSet.basedOnBaselineVersion||''),
@@ -1996,7 +1996,7 @@ function triggerRefreshBaseline(){
     domainWorkspaceState.notice='正在拉取最新基线并重投影…';
     saveDomainWorkspaceState();
     renderDomainWorkspacePanel();
-    v.postMessage({
+    postHarnessMessage({
         type:'refreshBaselineAndReproject',
         changeSet:changeSet,
         currentBaselineVersion:domainWorkspaceState.baselineVersion||(changeSet.basedOnBaselineVersion||''),
@@ -2082,21 +2082,21 @@ document.addEventListener('click',(event)=>{
     else if(action==='delete'){deleteTodo(id);}
 });
 
-function p(x){v.postMessage({type:'page',page:x})}
+function p(x){postHarnessMessage({type:'page',page:x})}
 function create(){
     const name=document.getElementById('name').value.trim();
     const desc=document.getElementById('desc').value.trim();
     if(!name){var ni=document.getElementById('name');if(ni){ni.style.outline='2px solid #ff3b30';ni.placeholder='请输入迭代名称（英文）';setTimeout(function(){ni.style.outline='';ni.placeholder='迭代名称（英文）';},2000);}return;}
     const quickMode=document.getElementById('quickMode').checked;
-    v.postMessage({type:'create',name,desc,quickMode});
+    postHarnessMessage({type:'create',name,desc,quickMode});
     document.getElementById('name').value='';
     document.getElementById('desc').value='';
     document.getElementById('quickMode').checked=false;
 }
-function runAgent(s,id){v.postMessage({type:'runAgent',step:s,id})}
-function next(s,id,ts){v.postMessage({type:'next',step:s,id,...(ts?{targetStage:ts}:{})})}
-function previousStage(s,id){v.postMessage({type:'previous',step:s,id})}
-function rollbackDev(id){v.postMessage({type:'rollbackDev',id})}
+function runAgent(s,id){postHarnessMessage({type:'runAgent',step:s,id})}
+function next(s,id,ts){postHarnessMessage({type:'next',step:s,id,...(ts?{targetStage:ts}:{})})}
+function previousStage(s,id){postHarnessMessage({type:'previous',step:s,id})}
+function rollbackDev(id){postHarnessMessage({type:'rollbackDev',id})}
 const __passPendingTaskIds=new Set();
 function pass(id,direct,el){
     var taskId=String(id||'');
@@ -2112,7 +2112,7 @@ function pass(id,direct,el){
             el.style.cursor='wait';
         }catch{}
     }
-    v.postMessage({type:'pass',id,direct:direct===true});
+    postHarnessMessage({type:'pass',id,direct:direct===true});
     setTimeout(function(){
         __passPendingTaskIds.delete(taskId);
         if(el&&typeof el==='object'){
@@ -2125,17 +2125,17 @@ function pass(id,direct,el){
         }
     },20000);
 }
-function refresh(){v.postMessage({type:'refresh'})}
-function pushAll(id){v.postMessage({type:'pushAndNextStage',id})}
-function commitToBaseline(id){v.postMessage({type:'commitToBaseline',id})}
-function refreshChangeRequests(id){v.postMessage({type:'refreshChangeRequests',id})}
-function startAuto(id){v.postMessage({type:'startAuto',id})}
-function pauseAuto(id){v.postMessage({type:'pauseAuto',id})}
-function nextFeature(id){v.postMessage({type:'nextFeature',id})}
-function retry(subId,id){v.postMessage({type:'retryFeature',subId,id})}
-function syncMainCode(id){v.postMessage({type:'syncMainCode',id})}
-function openMasterWorkspace(){v.postMessage({type:'openMasterWorkspace'})}
-function runCustomButton(id,buttonId){v.postMessage({type:'runCustomButton',id,buttonId})}
+function refresh(){postHarnessMessage({type:'refresh'})}
+function pushAll(id){postHarnessMessage({type:'pushAndNextStage',id})}
+function commitToBaseline(id){postHarnessMessage({type:'commitToBaseline',id})}
+function refreshChangeRequests(id){postHarnessMessage({type:'refreshChangeRequests',id})}
+function startAuto(id){postHarnessMessage({type:'startAuto',id})}
+function pauseAuto(id){postHarnessMessage({type:'pauseAuto',id})}
+function nextFeature(id){postHarnessMessage({type:'nextFeature',id})}
+function retry(subId,id){postHarnessMessage({type:'retryFeature',subId,id})}
+function syncMainCode(id){postHarnessMessage({type:'syncMainCode',id})}
+function openMasterWorkspace(){postHarnessMessage({type:'openMasterWorkspace'})}
+function runCustomButton(id,buttonId){postHarnessMessage({type:'runCustomButton',id,buttonId})}
 function applyCustomButtonSettingsState(){
     var uiState=loadCustomButtonSettingsState();
     var body=document.getElementById('customBtnSettingsBody');
@@ -2246,7 +2246,7 @@ function saveCustomButtons(){
         if(name&&script){buttons.push({name:name,scriptSource:'worktree',script:script,args:args});}
     });
     saveCustomButtonSettingsState({expanded:false});
-    v.postMessage({type:'saveCustomButtons',buttons:buttons});
+    postHarnessMessage({type:'saveCustomButtons',buttons:buttons});
 }
 cbRenderAll();
 applyCustomButtonSettingsState();
@@ -2272,14 +2272,14 @@ function showAiQuickChatNotice(message){
 /** Send an AI quick-chat button click to the extension for dispatch. */
 function runAiQuickChatButton(taskId,buttonId){
     if(!taskId||!buttonId){showAiQuickChatNotice('AI 快捷对话按钮参数缺失，无法发送');return;}
-    try{v.postMessage({type:'runAiQuickChatButton',taskId,buttonId});}
+    try{postHarnessMessage({type:'runAiQuickChatButton',taskId,buttonId});}
     catch(error){showAiQuickChatNotice('AI 快捷对话发送请求失败：'+String(error&&error.message?error.message:error||'unknown'));}
 }
 
-function toggleAutoPoll(enable){v.postMessage({type:'toggleAutoPoll',enable})}
-function setSubStatus(id,subId,status){v.postMessage({type:'setSubFeatureStatus',id,subId,status})}
+function toggleAutoPoll(enable){postHarnessMessage({type:'toggleAutoPoll',enable})}
+function setSubStatus(id,subId,status){postHarnessMessage({type:'setSubFeatureStatus',id,subId,status})}
 function logWebviewEvent(id,event,detail){
-    try{v.postMessage({type:'logWebviewEvent',id,event,detail});}catch{}
+    try{postHarnessMessage({type:'logWebviewEvent',id,event,detail});}catch{}
 }
 function getTaskDescNodes(id){
     return {
@@ -2341,7 +2341,7 @@ function commitFeatureDescEditor(id){
         }
         desc.innerText=nextDesc;
         if(root){root.classList.remove('editing');}
-        v.postMessage({type:'updateFeatureDesc',id:id,desc:nextDesc});
+        postHarnessMessage({type:'updateFeatureDesc',id:id,desc:nextDesc});
         logWebviewEvent(id,'taskDescEditor.save.postMessage','len='+nextDesc.length);
     }catch(error){
         var message=error&&error.message?error.message:String(error);
@@ -2349,15 +2349,15 @@ function commitFeatureDescEditor(id){
         logWebviewEvent(id,'taskDescEditor.save.error.alert',message);
     }
 }
-function resetFeature(id){v.postMessage({type:'resetFeature',id})}
-function openArtifact(id,artifact){v.postMessage({type:'openArtifact',id,artifact})}
-function openFolderLocation(id,location){v.postMessage({type:'openFolderLocation',id,location})}
-function syncCodeGraph(id){v.postMessage({type:'syncCodeGraph',id})}
-function setFeatureAutomation(id,aa){v.postMessage({type:'setFeatureAutomation',id,aa})}
-function setSpecDriftRepair(id,enabled){v.postMessage({type:'setSpecDriftRepair',id,enabled})}
-function setFeatureAiProvider(id,ap){v.postMessage({type:'setFeatureAiProvider',id,ap})}
-function pushDev(id){v.postMessage({type:'pushAndNextStage',id})}
-function specReview(id){v.postMessage({type:'specDeltaReview',id})}
+function resetFeature(id){postHarnessMessage({type:'resetFeature',id})}
+function openArtifact(id,artifact){postHarnessMessage({type:'openArtifact',id,artifact})}
+function openFolderLocation(id,location){postHarnessMessage({type:'openFolderLocation',id,location})}
+function syncCodeGraph(id){postHarnessMessage({type:'syncCodeGraph',id})}
+function setFeatureAutomation(id,aa){postHarnessMessage({type:'setFeatureAutomation',id,aa})}
+function setSpecDriftRepair(id,enabled){postHarnessMessage({type:'setSpecDriftRepair',id,enabled})}
+function setFeatureAiProvider(id,ap){postHarnessMessage({type:'setFeatureAiProvider',id,ap})}
+function pushDev(id){postHarnessMessage({type:'pushAndNextStage',id})}
+function specReview(id){postHarnessMessage({type:'specDeltaReview',id})}
 function openDomainKnowledgeWorkspace(id){
     domainWorkspaceState.visible=true;
     domainWorkspaceState.loading=true;
@@ -2366,7 +2366,7 @@ function openDomainKnowledgeWorkspace(id){
     saveDomainWorkspaceState();
     renderDomainWorkspacePanel();
     // Send taskId; iterationPath will be resolved server-side from taskId.
-    v.postMessage({type:'openDomainKnowledgeWorkspace',taskId:id,iterationPath:''})
+    postHarnessMessage({type:'openDomainKnowledgeWorkspace',taskId:id,iterationPath:''})
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
@@ -2376,7 +2376,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     if(document.getElementById('workspace-todo-panel')){
         todoState.error=null;
         renderTodoPanel();
-        v.postMessage({type:'todo.list'});
+        postHarnessMessage({type:'todo.list'});
     }
     const domainPanel=document.getElementById('domain-workspace-panel');
     if(domainPanel){
@@ -2396,10 +2396,10 @@ document.addEventListener('DOMContentLoaded',()=>{
     });
 });
 window.addEventListener('error',(event)=>{
-    try{v.postMessage({type:'logWebviewEvent',id:'__global__',event:'webview.error',detail:String(event.message||'unknown')});}catch{}
+    try{postHarnessMessage({type:'logWebviewEvent',id:'__global__',event:'webview.error',detail:String(event.message||'unknown')});}catch{}
 });
 window.addEventListener('unhandledrejection',(event)=>{
-    try{v.postMessage({type:'logWebviewEvent',id:'__global__',event:'webview.unhandledrejection',detail:String(event.reason||'unknown')});}catch{}
+    try{postHarnessMessage({type:'logWebviewEvent',id:'__global__',event:'webview.unhandledrejection',detail:String(event.reason||'unknown')});}catch{}
 });
 </script>
 </body>
@@ -2705,21 +2705,21 @@ ${readOnly ? '<div class="meta-box readonly" style="margin-bottom:8px">当前窗
 
 <script>
 const v=acquireVsCodeApi();
-function p(x){v.postMessage({type:'page',page:x})}
-function saveGit(){v.postMessage({type:'saveGit',bb:document.getElementById('bb').value,mg:document.getElementById('mg').value,gmg:document.getElementById('gmg').value})}
+function p(x){postHarnessMessage({type:'page',page:x})}
+function saveGit(){postHarnessMessage({type:'saveGit',bb:document.getElementById('bb').value,mg:document.getElementById('mg').value,gmg:document.getElementById('gmg').value})}
 function toggleTokenPanel(panelId,btnId){var panel=document.getElementById(panelId);if(!panel)return;var btn=document.getElementById(btnId);var open=panel.style.display!=='block';panel.style.display=open?'block':'none';if(btn){var collapsed=btn.getAttribute('data-collapsed-label')||'设置';btn.textContent=open?'收起':collapsed;btn.title=open?'收起':collapsed;}}
-function setRemoteApiToken(endpointKey){v.postMessage({type:'setRemoteApiToken',endpointKey:endpointKey})}
-function testRemoteApiToken(endpointKey){v.postMessage({type:'testRemoteApiToken',endpointKey:endpointKey})}
-function clearRemoteApiToken(endpointKey){v.postMessage({type:'clearRemoteApiToken',endpointKey:endpointKey})}
-function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',dcm:document.getElementById('dcm').value,ins:document.getElementById('ins').checked,wsd:document.getElementById('wsd').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,tam:document.getElementById('tam').checked,pas:document.getElementById('pas').checked,acg:document.getElementById('acg').checked,cae:document.getElementById('cae').checked,car:parseInt(document.getElementById('car').value,10)||10})}
-function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
-function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
-function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}
-function testAiProvider(){v.postMessage({type:'testAiProvider'})}
-function saveAutoPollConfig(){v.postMessage({type:'saveAutoPollConfig',enabled:document.getElementById('ap_enabled').checked,interval:parseInt(document.getElementById('ap_int').value)||60,script:document.getElementById('ap_script').value.trim(),prompt:document.getElementById('ap_prompt').value,skipMarkers:document.getElementById('ap_skip').value,idleOnly:document.getElementById('ap_idle_only').checked,idleWeekdayStart:document.getElementById('ap_idle_start').value,idleWeekdayEnd:document.getElementById('ap_idle_end').value})}
+function setRemoteApiToken(endpointKey){postHarnessMessage({type:'setRemoteApiToken',endpointKey:endpointKey})}
+function testRemoteApiToken(endpointKey){postHarnessMessage({type:'testRemoteApiToken',endpointKey:endpointKey})}
+function clearRemoteApiToken(endpointKey){postHarnessMessage({type:'clearRemoteApiToken',endpointKey:endpointKey})}
+function saveAdvancedConfig(){postHarnessMessage({type:'saveAdvancedConfig',dcm:document.getElementById('dcm').value,ins:document.getElementById('ins').checked,wsd:document.getElementById('wsd').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,tam:document.getElementById('tam').checked,pas:document.getElementById('pas').checked,acg:document.getElementById('acg').checked,cae:document.getElementById('cae').checked,car:parseInt(document.getElementById('car').value,10)||10})}
+function initProjectStructure(){postHarnessMessage({type:'initProjectStructure'})}
+function applyProjectStructurePreview(){postHarnessMessage({type:'applyProjectStructurePreview'})}
+function openArtifactsIndex(){postHarnessMessage({type:'openArtifactsIndex'})}
+function testAiProvider(){postHarnessMessage({type:'testAiProvider'})}
+function saveAutoPollConfig(){postHarnessMessage({type:'saveAutoPollConfig',enabled:document.getElementById('ap_enabled').checked,interval:parseInt(document.getElementById('ap_int').value)||60,script:document.getElementById('ap_script').value.trim(),prompt:document.getElementById('ap_prompt').value,skipMarkers:document.getElementById('ap_skip').value,idleOnly:document.getElementById('ap_idle_only').checked,idleWeekdayStart:document.getElementById('ap_idle_start').value,idleWeekdayEnd:document.getElementById('ap_idle_end').value})}
 function toggleAutoPollDetails(){const d=document.getElementById('ap_details');if(d)d.style.display=document.getElementById('ap_enabled').checked?'block':'none'}
 function toggleAutoPollIdleDetails(){const d=document.getElementById('ap_idle_details');if(d)d.style.display=document.getElementById('ap_idle_only').checked?'block':'none'}
-function createPollScriptTemplate(){v.postMessage({type:'createPollScriptTemplate'})}
+function createPollScriptTemplate(){postHarnessMessage({type:'createPollScriptTemplate'})}
 const INV=${JSON.stringify(inv).replace(/</g, '\\u003c')};
 const INIT_HOOKS=${JSON.stringify(initialHooks).replace(/</g, '\\u003c')};
 const INIT_AQC_BTNS=${JSON.stringify((config.aiQuickChatButtons || []).map(b => ({ label: b.label, content: b.content }))).replace(/</g, '\\u003c')};
@@ -2800,7 +2800,7 @@ function saveLifecycleHooks(){
     var args=r.querySelector('.hook-args').value.trim();
     if(script){hooks.push({script:script,scriptSource:scriptSource,args:args});}
   });
-  v.postMessage({type:'saveLifecycleHooks',hooks:hooks});
+  postHarnessMessage({type:'saveLifecycleHooks',hooks:hooks});
 }
 // ── AI 快捷对话按钮 ──────────────────────────────────────────────────
 function aqcRowHtml(b){
@@ -2900,7 +2900,7 @@ function saveAiQuickChatButtons(){
     return;
   }
     setAiQuickChatSaveError('');
-    try{v.postMessage({type:'saveAiQuickChatButtons',taskId:'',buttons:buttons});}
+    try{postHarnessMessage({type:'saveAiQuickChatButtons',taskId:'',buttons:buttons});}
     catch(error){setAiQuickChatSaveError('AI 快捷对话按钮保存请求失败：'+String(error&&error.message?error.message:error||'unknown'));}
 }
 renderLifecycleHooks();
@@ -3231,3 +3231,4 @@ ${latestVersionNote}
 ${syncBtn}
 </div>`;
 }
+
