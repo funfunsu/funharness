@@ -6,6 +6,7 @@ import { appendHarnessLog } from './harnessLog';
 import { clearDirChildrenPreserving, safeRemovePath } from './fileOps';
 import { deriveIterationBranchNameWithOptions } from './branchName';
 import { createRemoteApiPlatformStrategy, RemoteApiPlatformStrategy } from './gitProviders/remoteApiPlatformStrategy';
+import { resolveSshHostAlias } from './sshConfigHostResolver';
 
 /**
  * Describes the single git repository the harness manages for an iteration. In monorepo mode,
@@ -131,7 +132,7 @@ export class GitService {
 
         const sshMatch = /^[^@]+@([^:]+):(.+?)(?:\.git)?$/i.exec(raw);
         if (sshMatch && sshMatch[1] && sshMatch[2]) {
-            const host = sshMatch[1].replace(/^\/+|\/+$/g, '');
+            const host = this.normalizeRemoteHost(endpoint, sshMatch[1].replace(/^\/+|\/+$/g, ''));
             const repoPath = sshMatch[2].replace(/^\/+|\/+$/g, '');
             return `https://${host}/${repoPath}`;
         }
@@ -152,7 +153,8 @@ export class GitService {
 
         const sshMatch = /^[^@]+@([^:]+):.+$/i.exec(raw);
         if (sshMatch && sshMatch[1]) {
-            return `https://${sshMatch[1]}`;
+            const host = this.normalizeRemoteHost(endpoint, sshMatch[1]);
+            return `https://${host}`;
         }
 
         return '';
@@ -171,6 +173,28 @@ export class GitService {
         }
     }
 
+    private normalizeRemoteHost(endpoint: MonorepoRemoteEndpoint, host: string): string {
+        let normalized = (host || '').trim().toLowerCase();
+        if (!normalized) {
+            return '';
+        }
+        const mappedHost = resolveSshHostAlias(normalized);
+        if (mappedHost) {
+            normalized = mappedHost;
+        }
+        // Normalize common SSH aliases to canonical SaaS hosts so token/API behavior
+        // stays consistent with HTTPS remotes.
+        if (!normalized.includes('.')) {
+            if (endpoint.platform === 'github' && normalized.includes('github')) {
+                return 'github.com';
+            }
+            if (endpoint.platform === 'gitlab' && normalized.includes('gitlab')) {
+                return 'gitlab.com';
+            }
+        }
+        return normalized;
+    }
+
     private githubApiBase(endpoint: MonorepoRemoteEndpoint): string {
         const origin = this.parseRemoteOrigin(endpoint);
         const host = this.parseRemoteHost(endpoint).toLowerCase();
@@ -178,6 +202,15 @@ export class GitService {
             return 'https://api.github.com';
         }
         return `${origin || `https://${host}`}/api/v3`;
+    }
+
+    private githubGraphqlEndpoint(endpoint: MonorepoRemoteEndpoint): string {
+        const origin = this.parseRemoteOrigin(endpoint);
+        const host = this.parseRemoteHost(endpoint).toLowerCase();
+        if (!host || host === 'github.com') {
+            return 'https://api.github.com/graphql';
+        }
+        return `${origin || `https://${host}`}/api/graphql`;
     }
 
     private gitlabApiBase(endpoint: MonorepoRemoteEndpoint): string {
@@ -301,10 +334,12 @@ export class GitService {
     private getRemoteApiPlatformStrategy(endpoint: MonorepoRemoteEndpoint): RemoteApiPlatformStrategy | null {
         return createRemoteApiPlatformStrategy(endpoint, {
             nowIso: () => this.nowIso(),
+            tokenAutoMergeEnabled: this.config.tokenAutoMergeEnabled === true,
             buildEntryBase: (targetEndpoint, sourceBranch, targetBranch) =>
                 this.buildChangeRequestEntryBase(targetEndpoint, sourceBranch, targetBranch),
             parseRepoId: (targetEndpoint) => this.parseRepoId(targetEndpoint),
             githubApiBase: (targetEndpoint) => this.githubApiBase(targetEndpoint),
+            githubGraphqlEndpoint: (targetEndpoint) => this.githubGraphqlEndpoint(targetEndpoint),
             gitlabApiBase: (targetEndpoint) => this.gitlabApiBase(targetEndpoint),
             fetchJson: async (url, init) => this.fetchJson(url, init),
         });
@@ -1146,9 +1181,13 @@ export class GitService {
             };
         }
 
+        const requestedAutoMerge = Object.values(entries).some(entry => entry.state === 'merge-queued');
+
         return {
             success: true,
-            message: '✅ 分支已推送，已为各远程创建/更新 PR/MR（并已请求自动合并）',
+            message: requestedAutoMerge
+                ? '✅ 分支已推送，已为各远程创建/更新 PR/MR（并已请求自动合并）'
+                : '✅ 分支已推送，已为各远程创建/更新 PR/MR',
             entries,
         };
     }

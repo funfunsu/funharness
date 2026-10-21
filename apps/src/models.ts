@@ -488,12 +488,18 @@ export interface Config {
     /** @deprecated Use cliCommandTemplate instead */
     claudeCliCommandTemplate?: string;
     aiFallbackToManual: boolean;
+    /** When true, token-based PR/MR creation additionally requests auto-merge where platform allows it. */
+    tokenAutoMergeEnabled: boolean;
     /** Auto-submit (press Return) after a 'panel' executor pre-fills its prompt via deep link (macOS only). */
     aiPanelAutoSubmit: boolean;
     /** Global switch for auto-building CodeGraph when a worktree is first created. */
     autoCodeGraphEnabled: boolean;
     /** Whether to auto-attempt non-interactive CodeGraph CLI installation when missing. */
     autoInstallEnabled: boolean;
+    /** Enable weekly cold-archive sweep policy (scheduling implemented separately). */
+    coldArchiveEnabled: boolean;
+    /** Number of historical iterations to retain before cold-archive candidates are removed. */
+    coldArchiveRetentionCount: number;
     worktreeSyncPaths: string;
     projectStructureRefineMode: 'local' | 'local+ai';
     /**
@@ -964,9 +970,12 @@ export const DEFAULT_CONFIG: Config = {
     aiProvider: 'copilot-chat',
     cliCommandTemplate: '',
     aiFallbackToManual: true,
+    tokenAutoMergeEnabled: false,
     aiPanelAutoSubmit: true,
     autoCodeGraphEnabled: true,
     autoInstallEnabled: true,
+    coldArchiveEnabled: true,
+    coldArchiveRetentionCount: 10,
     worktreeSyncPaths: 'worktree/.github/instructions\nworktree/.spec',
     projectStructureRefineMode: 'local+ai',
     specRootDir: 'specs',

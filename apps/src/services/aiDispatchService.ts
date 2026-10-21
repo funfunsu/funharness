@@ -5,6 +5,7 @@ import { execSync, spawn } from 'child_process';
 import { BASE, Config, AiProviderDefinition, getAiProvider } from '../models';
 import { appendHarnessLog } from './harnessLog';
 import { AiUsageService, AiCallRecord } from './aiUsageService';
+import { showWarningMessageSafe } from './popupMessage';
 
 type DispatchSource = 'stage-agent' | 'dev-subtask' | 'quick-chat-button';
 
@@ -197,7 +198,7 @@ export class AiDispatchService {
                 } catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
                     if (cfg.aiFallbackToManual === false) throw error;
-                    vscode.window.showWarningMessage(`${provider.label} 派发失败，已自动降级到手工模式：${message}`);
+                    showWarningMessageSafe(`${provider.label} 派发失败，已自动降级到手工模式：${message}`);
                     await this.dispatchManual(query, source);
                     status = 'prepared';
                 }
@@ -297,7 +298,7 @@ export class AiDispatchService {
         if (commands.includes(command)) {
             vscode.window.showInformationMessage(`${provider.label} 可用：已检测到命令 ${command}。`);
         } else {
-            vscode.window.showWarningMessage(`未检测到 ${provider.label} 命令 ${command}，请确认对应扩展已安装并启用。`);
+            showWarningMessageSafe(`未检测到 ${provider.label} 命令 ${command}，请确认对应扩展已安装并启用。`);
         }
     }
 
@@ -346,13 +347,13 @@ export class AiDispatchService {
             vscode.window.showInformationMessage(`命令模板预览：${commandPreview}`);
 
             if (hasCustomTemplate && !hasPromptPlaceholder) {
-                vscode.window.showWarningMessage(
+                showWarningMessageSafe(
                     `当前 CLI 命令模板未包含 {promptFile} 占位符，派发时将无法自动注入提示词文件路径。`,
                 );
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            vscode.window.showWarningMessage(`${provider.label} 检测失败：${message}`);
+            showWarningMessageSafe(`${provider.label} 检测失败：${message}`);
         }
     }
 
@@ -521,7 +522,7 @@ export class AiDispatchService {
                         const detail = stderr.trim();
                         console.error(`[fun-harness] osascript 自动回车失败 (exit ${code})：${detail}`);
                         if (detail) {
-                            vscode.window.showWarningMessage(`自动回车发送失败：${detail.slice(0, 300)}`);
+                            showWarningMessageSafe(`自动回车发送失败：${detail.slice(0, 300)}`);
                         }
                         resolve('failed');
                     });
@@ -548,14 +549,14 @@ export class AiDispatchService {
     private async testPanel(provider: AiProviderDefinition): Promise<void> {
         const command = provider.panelCommand;
         if (!command) {
-            vscode.window.showWarningMessage(`${provider.label} 未配置面板命令。`);
+            showWarningMessageSafe(`${provider.label} 未配置面板命令。`);
             return;
         }
         const commands = await vscode.commands.getCommands(true);
         if (commands.includes(command)) {
             vscode.window.showInformationMessage(`${provider.label} 可用：已检测到命令 ${command}。`);
         } else {
-            vscode.window.showWarningMessage(`未检测到 ${provider.label} 命令 ${command}，请确认对应扩展已安装并启用。`);
+            showWarningMessageSafe(`未检测到 ${provider.label} 命令 ${command}，请确认对应扩展已安装并启用。`);
         }
     }
 
