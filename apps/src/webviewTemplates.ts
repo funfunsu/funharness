@@ -1,4 +1,4 @@
-import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubFeature, Feature, FeatureStats, FeatureChangeRequestState, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, DEFAULT_POLL_SCRIPT, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END, normalizeCustomButton } from './models';
+﻿import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubFeature, Feature, FeatureStats, FeatureChangeRequestState, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, DEFAULT_POLL_SCRIPT, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END, normalizeCustomButton } from './models';
 import { HarnessConfigMeta } from './services/featureStoreService';
 import { AutoPollStatus } from './services/autoPollService';
 
@@ -1108,6 +1108,55 @@ ${!isWorktreeSubview ? `<div class="fixed-bottom">
 
 <script>
 const v=acquireVsCodeApi();
+const __fhPostRaw=v.postMessage.bind(v);
+const __fhBusyTimers=new WeakMap();
+function __fhResolveButton(explicitButton){
+    if(explicitButton&&String(explicitButton.tagName||'').toUpperCase()==='BUTTON'){
+        return explicitButton;
+    }
+    try{
+        const evt=window.event;
+        const src=evt&&(evt.currentTarget||evt.target);
+        if(src&&typeof src.closest==='function'){
+            return src.closest('button');
+        }
+    }catch{}
+    return null;
+}
+function __fhMarkButtonBusy(button,label,timeoutMs,onRestore){
+    if(!button){return;}
+    try{
+        const existing=__fhBusyTimers.get(button);
+        if(existing){clearTimeout(existing);}
+        if(!button.dataset.fhPrevText){
+            button.dataset.fhPrevText=button.textContent||'';
+        }
+        button.disabled=true;
+        button.textContent=label||'处理中...';
+        button.style.opacity='0.75';
+        button.style.cursor='wait';
+        const timer=setTimeout(function(){
+            try{
+                button.disabled=false;
+                button.textContent=button.dataset.fhPrevText||button.textContent;
+                delete button.dataset.fhPrevText;
+                button.style.opacity='';
+                button.style.cursor='';
+            }catch{}
+            try{if(typeof onRestore==='function'){onRestore();}}catch{}
+            __fhBusyTimers.delete(button);
+        },Math.max(600,timeoutMs||15000));
+        __fhBusyTimers.set(button,timer);
+    }catch{}
+}
+function postHarnessMessage(payload,options){
+    const opts=options||{};
+    if(opts.busy!==false){
+        const btn=__fhResolveButton(opts.button);
+        __fhMarkButtonBusy(btn,opts.label||'处理中...',opts.timeoutMs,opts.onRestore);
+    }
+    __fhPostRaw(payload);
+}
 const isWorktreeSubview=${isWorktreeSubview ? 'true' : 'false'};
 const DOMAIN_GOVERNANCE_TASK_ID='${escapeHtml(governanceTaskId)}';
 const TODO_STATE_KEY='workspaceTodoState.v1';
@@ -2102,28 +2151,15 @@ function pass(id,direct,el){
     var taskId=String(id||'');
     if(__passPendingTaskIds.has(taskId)){return;}
     __passPendingTaskIds.add(taskId);
-    if(el&&typeof el==='object'){
-        try{
-            if(!el.dataset){el.dataset={};}
-            el.dataset.prevText=el.textContent||'';
-            el.disabled=true;
-            el.textContent='处理中...';
-            el.style.opacity='0.75';
-            el.style.cursor='wait';
-        }catch{}
-    }
-    postHarnessMessage({type:'pass',id,direct:direct===true});
-    setTimeout(function(){
-        __passPendingTaskIds.delete(taskId);
-        if(el&&typeof el==='object'){
-            try{
-                el.disabled=false;
-                el.textContent=(el.dataset&&el.dataset.prevText)?el.dataset.prevText:el.textContent;
-                el.style.opacity='';
-                el.style.cursor='';
-            }catch{}
-        }
-    },20000);
+    postHarnessMessage(
+        {type:'pass',id,direct:direct===true},
+        {
+            button:el,
+            label:'处理中...',
+            timeoutMs:20000,
+            onRestore:function(){__passPendingTaskIds.delete(taskId);},
+        },
+    );
 }
 function refresh(){postHarnessMessage({type:'refresh'})}
 function pushAll(id){postHarnessMessage({type:'pushAndNextStage',id})}
@@ -2705,6 +2741,55 @@ ${readOnly ? '<div class="meta-box readonly" style="margin-bottom:8px">当前窗
 
 <script>
 const v=acquireVsCodeApi();
+const __fhPostRaw=v.postMessage.bind(v);
+const __fhBusyTimers=new WeakMap();
+function __fhResolveButton(explicitButton){
+    if(explicitButton&&String(explicitButton.tagName||'').toUpperCase()==='BUTTON'){
+        return explicitButton;
+    }
+    try{
+        const evt=window.event;
+        const src=evt&&(evt.currentTarget||evt.target);
+        if(src&&typeof src.closest==='function'){
+            return src.closest('button');
+        }
+    }catch{}
+    return null;
+}
+function __fhMarkButtonBusy(button,label,timeoutMs,onRestore){
+    if(!button){return;}
+    try{
+        const existing=__fhBusyTimers.get(button);
+        if(existing){clearTimeout(existing);}
+        if(!button.dataset.fhPrevText){
+            button.dataset.fhPrevText=button.textContent||'';
+        }
+        button.disabled=true;
+        button.textContent=label||'处理中...';
+        button.style.opacity='0.75';
+        button.style.cursor='wait';
+        const timer=setTimeout(function(){
+            try{
+                button.disabled=false;
+                button.textContent=button.dataset.fhPrevText||button.textContent;
+                delete button.dataset.fhPrevText;
+                button.style.opacity='';
+                button.style.cursor='';
+            }catch{}
+            try{if(typeof onRestore==='function'){onRestore();}}catch{}
+            __fhBusyTimers.delete(button);
+        },Math.max(600,timeoutMs||15000));
+        __fhBusyTimers.set(button,timer);
+    }catch{}
+}
+function postHarnessMessage(payload,options){
+    const opts=options||{};
+    if(opts.busy!==false){
+        const btn=__fhResolveButton(opts.button);
+        __fhMarkButtonBusy(btn,opts.label||'处理中...',opts.timeoutMs,opts.onRestore);
+    }
+    __fhPostRaw(payload);
+}
 function p(x){postHarnessMessage({type:'page',page:x})}
 function saveGit(){postHarnessMessage({type:'saveGit',bb:document.getElementById('bb').value,mg:document.getElementById('mg').value,gmg:document.getElementById('gmg').value})}
 function toggleTokenPanel(panelId,btnId){var panel=document.getElementById(panelId);if(!panel)return;var btn=document.getElementById(btnId);var open=panel.style.display!=='block';panel.style.display=open?'block':'none';if(btn){var collapsed=btn.getAttribute('data-collapsed-label')||'设置';btn.textContent=open?'收起':collapsed;btn.title=open?'收起':collapsed;}}
