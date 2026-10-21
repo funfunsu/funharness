@@ -40,6 +40,7 @@ import { SpecDeltaService } from './specDeltaService';
 import { DomainKnowledgeAggregateService, SuspectedDomainRecord } from './domainKnowledgeAggregateService';
 import { DomainAdjudicationDecision, DomainRegistryService } from './domainRegistryService';
 import { CodeGraphEvidenceSnapshotWriter } from './codegraph/codeGraphEvidenceSnapshotWriter';
+import { sanitizePopupText, showErrorMessageSafe, showWarningMessageSafe } from './popupMessage';
 
 interface HarnessActionsDeps {
     getFeatures: () => Feature[];
@@ -630,34 +631,94 @@ export class HarnessActionsService {
             vscode.window.showInformationMessage('正在推送代码...');
             const result = await this.deps.gitService.pushAll(task, iterDir);
             if (!result.success) {
-                vscode.window.showErrorMessage(result.message, { modal: true });
+                showErrorMessageSafe(result.message, { modal: true });
             } else {
                 vscode.window.showInformationMessage(result.message);
             }
         });
     }
 
+    private async submitBranchForReview(task: Feature, featureId: string): Promise<boolean> {
+        // Reuse existing manual "Sync CodeGraph" implementation before submit,
+        // but run it asynchronously so submit flow is never blocked.
+        void this.syncCodeGraphByFeatureId(featureId, false).catch((error) => {
+            const detail = error instanceof Error ? error.message : String(error || 'unknown');
+            showWarningMessageSafe(`CodeGraph 异步同步失败：${detail}`);
+        });
+        const passed = await this.runDevDriftGateWithRepair(task);
+        if (!passed) {
+            return false;
+        }
+        const iterDir = this.deps.getIterationDir(task);
+        vscode.window.showInformationMessage('正在提交代码并创建/更新各远程 PR/MR...');
+        const result = await this.deps.gitService.submitBranchForChangeRequests(task, iterDir);
+        task.changeRequests = result.entries;
+        this.deps.saveAndRender();
+        if (!result.success) {
+            const lines = (result.message || '未知错误').split('\n');
+            const brief = sanitizePopupText(lines[0]);
+            const extra = lines.slice(1).join('\n');
+            showErrorMessageSafe(brief, { detail: extra || undefined, modal: true });
+            return false;
+        }
+        vscode.window.showInformationMessage(result.message);
+        return true;
+    }
+
+    private runWarmArchiveCleanup(iterDir: string): { removedCount: number; failures: string[] } {
+        const normalizedRoot = path.resolve(iterDir);
+        const targetDirs = [
+            'node_modules',
+            '.pnpm-store',
+            '.yarn',
+            '.turbo',
+            '.cache',
+            'dist',
+            'build',
+            'out',
+            'coverage',
+        ];
+        const scanRoots = [
+            normalizedRoot,
+            path.join(normalizedRoot, 'apps'),
+            path.join(normalizedRoot, 'frontend'),
+            path.join(normalizedRoot, 'backend'),
+        ];
+        const candidatePaths = new Set<string>();
+        for (const root of scanRoots) {
+            for (const dirName of targetDirs) {
+                candidatePaths.add(path.join(root, dirName));
+            }
+        }
+
+        let removedCount = 0;
+        const failures: string[] = [];
+        for (const targetPath of candidatePaths) {
+            if (!fs.existsSync(targetPath)) {
+                continue;
+            }
+            const normalizedTarget = path.resolve(targetPath);
+            if (!normalizedTarget.startsWith(normalizedRoot + path.sep)) {
+                failures.push(`${targetPath}（超出迭代目录边界）`);
+                continue;
+            }
+            try {
+                safeRemovePath(normalizedTarget, { recursive: true });
+                removedCount += 1;
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error || 'unknown');
+                failures.push(`${targetPath}（${message}）`);
+            }
+        }
+
+        return { removedCount, failures };
+    }
+
     async commitToBaselineByFeatureId(featureId: string): Promise<void> {
         const task = this.getFeatureById(featureId);
         if (!task) return;
         await this.runExclusiveGitAction(task, 'commitToBaseline', async () => {
-            const passed = await this.runDevDriftGateWithRepair(task);
-            if (!passed) {
-                return;
-            }
-            const iterDir = this.deps.getIterationDir(task);
-            vscode.window.showInformationMessage('正在提交代码并创建/更新各远程 PR/MR...');
-            const result = await this.deps.gitService.submitBranchForChangeRequests(task, iterDir);
-            task.changeRequests = result.entries;
-            this.deps.saveAndRender();
-            if (!result.success) {
-                const lines = (result.message || '未知错误').split('\n');
-                const brief = lines[0];
-                const extra = lines.slice(1).join('\n');
-                vscode.window.showErrorMessage(brief, { detail: extra || undefined, modal: true });
-                return;
-            }
-            vscode.window.showInformationMessage(result.message);
+            await this.submitBranchForReview(task, featureId);
         });
     }
 
@@ -839,7 +900,7 @@ export class HarnessActionsService {
         });
     }
 
-    async syncCodeGraphByFeatureId(featureId: string): Promise<void> {
+    async syncCodeGraphByFeatureId(featureId: string, notifyOnSuccess: boolean = true): Promise<void> {
         const task = this.getFeatureById(featureId);
         if (!task) {
             return;
@@ -898,7 +959,7 @@ export class HarnessActionsService {
 
         if (sync.status !== 0) {
             appendHarnessLog(iterDir, 'codegraph-sync', `FAILED: ${digest || 'codegraph sync failed'}`);
-            vscode.window.showWarningMessage(`CodeGraph 同步失败：${digest || 'codegraph sync failed'}`);
+            showWarningMessageSafe(`CodeGraph 同步失败：${digest || 'codegraph sync failed'}`);
             return;
         }
 
@@ -911,10 +972,13 @@ export class HarnessActionsService {
                 : `OK: sync completed; evidence write failed: ${snapshot.summary}`,
         );
 
-        if (snapshot.persisted) {
+        if (!snapshot.persisted) {
+            showWarningMessageSafe(`CodeGraph 已同步，但证据快照写入失败：${snapshot.summary}`);
+            return;
+        }
+
+        if (notifyOnSuccess) {
             vscode.window.showInformationMessage('CodeGraph 已同步并刷新证据快照。');
-        } else {
-            vscode.window.showWarningMessage(`CodeGraph 已同步，但证据快照写入失败：${snapshot.summary}`);
         }
     }
 
@@ -1047,7 +1111,7 @@ export class HarnessActionsService {
         vscode.window.showInformationMessage(`检测到代码目录缺失，正在补偿重建：${task.name}`);
         const result = await this.deps.gitService.createIterationBranches(task, iterDir);
         if (!result.success) {
-            vscode.window.showErrorMessage(`补偿拉取失败：${result.message || '未知错误'}`);
+            showErrorMessageSafe(`补偿拉取失败：${result.message || '未知错误'}`);
             return { ok: false, wasNewlyCreated: false };
         }
 
@@ -1520,6 +1584,24 @@ export class HarnessActionsService {
         const task = this.getFeatureById(featureId);
         if (!task) return;
         await this.runExclusiveGitAction(task, 'pass', async () => {
+            if (task.stage === STAGE.DEVELOPING) {
+                const submitted = await this.submitBranchForReview(task, featureId);
+                if (!submitted) {
+                    return;
+                }
+                await this.nextStageByFeatureId(featureId, 'dev');
+                const latest = this.getFeatureById(featureId);
+                if (latest?.stage === STAGE.READY_FOR_REVIEW) {
+                    vscode.window.showInformationMessage('开发阶段已完成，已进入待评审阶段。');
+                }
+                return;
+            }
+
+            if (task.stage !== STAGE.READY_FOR_REVIEW) {
+                vscode.window.showWarningMessage('仅开发中或待评审阶段支持「完成」操作。');
+                return;
+            }
+
             const passed = await this.runDevDriftGateWithRepair(task);
             if (!passed) {
                 return;
@@ -1567,24 +1649,17 @@ export class HarnessActionsService {
                 vscode.window.showInformationMessage(cleanupResult.message);
             }
 
-            // Only purge the iteration directory when git-level cleanup (worktrees + branches) fully
-            // succeeded. If something failed there, leave the iteration dir on disk so the user can
-            // diagnose without losing local state.
+            const warmArchive = this.runWarmArchiveCleanup(iterDir);
+            if (warmArchive.failures.length > 0) {
+                appendHarnessLog(iterDir, 'archive', `[${task.id}] ⚠ warm-archive failure: ${warmArchive.failures.join('；')}`);
+                vscode.window.showWarningMessage(`温归档有部分目录清理失败：${warmArchive.failures[0]}`);
+            } else if (warmArchive.removedCount > 0) {
+                appendHarnessLog(iterDir, 'archive', `[${task.id}] ✅ warm-archive cleaned ${warmArchive.removedCount} directories`);
+                vscode.window.showInformationMessage(`温归档完成：已清理 ${warmArchive.removedCount} 个可再生目录。`);
+            }
+
             if (cleanupResult.cleanupComplete) {
-                const isSubview = this.deps.isWorktreeSubview();
-                if (isSubview) {
-                    // VSCode still has iterDir as its workspace root. Defer the rm to a detached
-                    // child that survives this extension instance, so deletion happens after the
-                    // window is closed and file handles are released.
-                    this.scheduleDetachedIterDirCleanup(iterDir);
-                } else {
-                    try {
-                        this.deps.gitService.safeRemovePath(iterDir, { recursive: true });
-                    } catch (error) {
-                        const message = error instanceof Error ? error.message : String(error);
-                        vscode.window.showWarningMessage(`迭代目录清理失败，请手动删除：${iterDir}（${message}）`);
-                    }
-                }
+                appendHarnessLog(iterDir, 'archive', `[${task.id}] ℹ git cleanups finished; iteration folder kept for warm-archive policy`);
             }
 
             if (this.deps.isWorktreeSubview()) {
@@ -1628,7 +1703,7 @@ export class HarnessActionsService {
         const iterDir = this.deps.getIterationDir(task);
         const result = await this.deps.gitService.syncMainCode(task, iterDir);
         if (!result.success) {
-            vscode.window.showErrorMessage(`同步失败：${result.message}`, { modal: true });
+            showErrorMessageSafe(`同步失败：${result.message}`, { modal: true });
         } else {
             vscode.window.showInformationMessage(result.message);
             this.showLocalBaseFallbackNoticeIfAny();
@@ -1899,7 +1974,7 @@ export class HarnessActionsService {
             vscode.window.showInformationMessage('正在推送代码...');
             const result = await this.deps.gitService.pushAll(task, iterDir);
             if (!result.success) {
-                vscode.window.showErrorMessage(result.message, { modal: true });
+                showErrorMessageSafe(result.message, { modal: true });
                 return;
             }
 
@@ -1919,7 +1994,7 @@ export class HarnessActionsService {
             vscode.window.showInformationMessage('正在推送代码...');
             const result = await this.deps.gitService.pushAll(task, iterDir);
             if (!result.success) {
-                vscode.window.showErrorMessage(result.message, { modal: true });
+                showErrorMessageSafe(result.message, { modal: true });
                 return;
             }
 

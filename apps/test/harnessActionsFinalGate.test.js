@@ -5,6 +5,8 @@
  * 1. 开发子任务完成不再触发测试脚本，脚本执行迁移到最终通过/合并环节。
  * 2. gateLevel=standard 下，若 test-api 脚本失败，必须阻断合并并保留 ready_for_review。
  * 3. gateLevel=standard 下，若不存在脚本，按“无脚本非阻断”兼容策略放行。
+ * 4. 统一“完成”入口：developing 阶段点击完成应先提交 PR/MR，再推进到 ready_for_review。
+ * 5. ready_for_review 阶段完成后触发温归档，清理可再生目录但不影响关单结果。
  *
  * 这组测试守护“开发门禁与最终验收门禁解耦”的行为边界，避免回归到开发阶段误跑集成测试。
  */
@@ -227,6 +229,42 @@ describe('最终执行门禁回归覆盖基线', () => {
         assert.equal(feature.stage, STAGE.READY_FOR_REVIEW);
         assert.equal(calls.onPass, 0);
         assert.equal(sink.errors.length, 0);
+    });
+
+    test('promotes developing task to ready_for_review when complete is clicked', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+
+        const sink = { errors: [], infos: [] };
+        const { service, feature, calls } = createServiceHarness(tmpDir, {}, sink);
+        feature.stage = STAGE.DEVELOPING;
+
+        await service.passByFeatureId(feature.id);
+
+        assert.equal(calls.submit, 1);
+        assert.equal(calls.refresh, 0);
+        assert.equal(calls.cleanup, 0);
+        assert.equal(feature.stage, STAGE.READY_FOR_REVIEW);
+        assert.equal(calls.onPass, 0);
+        assert.equal(sink.errors.length, 0);
+    });
+
+    test('runs warm archive cleanup after final completion', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+
+        const recycleDir = path.join(tmpDir, 'node_modules');
+        fs.mkdirSync(recycleDir, { recursive: true });
+        fs.writeFileSync(path.join(recycleDir, 'placeholder.txt'), 'x', 'utf8');
+
+        const sink = { errors: [], infos: [] };
+        const { service, feature } = createServiceHarness(tmpDir, {}, sink);
+        feature.stage = STAGE.READY_FOR_REVIEW;
+
+        await service.passByFeatureId(feature.id);
+
+        assert.equal(feature.stage, STAGE.DONE);
+        assert.equal(fs.existsSync(recycleDir), false);
     });
 
     test('skips Spec Drift evaluation and repair when the task toggle is disabled', async () => {

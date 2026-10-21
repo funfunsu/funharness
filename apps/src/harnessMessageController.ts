@@ -5,6 +5,7 @@ import { appendStructureGateFailureLog, appendTodoLog } from './services/harness
 import { GranularityRuleConflictError, SampleProfileUnavailableError, StructureGateFailedError } from './services/projectStructureService';
 import { PromptContractIncompleteError } from './services/promptService';
 import { AiQuickChatButtonInput, AiQuickChatButtonsSaveResult, DomainKnowledgeContext } from './models';
+import { showErrorMessageSafe, showWarningMessageSafe } from './services/popupMessage';
 
 type SaveAiQuickChatButtonsRouteResult =
     | AiQuickChatButtonsSaveResult
@@ -204,7 +205,7 @@ export class HarnessMessageController {
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error || 'unknown');
             this.logTodo('TODO-SYNC-001', '面板同步广播失败', detail);
-            vscode.window.showWarningMessage('TODO-SYNC-001: 面板同步广播失败');
+            showWarningMessageSafe('TODO-SYNC-001: 面板同步广播失败');
         }
         // Only do a full render when postMessage failed; a full render replaces
         // the entire webview HTML which resets client-side todo state to [].
@@ -272,7 +273,7 @@ export class HarnessMessageController {
             this.deps.saveAiQuickChatButtons(msg.taskId, msg.buttons);
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error || 'unknown');
-            vscode.window.showErrorMessage(`AI 快捷对话按钮保存异常：${detail}`);
+            showErrorMessageSafe(`AI 快捷对话按钮保存异常：${detail}`);
         }
     }
 
@@ -283,18 +284,18 @@ export class HarnessMessageController {
         msg: Extract<HarnessMessage, { type: 'runAiQuickChatButton' }>,
     ): Promise<void> {
         if (!this.deps.runAiQuickChatButton) {
-            vscode.window.showWarningMessage('AI 快捷对话按钮派发未配置');
+            showWarningMessageSafe('AI 快捷对话按钮派发未配置');
             return;
         }
 
         try {
             const result = await this.deps.runAiQuickChatButton(msg.taskId, msg.buttonId);
             if (!result.accepted && !result.failureReason) {
-                vscode.window.showWarningMessage('AI 快捷对话发送失败，请检查按钮配置后重试');
+                showWarningMessageSafe('AI 快捷对话发送失败，请检查按钮配置后重试');
             }
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error || 'unknown');
-            vscode.window.showErrorMessage(`AI 快捷对话发送异常：${detail}`);
+            showErrorMessageSafe(`AI 快捷对话发送异常：${detail}`);
         }
     }
 
@@ -369,7 +370,7 @@ export class HarnessMessageController {
                 break;
         }
 
-        vscode.window.showWarningMessage('子 worktree 面板仅支持当前迭代任务操作，已拦截该请求');
+        showWarningMessageSafe('子 worktree 面板仅支持当前迭代任务操作，已拦截该请求');
         return false;
     }
 
@@ -433,7 +434,7 @@ export class HarnessMessageController {
         if (this.isReviewStage(stage)) {
             return true;
         }
-        vscode.window.showWarningMessage('REVIEW-VAL-001: 评审仅支持 requirements、design、testcase、tasks 四个阶段');
+        showWarningMessageSafe('REVIEW-VAL-001: 评审仅支持 requirements、design、testcase、tasks 四个阶段');
         return false;
     }
 
@@ -467,7 +468,7 @@ export class HarnessMessageController {
                 } catch (err) {
                     const errorCode = err instanceof Error ? err.message : 'DOMAIN_WORKSPACE_LOAD_FAILED';
                     this.deps.domainContextLoaded?.(null, errorCode);
-                    vscode.window.showErrorMessage(errorCode);
+                    showErrorMessageSafe(errorCode);
                 }
                 return;
             case 'updateDomainChangeSet':
@@ -482,7 +483,7 @@ export class HarnessMessageController {
                 } catch (err) {
                     const errorCode = err instanceof Error ? err.message : 'DOMAIN_INPUT_INVALID';
                     this.deps.domainChangeSetUpdated?.(null, false, errorCode);
-                    vscode.window.showWarningMessage(errorCode);
+                    showWarningMessageSafe(errorCode);
                 }
                 return;
             case 'previewDomainProjection':
@@ -499,7 +500,7 @@ export class HarnessMessageController {
                 } catch (err) {
                     const errorCode = err instanceof Error ? err.message : 'DOMAIN_PROJECTION_FAILED';
                     this.deps.domainProjectionResult?.(null, errorCode);
-                    vscode.window.showWarningMessage(errorCode);
+                    showWarningMessageSafe(errorCode);
                 }
                 return;
             case 'detectDomainConflicts':
@@ -521,7 +522,7 @@ export class HarnessMessageController {
                 } catch (err) {
                     const errorCode = err instanceof Error ? err.message : 'DOMAIN_CONFLICT_DETECTION_FAILED';
                     this.deps.domainConflictsDetected?.([], false, errorCode);
-                    vscode.window.showWarningMessage(errorCode);
+                    showWarningMessageSafe(errorCode);
                 }
                 return;
             case 'resolveDomainConflict':
@@ -536,7 +537,7 @@ export class HarnessMessageController {
                 } catch (err) {
                     const errorCode = err instanceof Error ? err.message : 'DOMAIN_CONFLICT_RESOLVE_FAILED';
                     this.deps.domainConflictResolved?.(null, [], errorCode);
-                    vscode.window.showWarningMessage(errorCode);
+                    showWarningMessageSafe(errorCode);
                 }
                 return;
             case 'commitDomainKnowledgeChanges':
@@ -583,7 +584,7 @@ export class HarnessMessageController {
                 } catch (err) {
                     const errorCode = err instanceof Error ? err.message : 'DOMAIN_COMMIT_FAILED';
                     this.deps.domainCommitResult?.(null, errorCode);
-                    vscode.window.showErrorMessage(errorCode);
+                    showErrorMessageSafe(errorCode);
                 }
                 return;
             case 'refreshBaselineAndReproject':
@@ -604,7 +605,7 @@ export class HarnessMessageController {
                 } catch (err) {
                     const errorCode = err instanceof Error ? err.message : 'DOMAIN_REBASE_FAILED';
                     this.deps.baselineReprojectResult?.(false, '', { registryRevision: '', indexRevision: '', domainDocRevisions: {} }, null, errorCode);
-                    vscode.window.showWarningMessage(errorCode);
+                    showWarningMessageSafe(errorCode);
                 }
                 return;
             case 'detectDocumentMergeConflicts':
@@ -619,7 +620,7 @@ export class HarnessMessageController {
                 } catch (err) {
                     const errorCode = err instanceof Error ? err.message : 'DOMAIN_MERGE_CONFLICT_DETECTION_FAILED';
                     this.deps.domainDocumentMergeResult?.([], [], errorCode);
-                    vscode.window.showWarningMessage(errorCode);
+                    showWarningMessageSafe(errorCode);
                 }
                 return;
             // ────────────────────────────────────────────────────────────────
@@ -675,6 +676,7 @@ export class HarnessMessageController {
                 this.deps.saveAdvancedConfig({
                     ...msg,
                     acg: msg.acg !== false,
+                    tam: msg.tam === true,
                     cai: msg.cai === true,
                 });
                 return;
@@ -683,7 +685,7 @@ export class HarnessMessageController {
                     await this.deps.initProjectStructure();
                 } catch (error) {
                     const mapped = this.mapProjectStructureError(error);
-                    vscode.window.showWarningMessage(mapped);
+                    showWarningMessageSafe(mapped);
                 }
                 return;
             case 'applyProjectStructurePreview':
@@ -828,7 +830,7 @@ export class HarnessMessageController {
                 } catch (error) {
                     const mapped = this.mapTodoError(error);
                     this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
-                    vscode.window.showWarningMessage(mapped);
+                    showWarningMessageSafe(mapped);
                     this.emitTodoError(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                 }
                 return;
@@ -849,7 +851,7 @@ export class HarnessMessageController {
                 } catch (error) {
                     const mapped = this.mapTodoError(error);
                     this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
-                    vscode.window.showWarningMessage(mapped);
+                    showWarningMessageSafe(mapped);
                     this.emitTodoError(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                 }
                 return;
@@ -865,7 +867,7 @@ export class HarnessMessageController {
                 } catch (error) {
                     const mapped = this.mapTodoError(error);
                     this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
-                    vscode.window.showWarningMessage(mapped);
+                    showWarningMessageSafe(mapped);
                     this.emitTodoError(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                 }
                 return;
@@ -880,7 +882,7 @@ export class HarnessMessageController {
                 } catch (error) {
                     const mapped = this.mapTodoError(error);
                     this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
-                    vscode.window.showWarningMessage(mapped);
+                    showWarningMessageSafe(mapped);
                     this.emitTodoError(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                 }
                 return;
@@ -895,7 +897,7 @@ export class HarnessMessageController {
                     if (!todo) {
                         const mapped = 'TODO-VAL-002: 待办不存在';
                         this.logTodo('TODO-VAL-002', mapped);
-                        vscode.window.showWarningMessage(mapped);
+                        showWarningMessageSafe(mapped);
                         return;
                     }
 
@@ -913,7 +915,7 @@ export class HarnessMessageController {
                 } catch (error) {
                     const mapped = this.mapTodoError(error);
                     this.logTodo(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
-                    vscode.window.showWarningMessage(mapped);
+                    showWarningMessageSafe(mapped);
                     this.emitTodoError(mapped.split(':')[0], mapped, error instanceof Error ? error.message : String(error));
                 }
                 return;

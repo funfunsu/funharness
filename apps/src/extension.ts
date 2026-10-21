@@ -57,6 +57,8 @@ import { DomainRegistryService } from './services/domainRegistryService';
 import { CodeGraphDedupeGuard } from './services/codegraph/codeGraphDedupeGuard';
 import { CodeGraphEvidenceProvider } from './services/codegraph/codeGraphEvidenceProvider';
 import { CodeGraphInitOrchestrator } from './services/codegraph/codeGraphInitOrchestrator';
+import { showErrorMessageSafe, showWarningMessageSafe } from './services/popupMessage';
+import { resolveSshHostAlias } from './services/sshConfigHostResolver';
 import { resolveHarnessWorkspaceRoot } from './workspaceRoot';
 
 type SaveAiQuickChatButtonsRouteResult =
@@ -106,7 +108,7 @@ export function activate(context: vscode.ExtensionContext): void {
     } catch (error) {
         const message = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
         console.error('[fun-harness] activate.failed', message);
-        void vscode.window.showErrorMessage(`Fun Harness 启动失败：${message}`);
+        void showErrorMessageSafe(`Fun Harness 启动失败：${message}`);
     }
 }
 
@@ -129,6 +131,8 @@ class HarnessViewProvider implements vscode.WebviewViewProvider {
 }
 
 class Harness {
+    private static readonly COLD_ARCHIVE_INTERVAL_MS = 60 * 60 * 1000;
+    private static readonly COLD_ARCHIVE_PERIOD_MS = 7 * 24 * 60 * 60 * 1000;
     private context: vscode.ExtensionContext;
     panel: vscode.WebviewPanel | null = null;
     private sidebarView?: vscode.WebviewView;
@@ -166,6 +170,7 @@ class Harness {
     private autoAdvanceRunning: boolean = false;
     private openedWorkspacePath: string = '';
     private initializationError?: string;
+    private coldArchiveRunning: boolean = false;
     /** Mutex flag: prevents concurrent execution of handleInitProjectStructure. */
     private isInitializingProjectStructure: boolean = false;
     /** Cache of the SHA-256 hash of the last successfully dispatched preview content (Req-3 deduplication). */
@@ -434,6 +439,8 @@ class Harness {
             if (this.isWorktreeSubview()) {
                 this.autoPollService.resumeIfOwnedAfterReload();
                 void this.tryRunCodeGraphInitForCurrentWorktree();
+            } else {
+                this.scheduleColdArchiveSweep();
             }
             setInterval(async () => {
                 if (this.currentPage !== 'main' || this.autoAdvanceRunning) {
@@ -486,7 +493,7 @@ class Harness {
             });
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error);
-            vscode.window.showWarningMessage(`CodeGraph 初始化异常：${detail}`);
+            showWarningMessageSafe(`CodeGraph 初始化异常：${detail}`);
         }
     }
 
@@ -880,6 +887,7 @@ class Harness {
             customButtons: this.config.customButtons || [],
             aiQuickChatButtons: this.config.aiQuickChatButtons || [],
             autoPollEnabled: this.config.autoPollEnabled,
+            tokenAutoMergeEnabled: this.config.tokenAutoMergeEnabled === true,
             autoPoll: this.isWorktreeSubview() ? this.autoPollService.getStatus() : undefined,
             scriptInventory: this.buildScriptInventory(),
             readOnly: this.configMeta.readOnly === true,
@@ -959,7 +967,7 @@ class Harness {
             await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            vscode.window.showErrorMessage(`打开 custom prompt 失败：${message}`);
+            showErrorMessageSafe(`打开 custom prompt 失败：${message}`);
         }
     }
 
@@ -978,7 +986,7 @@ class Harness {
             await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            vscode.window.showErrorMessage(`打开评审 custom prompt 失败：${message}`);
+            showErrorMessageSafe(`打开评审 custom prompt 失败：${message}`);
         }
     }
 
@@ -1004,7 +1012,7 @@ class Harness {
             await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            vscode.window.showErrorMessage(`打开 custom constitution 失败：${message}`);
+            showErrorMessageSafe(`打开 custom constitution 失败：${message}`);
         }
     }
 
@@ -1047,7 +1055,7 @@ class Harness {
                     webview?.postMessage({ type: 'stageReviewStatus', stage, ...latest });
                 } else if (latest.status === 'failed') {
                     clearInterval(poll);
-                    vscode.window.showErrorMessage(`⚖️ ${label}评审失败：${latest.errorReason || '未知错误'}`);
+                    showErrorMessageSafe(`⚖️ ${label}评审失败：${latest.errorReason || '未知错误'}`);
                     webview?.postMessage({ type: 'stageReviewStatus', stage, ...latest });
                 }
             }, 800);
@@ -1056,7 +1064,7 @@ class Harness {
         } catch (error) {
             const errorReason = error instanceof Error ? error.message : String(error);
             webview?.postMessage({ type: 'stageReviewStatus', stage, reviewId: '', status: 'failed', errorReason });
-            vscode.window.showErrorMessage(`⚖️ ${label}评审失败：${errorReason}`);
+            showErrorMessageSafe(`⚖️ ${label}评审失败：${errorReason}`);
         }
     }
 
@@ -1105,7 +1113,7 @@ class Harness {
                 await this.handleInitProjectStructure();
             }
         } else {
-            vscode.window.showErrorMessage(result.message);
+            showErrorMessageSafe(result.message);
         }
     }
 
@@ -1120,9 +1128,31 @@ class Harness {
         }
         const sshMatch = /^[^@]+@([^:]+):.+$/i.exec(raw);
         if (sshMatch && sshMatch[1]) {
-            return sshMatch[1].toLowerCase();
+            return this.normalizeRemoteDomain(endpoint, sshMatch[1].toLowerCase());
         }
         return '';
+    }
+
+    private normalizeRemoteDomain(endpoint: MonorepoRemoteEndpoint, domain: string): string {
+        let normalized = (domain || '').trim().toLowerCase();
+        if (!normalized) {
+            return '';
+        }
+        const mappedHost = resolveSshHostAlias(normalized);
+        if (mappedHost) {
+            normalized = mappedHost;
+        }
+        // SSH aliases (e.g. github@github-xxx:owner/repo.git) should share token scope
+        // with the canonical SaaS host to avoid duplicate token setup across workspaces.
+        if (!normalized.includes('.')) {
+            if (endpoint.platform === 'github' && normalized.includes('github')) {
+                return 'github.com';
+            }
+            if (endpoint.platform === 'gitlab' && normalized.includes('gitlab')) {
+                return 'gitlab.com';
+            }
+        }
+        return normalized;
     }
 
     private buildRemoteApiTokenScopeKey(endpoint: MonorepoRemoteEndpoint): string {
@@ -1131,7 +1161,11 @@ class Harness {
         return `${platform}@${domain}`;
     }
 
-    private buildRemoteApiTokenSecretKey(scopeKey: string): string {
+    private buildRemoteApiTokenGlobalSecretKey(scopeKey: string): string {
+        return `fun-harness.remote-api-token.${scopeKey}`;
+    }
+
+    private buildRemoteApiTokenWorkspaceSecretKey(scopeKey: string): string {
         const rootFingerprint = crypto.createHash('sha256').update(this.getMasterRoot()).digest('hex').slice(0, 16);
         return `fun-harness.remote-api-token.${rootFingerprint}.${scopeKey}`;
     }
@@ -1152,16 +1186,26 @@ class Harness {
             return undefined;
         }
         const scopeKey = this.buildRemoteApiTokenScopeKey(endpoint);
-        const key = this.buildRemoteApiTokenSecretKey(scopeKey);
-        let token = await this.context.secrets.get(key);
+        const globalKey = this.buildRemoteApiTokenGlobalSecretKey(scopeKey);
+        let token = await this.context.secrets.get(globalKey);
+        if (!token) {
+            // Backward compatibility: migrate workspace-scoped domain token to global domain token.
+            const legacyScopeKey = this.buildRemoteApiTokenWorkspaceSecretKey(scopeKey);
+            const legacyScopeToken = await this.context.secrets.get(legacyScopeKey);
+            if (legacyScopeToken && legacyScopeToken.trim()) {
+                await this.context.secrets.store(globalKey, legacyScopeToken.trim());
+                await this.context.secrets.delete(legacyScopeKey);
+                token = legacyScopeToken;
+            }
+        }
         if (!token) {
             // Backward compatibility: migrate legacy endpoint-key scoped token.
-            const legacyKey = this.buildRemoteApiTokenSecretKey(endpoint.key);
-            const legacyToken = await this.context.secrets.get(legacyKey);
-            if (legacyToken && legacyToken.trim()) {
-                await this.context.secrets.store(key, legacyToken.trim());
-                await this.context.secrets.delete(legacyKey);
-                token = legacyToken;
+            const legacyEndpointKey = this.buildRemoteApiTokenWorkspaceSecretKey(endpoint.key);
+            const legacyEndpointToken = await this.context.secrets.get(legacyEndpointKey);
+            if (legacyEndpointToken && legacyEndpointToken.trim()) {
+                await this.context.secrets.store(globalKey, legacyEndpointToken.trim());
+                await this.context.secrets.delete(legacyEndpointKey);
+                token = legacyEndpointToken;
             }
         }
         const normalized = (token || '').trim();
@@ -1245,7 +1289,7 @@ class Harness {
         }
 
         const scopeKey = this.buildRemoteApiTokenScopeKey(endpoint);
-        const key = this.buildRemoteApiTokenSecretKey(scopeKey);
+        const key = this.buildRemoteApiTokenGlobalSecretKey(scopeKey);
         await this.context.secrets.store(key, token.trim());
         const domain = this.parseEndpointDomain(endpoint) || endpoint.remoteName;
         vscode.window.showInformationMessage(`✅ 已保存 ${domain} 的 API Token`);
@@ -1274,8 +1318,12 @@ class Harness {
         }
 
         const scopeKey = this.buildRemoteApiTokenScopeKey(endpoint);
-        const key = this.buildRemoteApiTokenSecretKey(scopeKey);
-        await this.context.secrets.delete(key);
+        const globalKey = this.buildRemoteApiTokenGlobalSecretKey(scopeKey);
+        const legacyScopeKey = this.buildRemoteApiTokenWorkspaceSecretKey(scopeKey);
+        const legacyEndpointKey = this.buildRemoteApiTokenWorkspaceSecretKey(endpoint.key);
+        await this.context.secrets.delete(globalKey);
+        await this.context.secrets.delete(legacyScopeKey);
+        await this.context.secrets.delete(legacyEndpointKey);
         vscode.window.showInformationMessage(`已清除 ${this.parseEndpointDomain(endpoint) || endpoint.remoteName} 的 API Token`);
         if (this.currentPage === 'settings') {
             void this.renderSettings();
@@ -1298,7 +1346,7 @@ class Harness {
             vscode.window.showInformationMessage(`✅ ${this.parseEndpointDomain(endpoint) || endpoint.remoteName} Token 连接测试通过`);
             return;
         }
-        vscode.window.showErrorMessage(`❌ ${this.parseEndpointDomain(endpoint) || endpoint.remoteName} Token 测试失败：${result.message}`);
+        showErrorMessageSafe(`❌ ${this.parseEndpointDomain(endpoint) || endpoint.remoteName} Token 测试失败：${result.message}`);
     }
 
     private handleSaveAdvancedConfig(msg: Extract<HarnessMessage, { type: 'saveAdvancedConfig' }>): void {
@@ -1315,10 +1363,14 @@ class Harness {
         this.config.gateLevel = (msg.gl === 'relaxed' || msg.gl === 'strict') ? msg.gl : 'standard';
         this.config.cliCommandTemplate = msg.cct;
         this.config.aiFallbackToManual = msg.afm;
+        this.config.tokenAutoMergeEnabled = msg.tam === true;
         this.config.aiPanelAutoSubmit = msg.pas;
         this.config.autoCodeGraphEnabled = msg.acg !== false;
         // Policy convergence: when CodeGraph is enabled, auto-install follows automatically.
         this.config.autoInstallEnabled = this.config.autoCodeGraphEnabled;
+        this.config.coldArchiveEnabled = msg.cae !== false;
+        const retention = Number.isFinite(Number(msg.car)) ? Math.floor(Number(msg.car)) : DEFAULT_CONFIG.coldArchiveRetentionCount;
+        this.config.coldArchiveRetentionCount = Math.max(1, retention || DEFAULT_CONFIG.coldArchiveRetentionCount);
         this.saveConfig();
         this.ensureProjectStructureBaseline();
         vscode.window.showInformationMessage('✅ 高级策略已保存');
@@ -1400,7 +1452,7 @@ class Harness {
                     return `第 ${issue.index + 1} 项${fieldLabel}超过上限 ${issue.limit}`;
                 })
                 .join('；');
-            vscode.window.showWarningMessage(`AI 快捷对话按钮保存失败：${message}`);
+            showWarningMessageSafe(`AI 快捷对话按钮保存失败：${message}`);
             return saveResult;
         }
 
@@ -1654,7 +1706,7 @@ class Harness {
                     vscode.window.showInformationMessage('已触发 AI 二次审阅：请根据 AI 建议完善预览文档后再点击"应用预览结构"。');
                 } catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
-                    vscode.window.showWarningMessage(`AI 二次审阅触发失败：${message}`);
+                    showWarningMessageSafe(`AI 二次审阅触发失败：${message}`);
                 }
             }
         }
@@ -1761,7 +1813,7 @@ class Harness {
                 const detail = firstViolation
                     ? `规则=${firstViolation.ruleId}，位置=${firstViolation.location}，建议=${firstViolation.suggestion}`
                     : '请查看日志定位问题';
-                vscode.window.showWarningMessage(`结构门禁失败（gateId=${gate.gateId}）：${detail}`);
+                showWarningMessageSafe(`结构门禁失败（gateId=${gate.gateId}）：${detail}`);
                 return;
             }
             vscode.window.showWarningMessage('未找到可应用的预览结构，或预览内容为空。');
@@ -2141,7 +2193,7 @@ class Harness {
             });
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error || 'unknown');
-            vscode.window.showErrorMessage(`生成领域能力增量失败：${detail}`);
+            showErrorMessageSafe(`生成领域能力增量失败：${detail}`);
         }
     }
 
@@ -2230,6 +2282,149 @@ class Harness {
         } catch {
             return false;
         }
+    }
+
+    private scheduleColdArchiveSweep(): void {
+        setTimeout(() => {
+            void this.tryRunColdArchiveSweep('startup');
+        }, 5000);
+        setInterval(() => {
+            void this.tryRunColdArchiveSweep('timer');
+        }, Harness.COLD_ARCHIVE_INTERVAL_MS);
+    }
+
+    private getColdArchiveStatePath(): string {
+        return path.join(this.getMasterRoot(), BASE, 'process', 'cold-archive-state.json');
+    }
+
+    private readColdArchiveLastRunAt(): number {
+        const statePath = this.getColdArchiveStatePath();
+        if (!fs.existsSync(statePath)) {
+            return 0;
+        }
+        try {
+            const raw = fs.readFileSync(statePath, 'utf8');
+            const parsed = JSON.parse(raw) as { lastRunAt?: string };
+            const lastRunAt = Date.parse(parsed.lastRunAt || '');
+            return Number.isFinite(lastRunAt) ? lastRunAt : 0;
+        } catch {
+            return 0;
+        }
+    }
+
+    private writeColdArchiveState(payload: {
+        reason: 'startup' | 'timer';
+        retentionCount: number;
+        scannedCount: number;
+        candidateCount: number;
+        removedCount: number;
+        failedCount: number;
+        failures: string[];
+    }): void {
+        const statePath = this.getColdArchiveStatePath();
+        try {
+            fs.mkdirSync(path.dirname(statePath), { recursive: true });
+            fs.writeFileSync(statePath, JSON.stringify({
+                lastRunAt: new Date().toISOString(),
+                ...payload,
+            }, null, 2), 'utf8');
+        } catch {
+            // best-effort persistence
+        }
+    }
+
+    private async tryRunColdArchiveSweep(reason: 'startup' | 'timer'): Promise<void> {
+        if (this.coldArchiveRunning) {
+            return;
+        }
+        if (this.isWorktreeSubview()) {
+            return;
+        }
+        if (this.config.coldArchiveEnabled === false) {
+            return;
+        }
+
+        const lastRunAt = this.readColdArchiveLastRunAt();
+        if (lastRunAt > 0 && (Date.now() - lastRunAt) < Harness.COLD_ARCHIVE_PERIOD_MS) {
+            return;
+        }
+
+        this.coldArchiveRunning = true;
+        try {
+            const retentionCount = Math.max(1, Math.floor(Number(this.config.coldArchiveRetentionCount || 10)));
+            const summary = await this.runColdArchiveSweep(retentionCount);
+            this.writeColdArchiveState({ reason, retentionCount, ...summary });
+
+            if (summary.removedCount > 0) {
+                vscode.window.showInformationMessage(`🧊 冷归档完成：已清理 ${summary.removedCount} 个历史迭代（保留 ${retentionCount} 个）。`);
+            }
+            if (summary.failedCount > 0) {
+                vscode.window.showWarningMessage(`冷归档有 ${summary.failedCount} 个迭代清理失败，请查看 .harness/process/cold-archive-state.json。`);
+            }
+        } finally {
+            this.coldArchiveRunning = false;
+        }
+    }
+
+    private async runColdArchiveSweep(retentionCount: number): Promise<{
+        scannedCount: number;
+        candidateCount: number;
+        removedCount: number;
+        failedCount: number;
+        failures: string[];
+    }> {
+        const masterRoot = this.getMasterRoot();
+        const worktreesDir = path.join(masterRoot, 'worktrees');
+        if (!fs.existsSync(worktreesDir)) {
+            return { scannedCount: 0, candidateCount: 0, removedCount: 0, failedCount: 0, failures: [] };
+        }
+
+        const allDirs = fs.readdirSync(worktreesDir, { withFileTypes: true })
+            .filter(entry => entry.isDirectory())
+            .map(entry => path.resolve(path.join(worktreesDir, entry.name)));
+
+        const protectedDirs = new Set<string>();
+        protectedDirs.add(path.resolve(this.openedWorkspacePath || workspaceRoot));
+        for (const task of this.features) {
+            try {
+                protectedDirs.add(path.resolve(this.getIterationDir(task)));
+            } catch {
+                // ignore malformed iteration path
+            }
+        }
+
+        const nonProtected = allDirs.filter(dir => !protectedDirs.has(path.resolve(dir)));
+        const sorted = nonProtected.sort((left, right) => {
+            const leftTime = fs.statSync(left).mtimeMs;
+            const rightTime = fs.statSync(right).mtimeMs;
+            return rightTime - leftTime;
+        });
+
+        const candidates = sorted.slice(retentionCount);
+        const failures: string[] = [];
+        let removedCount = 0;
+
+        for (const iterDir of candidates) {
+            try {
+                const result = await this.gitService.detachIterationWorktrees(iterDir);
+                if (!result.success) {
+                    failures.push(`${iterDir}: ${result.errors.join('；') || 'unknown error'}`);
+                    continue;
+                }
+                removedCount += 1;
+            } catch (error) {
+                const detail = error instanceof Error ? error.message : String(error || 'unknown');
+                failures.push(`${iterDir}: ${detail}`);
+            }
+        }
+
+        return {
+            scannedCount: allDirs.length,
+            candidateCount: candidates.length,
+            removedCount,
+            failedCount: failures.length,
+            failures,
+        };
     }
 }
 

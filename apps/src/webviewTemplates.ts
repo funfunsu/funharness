@@ -43,7 +43,7 @@ function mapChangeRequestStateToTag(state: string): { text: string; cls: string 
     }
 }
 
-function buildChangeRequestStatusHtml(task: Feature): string {
+function buildChangeRequestStatusHtml(task: Feature, tokenAutoMergeEnabled: boolean): string {
     const entries: FeatureChangeRequestState[] = Object.values(task.changeRequests || {} as Record<string, FeatureChangeRequestState>);
     if (entries.length === 0) {
         return '';
@@ -70,8 +70,9 @@ ${err}
 </div>`;
     }).join('');
 
-    return `<details class="cr-panel" open>
-<summary>🔀 远程 PR/MR 状态（${entries.length}）</summary>
+    const autoMergeLabel = tokenAutoMergeEnabled ? '开' : '关';
+    return `<details class="cr-panel">
+<summary><span class="cr-summary-main">🔀 远程 PR/MR 状态（${entries.length}）</span><span class="cr-summary-hint">自动合并：${autoMergeLabel}</span></summary>
 <div class="cr-list">${rows}</div>
 </details>`;
 }
@@ -364,7 +365,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
-        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="${ctx.isWorktreeSubview ? 'pushDev' : 'pushAll'}('${ctx.task.id}')">🚀 推送</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="pass('${ctx.task.id}')">✅ 完成</button>`,
     },
     {
         key: 'dev-rollback-to-task-split',
@@ -385,7 +386,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.READY_FOR_REVIEW],
-        render: (ctx) => `<button class="action-btn action-btn--success" onclick="pass('${ctx.task.id}')">🏁 检查远程已合并并完成任务</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--success" onclick="pass('${ctx.task.id}')">✅ 完成（检查远程已合并）</button>`,
     },
     {
         key: 'spec-review',
@@ -582,6 +583,7 @@ export function buildMainPageHtml(
         customButtons: CustomButton[];
         aiQuickChatButtons?: import('./models').AiQuickChatButton[];
         autoPollEnabled: boolean;
+        tokenAutoMergeEnabled?: boolean;
         autoPoll?: AutoPollStatus;
         scriptInventory?: ScriptInventory;
         readOnly?: boolean;
@@ -769,8 +771,10 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .delta-block{background:#4a1818;color:#ff9a9a}
 .delta-none{background:#2c2c2e;color:#8f8f94}
 .cr-panel{margin-top:8px;background:#1a1a1a;border:1px solid #323238;border-radius:8px;padding:6px 8px}
-.cr-panel>summary{cursor:pointer;font-size:12px;color:#cfd6dd;list-style:none}
+.cr-panel>summary{cursor:pointer;font-size:12px;color:#cfd6dd;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .cr-panel>summary::-webkit-details-marker{display:none}
+.cr-summary-main{display:inline-flex;align-items:center}
+.cr-summary-hint{font-size:10px;color:#8f8f94}
 .cr-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
 .cr-row{background:#202026;border:1px solid #323238;border-radius:8px;padding:7px 8px}
 .cr-main{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
@@ -1002,7 +1006,6 @@ placeholder="请输入需求描述"
 ${!t.quickMode ? `<div>阶段：${STAGE_LABEL[t.stage] || t.stage}</div>
 <div class="task-status">原因：${health.summary || '-'}</div>
 ${(t.stage === STAGE.DEVELOPING || t.stage === STAGE.READY_FOR_REVIEW) ? `<div class="health-line" style="margin:4px 0">${buildDeltaBadgeHtml(t.id, view.specDeltaStatus)}</div>` : ''}
-${buildChangeRequestStatusHtml(t)}
 ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.latestFailureReason}</div>` : ''}
 ${outputWarningsPreview.length > 0 ? `<div class="task-status" style="color:#ffb143">输出路径告警：${outputWarningsPreview.map(escapeHtml).join('；')}${outputWarnings.length > outputWarningsPreview.length ? `（+${outputWarnings.length - outputWarningsPreview.length}）` : ''}</div>` : ''}
 <div class="task-status">待办:${stats.todo} 执行中:${stats.doing} 完成:${stats.done}${stats.failed > 0 ? ` 失败:${stats.failed}` : ''}</div>
@@ -1058,6 +1061,8 @@ ${subTasks.map(st => {
 </div>
 </details>
 ` : ''}
+
+${buildChangeRequestStatusHtml(t, config.tokenAutoMergeEnabled === true)}
 
 <div class="action">
 ${actionHtml}
@@ -2533,6 +2538,7 @@ ${mirrorTokenRows}
 </div>
 </details>
 <div class="hint">Token 安全存储在 VS Code 凭据库，不写入仓库文件。</div>
+<div class="hint">Token 按「平台 + 域名」全局复用：同一 VS Code 用户下，跨项目/跨 workspace 无需重复设置。</div>
 <div class="hint">获取方式：GitLab 在 User Settings → Access Tokens；GitHub 在 Settings → Developer settings → Personal access tokens。</div>
 <button onclick="saveGit()" style="background:#007aff" ${disabled}>💾 保存 Git 配置并初始化代码</button>
 </div>
@@ -2577,6 +2583,10 @@ ${mirrorTokenRows}
 <input id="afm" type="checkbox" ${config.aiFallbackToManual !== false ? 'checked' : ''} ${disabled}>
 </div>
 <div class="toggle-row">
+<span>Token 模式自动请求合并（受审批/CI/保护分支约束）</span>
+<input id="tam" type="checkbox" ${config.tokenAutoMergeEnabled === true ? 'checked' : ''} ${disabled}>
+</div>
+<div class="toggle-row">
 <span>Claude Code (面板) 预填后自动回车发送（仅 macOS，需授予编辑器「辅助功能」权限）</span>
 <input id="pas" type="checkbox" ${config.aiPanelAutoSubmit !== false ? 'checked' : ''} ${disabled}>
 </div>
@@ -2587,6 +2597,12 @@ ${mirrorTokenRows}
 <div class="toggle-row">
 <span>CodeGraph 开启时，若本机缺少 CLI 将自动尝试安装（无需单独开关）</span>
 </div>
+<div class="toggle-row">
+<span>启用定期冷归档策略（周级调度）</span>
+<input id="cae" type="checkbox" ${config.coldArchiveEnabled !== false ? 'checked' : ''} ${disabled}>
+</div>
+<h5>冷归档保留迭代数量（最小 1，默认 10）</h5>
+<input id="car" type="number" min="1" value="${Math.max(1, Number(config.coldArchiveRetentionCount || 10))}" ${disabled}>
 <button onclick="saveAdvancedConfig()" style="background:#007aff" ${disabled}>💾 保存高级策略</button>
 </details>
 </div>
@@ -2661,7 +2677,7 @@ function toggleTokenPanel(panelId,btnId){var panel=document.getElementById(panel
 function setRemoteApiToken(endpointKey){v.postMessage({type:'setRemoteApiToken',endpointKey:endpointKey})}
 function testRemoteApiToken(endpointKey){v.postMessage({type:'testRemoteApiToken',endpointKey:endpointKey})}
 function clearRemoteApiToken(endpointKey){v.postMessage({type:'clearRemoteApiToken',endpointKey:endpointKey})}
-function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',dcm:document.getElementById('dcm').value,ins:document.getElementById('ins').checked,wsd:document.getElementById('wsd').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,pas:document.getElementById('pas').checked,acg:document.getElementById('acg').checked})}
+function saveAdvancedConfig(){v.postMessage({type:'saveAdvancedConfig',dcm:document.getElementById('dcm').value,ins:document.getElementById('ins').checked,wsd:document.getElementById('wsd').value,prm:document.getElementById('prm').value,srd:document.getElementById('srd').value,gl:document.getElementById('gl').value,cct:document.getElementById('cct').value,afm:document.getElementById('afm').checked,tam:document.getElementById('tam').checked,pas:document.getElementById('pas').checked,acg:document.getElementById('acg').checked,cae:document.getElementById('cae').checked,car:parseInt(document.getElementById('car').value,10)||10})}
 function initProjectStructure(){v.postMessage({type:'initProjectStructure'})}
 function applyProjectStructurePreview(){v.postMessage({type:'applyProjectStructurePreview'})}
 function openArtifactsIndex(){v.postMessage({type:'openArtifactsIndex'})}
