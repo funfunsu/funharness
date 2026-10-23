@@ -662,7 +662,6 @@ export class HarnessActionsService {
         if (!passed) {
             return false;
         }
-
         const domainSedimentation = await this.runDomainSedimentationWritable(task);
         if (!domainSedimentation.passed) {
             showErrorMessageSafe(`领域沉淀门禁未通过：${domainSedimentation.summary}`, { modal: true });

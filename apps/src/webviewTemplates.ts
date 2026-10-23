@@ -366,7 +366,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
-        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="pass('${ctx.task.id}', false, this)">📤 推进</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="pass('${ctx.task.id}', false, this)">📤 提交并待评审</button>`,
     },
     {
         key: 'dev-direct-pass',
@@ -3401,4 +3401,3 @@ ${latestVersionNote}
 ${syncBtn}
 </div>`;
 }
-
