@@ -81,7 +81,7 @@ export interface DevRollbackSnapshot {
     /** Full tasks.md content captured when entering developing stage. */
     taskPlanContent: string;
     /** Per-repository HEAD commit captured when entering developing stage. */
-    repoHeadByKind?: Partial<Record<'frontend' | 'backend' | 'mono', string>>;
+    repoHeadByKind?: Partial<Record<'mono', string>>;
 }
 
 export type ChangeRequestState =
@@ -115,7 +115,6 @@ export interface Feature {
     id: string;
     name: string;
     desc: string;
-    taskSplitMode?: 'standard' | 'compact';
     stage: Stage;
     worktreePath?: string;
     iterationBranch?: string;
@@ -454,15 +453,16 @@ export interface Config {
     monorepoGit: string;
     /**
      * Optional explicit monorepo remote endpoint list. When empty, endpoints are derived from
-     * `monorepoGit` (+ legacy `githubMirrorGit`) for backward compatibility.
+        * `monorepoGit` (+ mirrorRemotes / legacy githubMirrorGit) for backward compatibility.
      */
     monorepoRemotes?: MonorepoRemoteEndpoint[];
     /**
-     * Optional secondary remote URL. When non-empty, every push to the target baseline branch
-     * (main repo, monorepo or multi-repo) is mirrored to this remote as well, best-effort — a
-     * mirror push failure is logged but never fails the primary git operation.
+        * Optional mirror remotes (newline/comma/semicolon-separated URLs).
+        * When non-empty, pushes to the target baseline branch are mirrored best-effort.
      */
-    githubMirrorGit: string;
+        mirrorRemotes: string;
+        /** @deprecated Use mirrorRemotes instead. Kept for backward compatibility. */
+        githubMirrorGit: string;
     /**
      * Subfolder names inside a monorepo checkout, used for "open folder" navigation and structure
      * detection only (NOT injected into AI prompts). Empty values fall back to the defaults.
@@ -741,12 +741,13 @@ function splitRemoteInput(value: string): string[] {
  * Supported formats:
  * - monorepoGit="https://a.git" (single)
  * - monorepoGit="https://a.git,https://b.git" (comma/semicolon/newline separated)
+ * - monorepoGit + mirrorRemotes (preferred mirror field)
  * - monorepoGit + githubMirrorGit (legacy mirror field)
  */
-export function parseMonorepoRemoteEndpoints(monorepoGit: string, githubMirrorGit?: string): MonorepoRemoteEndpoint[] {
+export function parseMonorepoRemoteEndpoints(monorepoGit: string, mirrorRemotes?: string): MonorepoRemoteEndpoint[] {
     const urls = [
         ...splitRemoteInput(monorepoGit),
-        ...splitRemoteInput(githubMirrorGit || ''),
+        ...splitRemoteInput(mirrorRemotes || ''),
     ];
     const seen = new Set<string>();
     const endpoints: MonorepoRemoteEndpoint[] = [];
@@ -775,7 +776,7 @@ export function parseMonorepoRemoteEndpoints(monorepoGit: string, githubMirrorGi
  * Resolve effective monorepo endpoints with backward compatibility for legacy config fields.
  */
 export function resolveConfiguredMonorepoRemoteEndpoints(
-    config: Pick<Config, 'monorepoGit' | 'githubMirrorGit' | 'monorepoRemotes'> | undefined,
+    config: Pick<Config, 'monorepoGit' | 'mirrorRemotes' | 'githubMirrorGit' | 'monorepoRemotes'> | undefined,
 ): MonorepoRemoteEndpoint[] {
     const explicit = (config?.monorepoRemotes || [])
         .map((item, idx) => {
@@ -806,7 +807,8 @@ export function resolveConfiguredMonorepoRemoteEndpoints(
         });
     }
 
-    return parseMonorepoRemoteEndpoints(config?.monorepoGit || '', config?.githubMirrorGit || '');
+    const mirrorRemotes = (config?.mirrorRemotes || config?.githubMirrorGit || '').trim();
+    return parseMonorepoRemoteEndpoints(config?.monorepoGit || '', mirrorRemotes);
 }
 
 /** Normalize the configured gate level, defaulting to 'standard'. */
@@ -838,8 +840,6 @@ export function getTrackedSpecsDirCandidates(workspaceRoot: string): string[] {
     const masterRoot = deriveMasterRoot(workspaceRoot);
     const candidates = [
         path.join(masterRoot, 'repos', 'mono-main', TRACKED_SPECS_DIR),
-        path.join(masterRoot, 'repos', 'backend-main', TRACKED_SPECS_DIR),
-        path.join(masterRoot, 'repos', 'frontend-main', TRACKED_SPECS_DIR),
         path.join(workspaceRoot, TRACKED_SPECS_DIR),
         path.join(masterRoot, TRACKED_SPECS_DIR),
     ];
@@ -865,12 +865,9 @@ export function isMonoMode(config: Pick<Config, 'monorepoGit'> | undefined): boo
     return Boolean(config?.monorepoGit?.trim());
 }
 
-/** The docs root folder name under the iteration root ('docs' in multi mode, monorepoDirs.docs in mono mode). */
+/** The docs root folder name under the iteration root. */
 export function getDocsRootDirName(config: SpecDocsConfig): string {
-    if (isMonoMode(config)) {
-        return (config?.monorepoDirs?.docs || '').trim() || DEFAULT_MONOREPO_DIRS.docs;
-    }
-    return 'docs';
+    return (config?.monorepoDirs?.docs || '').trim() || DEFAULT_MONOREPO_DIRS.docs;
 }
 
 /** The spec-artifacts root folder name under the iteration root (configurable, default 'specs'). */
@@ -880,17 +877,14 @@ export function getSpecRootDirName(config: SpecDocsConfig): string {
 
 /**
  * Relative path segments (from the iteration root) to the folder holding per-iteration spec
- * docs (requirements/design/testcase/tasks). In monorepo mode these live under a task-named
+ * docs (requirements/design/testcase/tasks). These live under a task-named
  * subfolder (specs/<task>/) so that merging the iteration branch back into the shared repo does
- * not collide with other iterations' docs; in multi-repo mode they stay directly under specs/.
+ * not collide with other iterations' docs.
  * The task-name subfolder is derived from the iteration directory's own name (worktrees/<task>).
  */
 export function getSpecDocsRelSegments(iterDir: string, config: SpecDocsConfig): string[] {
     const root = getSpecRootDirName(config);
-    if (isMonoMode(config)) {
-        return [root, path.basename(iterDir)];
-    }
-    return [root];
+    return [root, path.basename(iterDir)];
 }
 
 /**
@@ -899,10 +893,7 @@ export function getSpecDocsRelSegments(iterDir: string, config: SpecDocsConfig):
  */
 export function getLegacySpecDocsRelSegments(iterDir: string, config: SpecDocsConfig): string[] {
     const root = getDocsRootDirName(config);
-    if (isMonoMode(config)) {
-        return [root, path.basename(iterDir)];
-    }
-    return [root];
+    return [root, path.basename(iterDir)];
 }
 
 /** Absolute directory holding per-iteration spec docs. */
@@ -959,6 +950,7 @@ export function resolveFeaturePlanFileForIteration(iterDir: string, config: Spec
 export const DEFAULT_CONFIG: Config = {
     monorepoGit: '',
     monorepoRemotes: [],
+    mirrorRemotes: '',
     githubMirrorGit: '',
     monorepoDirs: { ...DEFAULT_MONOREPO_DIRS },
     baseBranch: '',

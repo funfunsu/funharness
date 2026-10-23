@@ -67,7 +67,7 @@ interface HarnessMessageControllerDeps {
     runStageReview?: (stage: ReviewStage, context: Extract<HarnessMessage, { type: 'runStageReview' }>['context']) => Promise<void>;
     getLatestReviewStatus?: (stage: ReviewStage) => Promise<void>;
     openCustomConstitution: () => Promise<void>;
-    saveGit:(monorepoGit: string, baseBranch: string, githubMirrorGit?: string) => Promise<void>;
+    saveGit:(monorepoGit: string, baseBranch: string, mirrorRemotes?: string) => Promise<void>;
     setRemoteApiToken: (endpointKey: string) => Promise<void>;
     testRemoteApiToken: (endpointKey: string) => Promise<void>;
     clearRemoteApiToken: (endpointKey: string) => Promise<void>;
@@ -661,7 +661,7 @@ export class HarnessMessageController {
                 await this.deps.openCustomConstitution();
                 return;
             case 'saveGit':
-                await this.deps.saveGit(msg.mg ?? '', msg.bb, msg.gmg);
+                await this.deps.saveGit(msg.mg ?? '', msg.bb, msg.mr ?? msg.gmg);
                 return;
             case 'setRemoteApiToken':
                 await this.deps.setRemoteApiToken(msg.endpointKey);

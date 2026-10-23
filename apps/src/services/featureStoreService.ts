@@ -24,6 +24,8 @@ export interface HarnessConfigMeta {
 }
 
 export class FeatureStoreService {
+    private mirrorLegacyMigrationPending = false;
+
     constructor(private readonly workspaceRoot: string) {}
 
     private samePath(a: string, b: string): boolean {
@@ -236,6 +238,7 @@ export class FeatureStoreService {
     loadConfig(): Config {
         const file = this.getConfigFile();
         if (!fs.existsSync(file)) {
+            this.mirrorLegacyMigrationPending = false;
             return { ...DEFAULT_CONFIG };
         }
 
@@ -259,6 +262,15 @@ export class FeatureStoreService {
             // deep-merge monorepoDirs so a partially-specified object keeps default subfolders.
             const merged = { ...DEFAULT_CONFIG, ...loaded };
             merged.monorepoGit = typeof loaded.monorepoGit === 'string' ? loaded.monorepoGit : '';
+            const hasMirrorRemotesField = Object.prototype.hasOwnProperty.call(loaded, 'mirrorRemotes');
+            const mirrorRemotes = typeof loaded.mirrorRemotes === 'string' ? loaded.mirrorRemotes : '';
+            const legacyMirror = typeof loaded.githubMirrorGit === 'string' ? loaded.githubMirrorGit : '';
+            merged.mirrorRemotes = hasMirrorRemotesField ? mirrorRemotes : legacyMirror;
+            // Runtime compatibility only: keep legacy field readable in-memory, but do not
+            // continuously persist it back to disk (see saveConfig one-time marker policy).
+            merged.githubMirrorGit = legacyMirror;
+            const legacyMigrationMarked = loaded.__harnessMirrorRemotesLegacyMigrated === true;
+            this.mirrorLegacyMigrationPending = !hasMirrorRemotesField && Boolean(legacyMirror.trim()) && !legacyMigrationMarked;
             merged.monorepoRemotes = resolveConfiguredMonorepoRemoteEndpoints(merged);
             merged.monorepoDirs = { ...DEFAULT_CONFIG.monorepoDirs, ...(loaded.monorepoDirs || {}) };
             // Keep policy booleans stable for legacy/malformed configs.
@@ -283,6 +295,7 @@ export class FeatureStoreService {
             };
             return merged;
         } catch {
+            this.mirrorLegacyMigrationPending = false;
             return { ...DEFAULT_CONFIG };
         }
     }
@@ -380,11 +393,18 @@ export class FeatureStoreService {
                 Array.isArray(config.aiQuickChatButtons) ? config.aiQuickChatButtons : [],
             ),
         };
-        const payload = {
+        const payload: Record<string, unknown> = {
             ...normalizedConfig,
             __harnessConfigOrigin: meta.origin === 'worktreeSnapshot' ? 'worktreeSnapshot' : 'master',
             __harnessMasterRoot: meta.masterRoot,
         };
+        // New canonical field is mirrorRemotes. Keep the deprecated legacy field out of
+        // steady-state writes; only write a one-time migration marker when detected.
+        delete payload.githubMirrorGit;
+        if (this.mirrorLegacyMigrationPending) {
+            payload.__harnessMirrorRemotesLegacyMigrated = true;
+            this.mirrorLegacyMigrationPending = false;
+        }
         fs.writeFileSync(file, JSON.stringify(payload, null, 2), 'utf8');
     }
 

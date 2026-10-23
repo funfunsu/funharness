@@ -192,16 +192,16 @@ describe('领域预检阻断与引导', () => {
         }
     });
 
-    test('新建和 TODO 提升默认 compact，旧任务缺省回退但保留显式 standard', async () => {
+    test('新建和 TODO 提升保持默认自动化配置', async () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
         const { service, feature, features } = createServiceHarness(tmpDir, '去处理');
-        assert.equal(service.resolveFeatureSplitMode(feature), 'compact');
-        assert.equal(service.resolveFeatureSplitMode({ ...feature, taskSplitMode: 'standard' }), 'standard');
         await service.createFeature('普通迭代', '描述');
-        assert.equal(features.at(-1).taskSplitMode, 'compact');
+        assert.equal(features.at(-1).autoAdvanceEnabled, true);
+        assert.equal(features.at(-1).specDriftRepairEnabled, true);
         const promoted = await service.createFeatureFromTodo('待办迭代', '描述');
-        assert.equal(promoted.taskSplitMode, 'compact');
+        assert.equal(promoted.autoAdvanceEnabled, true);
+        assert.equal(promoted.specDriftRepairEnabled, true);
     });
 
     test('选择去处理时阻断推进并打开 registry', async () => {
@@ -378,6 +378,7 @@ describe('领域预检阻断与引导', () => {
         tmpDirs.push(tmpDir);
         fs.mkdirSync(path.join(tmpDir, '.git'), { recursive: true });
         fs.mkdirSync(path.join(tmpDir, '.codegraph'), { recursive: true });
+        fs.writeFileSync(path.join(tmpDir, '.codegraph', 'codegraph.db'), 'mock');
 
         const triggerCalls = [];
         const { service, feature } = createServiceHarness(tmpDir, '去处理', {

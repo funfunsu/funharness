@@ -19,6 +19,7 @@ import { ReviewStage, StageContext, StageReviewPromptResult } from '../harnessMe
 import type { ReviewPromptConfigService } from './reviewPromptConfigService';
 import { CodeGraphEvidenceProvider } from './codegraph/codeGraphEvidenceProvider';
 import { CodeGraphEvidenceSnapshotWriter } from './codegraph/codeGraphEvidenceSnapshotWriter';
+import { isCodeGraphInitialized } from './codegraph/codeGraphState';
 
 export interface RenderedPrompt {
     content: string;
@@ -204,7 +205,7 @@ export class PromptService {
         if (!worktreePath) {
             return;
         }
-        if (!fs.existsSync(path.join(worktreePath, '.codegraph'))) {
+        if (!isCodeGraphInitialized(worktreePath)) {
             return;
         }
 

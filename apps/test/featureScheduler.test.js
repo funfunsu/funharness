@@ -40,6 +40,10 @@ function makeTempDir() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'feature-scheduler-'));
 }
 
+function getSpecDir(rootDir) {
+    return path.join(rootDir, 'specs', path.basename(rootDir));
+}
+
 function cleanup(dir) {
     try {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -113,7 +117,7 @@ function loadFeatureScheduler(vscodeMock) {
 }
 
 function writeTaskPlan(rootDir, firstTaskMarker = 'doing') {
-    const specDir = path.join(rootDir, 'specs');
+    const specDir = getSpecDir(rootDir);
     fs.mkdirSync(specDir, { recursive: true });
     const taskPlanPath = path.join(specDir, 'tasks.md');
     fs.writeFileSync(taskPlanPath, [
@@ -155,7 +159,7 @@ async function triggerTaskPlanChange(watchers, taskPlanPath) {
 }
 
 function writeRepairPlan(root, autoRepair) {
-    const specDir = path.join(root, 'specs');
+    const specDir = getSpecDir(root);
     fs.mkdirSync(specDir, { recursive: true });
     fs.mkdirSync(path.join(root, 'src'));
     fs.writeFileSync(path.join(root, 'src/a.ts'), 'source');
@@ -383,7 +387,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
     test('treats trailing parenthetical notes in output paths as annotations', async () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         const taskPlanPath = path.join(specDir, 'tasks.md');
         fs.writeFileSync(taskPlanPath, [
@@ -449,7 +453,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
     test('normalizes bracketed outputs and markdown-wrapped signal file paths', async () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         const taskPlanPath = path.join(specDir, 'tasks.md');
         fs.writeFileSync(taskPlanPath, [
@@ -502,7 +506,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
     test('accepts bracketed multi-output lists after split (handles dangling [ and ])', async () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         const taskPlanPath = path.join(specDir, 'tasks.md');
         fs.writeFileSync(taskPlanPath, [
@@ -550,6 +554,170 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         assert.equal(scheduler.getCurrentSubFeature()?.id, '2.2');
         assert.equal(dispatched.length, 1);
         assert.match(fs.readFileSync(taskPlanPath, 'utf8'), /\[doing\]\s*2\.2/);
+
+        scheduler.stopWatching();
+    });
+
+    test('accepts absolute done-signal file entries when they are inside current iteration root', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        const specDir = getSpecDir(tmpDir);
+        fs.mkdirSync(specDir, { recursive: true });
+        const taskPlanPath = path.join(specDir, 'tasks.md');
+        fs.writeFileSync(taskPlanPath, [
+            '- [doing] 1.2 生成接口契约',
+            '  - 输出: apps/src/harnessMessages.ts',
+            '',
+            '- [ ] 2.1 后续任务',
+            '  - 输出: specs/next.md',
+            '',
+        ].join('\n'), 'utf8');
+
+        const outputFile = path.join(tmpDir, 'apps', 'src', 'harnessMessages.ts');
+        fs.mkdirSync(path.dirname(outputFile), { recursive: true });
+        fs.writeFileSync(outputFile, 'export {}', 'utf8');
+
+        const signalsDir = path.join(tmpDir, 'signals');
+        fs.mkdirSync(signalsDir, { recursive: true });
+        const signalPath = path.join(signalsDir, 'done-1.2');
+        fs.writeFileSync(signalPath, [
+            'taskId: 1.2',
+            'status: done',
+            'files:',
+            `  - ${outputFile}`,
+        ].join('\n'), 'utf8');
+
+        const { vscodeMock, watchers } = createVscodeMock();
+        const FeatureScheduler = loadFeatureScheduler(vscodeMock);
+        const dispatched = [];
+        const scheduler = new FeatureScheduler(
+            tmpDir,
+            tmpDir,
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' },
+            async query => dispatched.push(query),
+            () => {},
+            () => 'dev system prompt'
+        );
+
+        await scheduler.startAuto(createFeature());
+        await triggerSignalCreate(watchers, signalPath);
+
+        assert.equal(scheduler.getCurrentSubFeature()?.id, '2.1');
+        assert.equal(dispatched.length, 1);
+        assert.match(fs.readFileSync(taskPlanPath, 'utf8'), /\[doing\]\s*2\.1/);
+
+        scheduler.stopWatching();
+    });
+
+    test('rejects done-signal file entries outside iteration root even when target exists', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        const externalDir = makeTempDir();
+        tmpDirs.push(externalDir);
+
+        const specDir = getSpecDir(tmpDir);
+        fs.mkdirSync(specDir, { recursive: true });
+        const taskPlanPath = path.join(specDir, 'tasks.md');
+        fs.writeFileSync(taskPlanPath, [
+            '- [doing] 1.2 本地记录更新',
+            '  - 输出: apps/src/harnessMessages.ts',
+            '',
+            '- [ ] 2.1 后续任务',
+            '  - 输出: specs/next.md',
+            '',
+        ].join('\n'), 'utf8');
+
+        const externalFile = path.join(externalDir, 'outside.md');
+        fs.writeFileSync(externalFile, '# outside', 'utf8');
+
+        const signalsDir = path.join(tmpDir, 'signals');
+        fs.mkdirSync(signalsDir, { recursive: true });
+        const signalPath = path.join(signalsDir, 'done-1.2');
+        fs.writeFileSync(signalPath, [
+            'taskId: 1.2',
+            'status: done',
+            'files:',
+            `  - ${externalFile}`,
+        ].join('\n'), 'utf8');
+
+        const { vscodeMock, watchers } = createVscodeMock();
+        const FeatureScheduler = loadFeatureScheduler(vscodeMock);
+        const dispatched = [];
+        const scheduler = new FeatureScheduler(
+            tmpDir,
+            tmpDir,
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' },
+            async query => dispatched.push(query),
+            () => {},
+            () => 'dev system prompt'
+        );
+
+        await scheduler.startAuto(createFeature());
+        await triggerSignalCreate(watchers, signalPath);
+
+        assert.equal(dispatched.length, 0);
+        assert.equal(scheduler.parseSubFeaturesMd()[0].status, 'failed');
+
+        scheduler.stopWatching();
+    });
+
+    test('deduplicates expected outputs and logs relocation hints for missing paths', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        const specDir = getSpecDir(tmpDir);
+        fs.mkdirSync(specDir, { recursive: true });
+        const taskPlanPath = path.join(specDir, 'tasks.md');
+        fs.writeFileSync(taskPlanPath, [
+            '- [doing] 1.3 安全鉴权路径改造',
+            '  - 新建输出: apps/risk-control-api/risk-control-api-external/src/main/java/com/amway/commerce/risk/external/api/RiskCheckApi.java',
+            '  - 改造输出: apps/risk-control-api/risk-control-api-application/src/main/resources/application.yml',
+            '  - 输出: apps/risk-control-api/risk-control-api-external/src/main/java/com/amway/commerce/risk/external/api/RiskCheckApi.java, apps/risk-control-api/risk-control-api-application/src/main/resources/application.yml',
+            '- [ ] 1.4 后续任务',
+            '  - 输出: specs/next.md',
+        ].join('\n'), 'utf8');
+
+        const movedApiPath = path.join(tmpDir, 'apps', 'risk-control-api', 'risk-control-api-application', 'src', 'main', 'java', 'com', 'amway', 'commerce', 'risk', 'application', 'adapter', 'api');
+        const appConfigDir = path.join(tmpDir, 'apps', 'risk-control-api', 'risk-control-api-application', 'src', 'main', 'resources');
+        fs.mkdirSync(movedApiPath, { recursive: true });
+        fs.mkdirSync(appConfigDir, { recursive: true });
+        fs.writeFileSync(path.join(movedApiPath, 'RiskCheckApi.java'), 'public class RiskCheckApi {}', 'utf8');
+        fs.writeFileSync(path.join(appConfigDir, 'application.properties'), 'server.port=8080', 'utf8');
+
+        const signalsDir = path.join(tmpDir, 'signals');
+        fs.mkdirSync(signalsDir, { recursive: true });
+        const signalPath = path.join(signalsDir, 'done-1.3');
+        fs.writeFileSync(signalPath, [
+            'taskId: 1.3',
+            'status: done',
+            'files:',
+            '  - apps/risk-control-api/risk-control-api-application/src/main/java/com/amway/commerce/risk/application/adapter/api/RiskCheckApi.java',
+            '  - apps/risk-control-api/risk-control-api-application/src/main/resources/application.properties',
+        ].join('\n'), 'utf8');
+
+        const { vscodeMock, watchers } = createVscodeMock();
+        const FeatureScheduler = loadFeatureScheduler(vscodeMock);
+        const dispatched = [];
+        const scheduler = new FeatureScheduler(
+            tmpDir,
+            tmpDir,
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' },
+            async query => dispatched.push(query),
+            () => {},
+            () => 'dev system prompt'
+        );
+
+        await scheduler.startAuto(createFeature());
+        await triggerSignalCreate(watchers, signalPath);
+
+        assert.equal(dispatched.length, 0);
+        assert.equal(scheduler.parseSubFeaturesMd()[0].status, 'failed');
+
+        const logPath = path.join(tmpDir, 'logs', 'task-1.3.log');
+        const logContent = fs.readFileSync(logPath, 'utf8');
+        assert.match(logContent, /expectedOutputFiles=\["apps\/risk-control-api\/risk-control-api-external\/src\/main\/java\/com\/amway\/commerce\/risk\/external\/api\/RiskCheckApi\.java","apps\/risk-control-api\/risk-control-api-application\/src\/main\/resources\/application\.yml"\]/);
+        assert.match(logContent, /missingHints=/);
+        assert.match(logContent, /risk-control-api-application\/src\/main\/java\/com\/amway\/commerce\/risk\/application\/adapter\/api\/RiskCheckApi\.java/);
+        assert.match(logContent, /application\.properties/);
 
         scheduler.stopWatching();
     });
@@ -621,7 +789,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
     test('同行验收与裸追踪解析后保留规格关联，兼容多行验收与方括号追踪', () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         fs.writeFileSync(path.join(specDir, 'tasks.md'), [
             '- [ ] 1.1 保存配置',
@@ -651,7 +819,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
     test('任务输入路径不覆盖设计切片且派发保留具体验收', () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         fs.writeFileSync(path.join(specDir, 'tasks.md'), [
             '- [ ] 1.1 保存配置',
@@ -662,12 +830,10 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         const { vscodeMock } = createVscodeMock();
         const FeatureScheduler = loadFeatureScheduler(vscodeMock);
         const scheduler = new FeatureScheduler(tmpDir, tmpDir,
-            { ...DEFAULT_CONFIG, specRootDir: 'specs' }, async () => {}, () => {}, () => 'MODE={{taskSplitMode}}');
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' }, async () => {}, () => {}, () => 'SYSTEM_PROMPT');
         scheduler.buildDesignContext = () => 'SELECTED_DESIGN_CONTRACT';
         const query = scheduler.buildDispatchQuery(scheduler.parseSubFeaturesMd()[0], createFeature());
-        assert.match(query, /MODE=compact/);
-        assert.match(scheduler.buildDispatchQuery(scheduler.parseSubFeaturesMd()[0],
-            { ...createFeature(), taskSplitMode: 'standard' }), /MODE=standard/);
+        assert.match(query, /SYSTEM_PROMPT/);
         assert.match(query, /specs\/design\.md#配置/);
         assert.match(query, /SELECTED_DESIGN_CONTRACT/);
         assert.match(query, /1\. 非法输入被拒绝/);
@@ -676,7 +842,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
     test('dev-subtask 派发 query 显式注入 CodeGraph 证据块（fresh usable）', () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         fs.writeFileSync(path.join(specDir, 'tasks.md'), [
             '- [ ] 1.1 保存配置',
@@ -715,7 +881,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
     test('dev-subtask 在缺失证据时注入降级告警并禁止否定性推断', () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         fs.writeFileSync(path.join(specDir, 'tasks.md'), [
             '- [ ] 1.1 保存配置',
@@ -739,7 +905,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
     test('依赖正文总预算与路径去重保留验收和超额读取入口', () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         const files = Array.from({ length: 5 }, (_, index) => `依赖-${index}.txt`);
         files.forEach(file => fs.writeFileSync(path.join(tmpDir, file), 'Z'.repeat(3000), 'utf8'));
@@ -794,7 +960,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
     test('YAML 补齐缺失依赖，Markdown 显式无依赖优先且围栏不污染验收', () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         fs.writeFileSync(path.join(specDir, 'tasks.md'), [
             '- [ ] 1.1 保存配置',
@@ -829,7 +995,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
     test('显式 local 检查点不派发 AI，信号通过原门禁后续跑编码任务', async () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         fs.writeFileSync(path.join(specDir, 'requirements.md'), 'requirements');
         fs.writeFileSync(path.join(specDir, 'design.md'), 'design');
@@ -862,7 +1028,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
     test('YAML local 验证失败暂停且重试仍在本地，不生成成功信号', async () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
         fs.writeFileSync(path.join(specDir, 'tasks.md'), [
@@ -901,7 +1067,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
     test('恢复 doing 本地任务时重跑，执行中禁止重复派发、重试或提前完成', async () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
         fs.writeFileSync(path.join(specDir, 'tasks.md'), [
@@ -946,10 +1112,44 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
         }
     });
 
+    test('manualNext allows completion when declared outputs are missing (manual override wins)', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+        const specDir = getSpecDir(tmpDir);
+        fs.mkdirSync(specDir, { recursive: true });
+        fs.writeFileSync(path.join(specDir, 'tasks.md'), [
+            '- [doing] 1.1 手工完成受输出校验保护',
+            '  - 输出: apps/src/missing-file.ts',
+            '- [ ] 1.2 后续任务',
+            '  - 输出: specs/next.md',
+        ].join('\n'), 'utf8');
+
+        const { vscodeMock } = createVscodeMock();
+        const FeatureScheduler = loadFeatureScheduler(vscodeMock);
+        let dispatched = 0;
+        const scheduler = new FeatureScheduler(
+            tmpDir,
+            tmpDir,
+            { ...DEFAULT_CONFIG, specRootDir: 'specs' },
+            async () => { dispatched += 1; },
+            () => {},
+            () => 'dev system prompt'
+        );
+
+        try {
+            await scheduler.manualNext(createFeature());
+            assert.equal(scheduler.parseSubFeaturesMd()[0].status, 'done');
+            assert.equal(scheduler.parseSubFeaturesMd()[1].status, 'doing');
+            assert.equal(dispatched, 1);
+        } finally {
+            scheduler.stopWatching();
+        }
+    });
+
     test('Markdown 与 YAML 执行方式冲突时阻断，不运行本地命令也不派发 AI', async () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         fs.writeFileSync(path.join(specDir, 'tasks.md'), [
             '- [ ] 1.1 冲突任务',
@@ -1076,7 +1276,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
                     harness.scheduler.pause();
                     harness.vscodeMock.window.showInformationMessage = async () => '确认完成';
                 } else if (scenario === 'contract') {
-                    const file = path.join(root, 'specs/tasks.md');
+                    const file = path.join(getSpecDir(root), 'tasks.md');
                     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('[compile]', '[compile, tests]'));
                 } else {
                     const { LocalRepairService } = require('../out/services/localRepairService');
@@ -1228,7 +1428,7 @@ describe('FeatureScheduler auto-continue recovery coverage', () => {
     test('parses 新建输出/改造输出 into newFiles/modifiedFiles and filters 无 placeholder', async () => {
         const tmpDir = makeTempDir();
         tmpDirs.push(tmpDir);
-        const specDir = path.join(tmpDir, 'specs');
+        const specDir = getSpecDir(tmpDir);
         fs.mkdirSync(specDir, { recursive: true });
         const taskPlanPath = path.join(specDir, 'tasks.md');
         fs.writeFileSync(taskPlanPath, [

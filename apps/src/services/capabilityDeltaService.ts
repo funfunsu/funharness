@@ -20,6 +20,7 @@ interface RequirementRecord {
     rawDomain: string | null;
     title: string;
     userStory: string;
+    userStorySource: 'machine' | 'narrative' | 'fallback-title';
     status: CapabilityStatus;
 }
 
@@ -51,6 +52,7 @@ export interface CapabilityDeltaGenerationResult {
     delta: CapabilityDelta;
     deltaPath: string;
     validation: CapabilityDeltaValidationResult;
+    warnings: string[];
 }
 
 /**
@@ -92,6 +94,20 @@ export class CapabilityDeltaService {
         const requirementsContent = fs.readFileSync(requirementsPath, 'utf8');
         const designContent = fs.readFileSync(designPath, 'utf8');
         const requirements = this.parseRequirementsFromMachineBlock(requirementsContent);
+        const warnings: string[] = [];
+        for (const requirement of requirements) {
+            if (requirement.userStorySource === 'narrative') {
+                warnings.push(`Req ${requirement.id} 缺少机器块 userStory，已从正文“用户故事”回填`);
+                continue;
+            }
+            if (!requirement.userStory) {
+                const fallback = (requirement.title || requirement.id).trim();
+                requirement.userStory = fallback;
+                requirement.userStorySource = 'fallback-title';
+                requirement.status = this.inferCapabilityStatus(requirement.title, fallback);
+                warnings.push(`Req ${requirement.id} 缺少 userStory，已降级回退为 title`);
+            }
+        }
         const apiContracts = this.parseApiContractsFromMachineBlock(designContent);
         const invariants = this.parseInvariantsFromMachineBlock(designContent);
 
@@ -184,6 +200,7 @@ export class CapabilityDeltaService {
             delta,
             deltaPath,
             validation,
+            warnings,
         };
     }
 
@@ -616,6 +633,7 @@ export class CapabilityDeltaService {
      * Parse requirements list from requirements.md machine-readable YAML block.
      */
     private parseRequirementsFromMachineBlock(requirementsContent: string): RequirementRecord[] {
+        const userStoryByReqId = this.extractNarrativeUserStories(requirementsContent);
         const block = this.extractYamlMachineBlock(requirementsContent);
         const sectionLines = this.extractYamlSectionLines(block, 'requirements');
         const items = this.parseYamlObjectList(sectionLines, ['id', 'domain', 'rawDomain', 'title', 'userStory']);
@@ -627,7 +645,14 @@ export class CapabilityDeltaService {
                     return null;
                 }
                 const title = (item.title || '').trim();
-                const userStory = (item.userStory || '').trim();
+                const machineUserStory = (item.userStory || '').trim();
+                const narrativeUserStory = userStoryByReqId.get(id) || '';
+                const userStory = machineUserStory || narrativeUserStory;
+                const userStorySource: RequirementRecord['userStorySource'] = machineUserStory
+                    ? 'machine'
+                    : narrativeUserStory
+                        ? 'narrative'
+                        : 'fallback-title';
                 const domain = (item.domain || '').trim() || null;
                 const rawDomain = (item.rawDomain || '').trim() || null;
                 return {
@@ -636,10 +661,41 @@ export class CapabilityDeltaService {
                     rawDomain,
                     title,
                     userStory,
+                    userStorySource,
                     status: this.inferCapabilityStatus(title, userStory),
                 } as RequirementRecord;
             })
             .filter((item): item is RequirementRecord => Boolean(item));
+    }
+
+    /**
+     * Extract user-story lines from the human-readable requirement section keyed by Req-* id.
+     */
+    private extractNarrativeUserStories(requirementsContent: string): Map<string, string> {
+        const section = requirementsContent.split(/^##\s*机器可读区\s*$/m)[0] || requirementsContent;
+        const lines = section.split(/\r?\n/);
+        const byReqId = new Map<string, string>();
+        let currentReqId = '';
+
+        for (const line of lines) {
+            const reqMatch = line.match(/^###\s*(Req-\d+)\s*[：:]/i);
+            if (reqMatch) {
+                currentReqId = reqMatch[1].trim();
+                continue;
+            }
+            if (!currentReqId) {
+                continue;
+            }
+            const storyMatch = line.match(/^\*\*用户故事\s*[：:]\*\*\s*(.+?)\s*$/);
+            if (storyMatch) {
+                const story = storyMatch[1].trim();
+                if (story) {
+                    byReqId.set(currentReqId, story);
+                }
+            }
+        }
+
+        return byReqId;
     }
 
     /**

@@ -11,3 +11,11 @@ domains:
     displayName: AI快捷对话
     aliases: []
     status: active
+  - canonical: git
+    displayName: 代码管理
+    aliases: []
+    status: active
+  - canonical: codegraph
+    displayName: CodeGraph
+    aliases: []
+    status: active

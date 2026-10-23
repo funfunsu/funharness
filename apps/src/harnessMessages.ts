@@ -90,7 +90,7 @@ export type HarnessMessage =
     | { type: 'runStageReview'; stage: ReviewStage; context: StageContext }
     | { type: 'getLatestReviewStatus'; stage: ReviewStage }
     | { type: 'openCustomConstitution' }
-    | { type: 'saveGit'; bb: string; mg?: string; gmg?: string }
+    | { type: 'saveGit'; bb: string; mg?: string; mr?: string; gmg?: string }
     | { type: 'setRemoteApiToken'; endpointKey: string }
     | { type: 'testRemoteApiToken'; endpointKey: string }
     | { type: 'clearRemoteApiToken'; endpointKey: string }

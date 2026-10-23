@@ -57,6 +57,7 @@ import { DomainRegistryService } from './services/domainRegistryService';
 import { CodeGraphDedupeGuard } from './services/codegraph/codeGraphDedupeGuard';
 import { CodeGraphEvidenceProvider } from './services/codegraph/codeGraphEvidenceProvider';
 import { CodeGraphInitOrchestrator } from './services/codegraph/codeGraphInitOrchestrator';
+import { isCodeGraphInitialized } from './services/codegraph/codeGraphState';
 import { showErrorMessageSafe, showWarningMessageSafe } from './services/popupMessage';
 import { resolveSshHostAlias } from './services/sshConfigHostResolver';
 import { resolveHarnessWorkspaceRoot } from './workspaceRoot';
@@ -360,7 +361,7 @@ class Harness {
                 runStageReview: async (stage, context) => { await this.handleRunStageReview(stage, context); },
                 getLatestReviewStatus: async (stage) => { await this.handleGetLatestReviewStatus(stage); },
                 openCustomConstitution: () => this.handleOpenCustomConstitution(),
-                saveGit: (monorepoGit, baseBranch, githubMirrorGit) => this.handleSaveGit(monorepoGit, baseBranch, githubMirrorGit),
+                saveGit: (monorepoGit, baseBranch, mirrorRemotes) => this.handleSaveGit(monorepoGit, baseBranch, mirrorRemotes),
                 setRemoteApiToken: async (endpointKey) => this.handleSetRemoteApiToken(endpointKey),
                 testRemoteApiToken: async (endpointKey) => this.handleTestRemoteApiToken(endpointKey),
                 clearRemoteApiToken: async (endpointKey) => this.handleClearRemoteApiToken(endpointKey),
@@ -476,8 +477,7 @@ class Harness {
             if (!worktreePath) {
                 return;
             }
-            const codeGraphDir = path.join(worktreePath, '.codegraph');
-            if (fs.existsSync(codeGraphDir)) {
+            if (isCodeGraphInitialized(worktreePath)) {
                 return;
             }
             const currentTask = this.features[0];
@@ -667,14 +667,9 @@ class Harness {
         return workspaceRoot;
     }
 
-    /** Resolve tracked docs owner root for domain baseline in monorepo mode. */
+    /** Resolve tracked docs owner root for domain baseline. */
     private resolveDomainBaselineRepoRoot(): string {
         const masterRoot = this.getMasterRoot();
-        const isMono = Boolean((this.config.monorepoGit || '').trim());
-        if (!isMono) {
-            return masterRoot;
-        }
-
         const monoMainRoot = path.join(masterRoot, 'repos', 'mono-main');
         if (fs.existsSync(monoMainRoot)) {
             return monoMainRoot;
@@ -696,8 +691,8 @@ class Harness {
 
     /**
      * Build the per-source script inventory the settings webview uses to populate button
-     * dropdowns. Covers the shared master `script/` dir plus the committed scripts dirs of the
-     * main clone(s) — mono-main in monorepo mode, or frontend/backend-main in multi-repo mode.
+     * dropdowns. Covers the shared master `script/` dir plus the committed scripts dir of
+     * the mono-main clone.
      */
     private buildScriptInventory(): ScriptInventory {
         const masterRoot = this.getMasterRoot();
@@ -788,12 +783,11 @@ class Harness {
             const subFeatures = scheduler.parseSubFeaturesMd();
             const iterDir = this.getIterationDir(task);
             const testScriptName = process.platform === 'win32' ? 'test-api.ps1' : 'test-api.sh';
-            const isMono = Boolean(this.config.monorepoGit?.trim());
             const monoDirs = this.config.monorepoDirs || DEFAULT_MONOREPO_DIRS;
-            const frontendDir = path.join(iterDir, isMono ? (monoDirs.frontend || DEFAULT_MONOREPO_DIRS.frontend) : 'frontend');
-            const backendDir = path.join(iterDir, isMono ? (monoDirs.backend || DEFAULT_MONOREPO_DIRS.backend) : 'backend');
-            const mainFrontendDir = isMono ? path.join(workspaceRoot, 'repos', 'mono-main') : path.join(workspaceRoot, 'repos', 'frontend-main');
-            const mainBackendDir = isMono ? path.join(workspaceRoot, 'repos', 'mono-main') : path.join(workspaceRoot, 'repos', 'backend-main');
+            const frontendDir = path.join(iterDir, monoDirs.frontend || DEFAULT_MONOREPO_DIRS.frontend);
+            const backendDir = path.join(iterDir, monoDirs.backend || DEFAULT_MONOREPO_DIRS.backend);
+            const mainFrontendDir = path.join(workspaceRoot, 'repos', 'mono-main');
+            const mainBackendDir = path.join(workspaceRoot, 'repos', 'mono-main');
             const requirementsFile = resolveSpecFile(iterDir, this.config, 'requirements.md');
             const designFile = resolveSpecFile(iterDir, this.config, 'design.md');
             const taskPlanFile = resolveFeaturePlanFileForIteration(iterDir, this.config);
@@ -822,13 +816,8 @@ class Harness {
                 healthReasons.push('worktree 缺失');
                 severity = 'bad';
             }
-            if (isMono) {
-                if (!fs.existsSync(path.join(iterDir, '.git'))) {
-                    healthReasons.push('仓库代码缺失');
-                    severity = 'bad';
-                }
-            } else if (!rawHealth.frontendExists && !rawHealth.backendExists) {
-                healthReasons.push('前后端目录都缺失');
+            if (!fs.existsSync(path.join(iterDir, '.git'))) {
+                healthReasons.push('仓库代码缺失');
                 severity = 'bad';
             }
             if (!rawHealth.branchRouteReady) {
@@ -855,6 +844,7 @@ class Harness {
                 subTasks: subFeatures,
                 latestFailureReason: this.readLatestFailureReason(iterDir, subFeatures),
                 taskOutputPathWarnings: this.collectTaskOutputPathWarnings(subFeatures),
+                manualResumeInFlight: this.actionsService.isManualResumeInFlight(task.id),
                 isAuto: scheduler.isAutoMode(),
                 artifacts,
                 health: {
@@ -1078,7 +1068,7 @@ class Harness {
         webview?.postMessage({ type: 'stageReviewStatus', stage, ...result });
     }
 
-    private async handleSaveGit(monorepoGit: string, baseBranch: string, githubMirrorGit?: string): Promise<void> {
+    private async handleSaveGit(monorepoGit: string, baseBranch: string, mirrorRemotes?: string): Promise<void> {
         if (this.configMeta.readOnly) {
             vscode.window.showWarningMessage('当前窗口使用的是主窗口配置快照，不允许在此修改设置');
             return;
@@ -1086,11 +1076,11 @@ class Harness {
 
         const mono = (monorepoGit || '').trim();
         if (!mono) {
-            vscode.window.showWarningMessage('单一仓库模式：请填写 Git 地址');
+            vscode.window.showWarningMessage('当前仅支持 Monorepo：请填写 Git 地址');
             return;
         }
 
-        const endpoints = parseMonorepoRemoteEndpoints(mono, (githubMirrorGit || '').trim());
+        const endpoints = parseMonorepoRemoteEndpoints(mono, (mirrorRemotes || '').trim());
         if (endpoints.length === 0) {
             vscode.window.showWarningMessage('请至少填写一个有效的远程仓库地址');
             return;
@@ -1098,8 +1088,7 @@ class Harness {
 
         this.config.monorepoRemotes = endpoints;
         this.config.monorepoGit = endpoints[0].url;
-        // Keep legacy field for backward compatibility; support multi-value payload by newline.
-        this.config.githubMirrorGit = endpoints.slice(1).map(item => item.url).join('\n');
+        this.config.mirrorRemotes = endpoints.slice(1).map(item => item.url).join('\n');
         this.config.baseBranch = baseBranch;
         this.saveConfig();
         this.gitService.setConfig(this.config);
@@ -1217,7 +1206,8 @@ class Harness {
         if (!mono) {
             return [];
         }
-        return parseMonorepoRemoteEndpoints(mono, (this.config.githubMirrorGit || '').trim());
+        const mirrorRemotes = (this.config.mirrorRemotes || this.config.githubMirrorGit || '').trim();
+        return parseMonorepoRemoteEndpoints(mono, mirrorRemotes);
     }
 
     private async buildRemoteApiTokenStatuses(): Promise<RemoteApiTokenStatusView[]> {
@@ -1599,13 +1589,9 @@ class Harness {
         if (this.configMeta.readOnly || !this.projectStructureService) {
             return;
         }
-        // In monorepo mode, project-structure.md lives in the git-managed mono-main repo.
-        const isMono = Boolean((this.config.monorepoGit || '').trim());
-        this.projectStructureService.setMonorepoMode(isMono);
-        this.projectStructureService.setMonorepoMainDir(
-            isMono ? path.join(workspaceRoot, 'repos', 'mono-main') : undefined
-        );
-        this.projectStructureService.setMonorepoDirs(isMono ? this.config.monorepoDirs : undefined);
+        this.projectStructureService.setMonorepoMode(true);
+        this.projectStructureService.setMonorepoMainDir(path.join(workspaceRoot, 'repos', 'mono-main'));
+        this.projectStructureService.setMonorepoDirs(this.config.monorepoDirs);
         this.projectStructureService.ensureBaseline();
     }
 
@@ -1616,10 +1602,7 @@ class Harness {
     private copyProjectStructureToIteration(iterDir: string): void {
         const masterRoot = this.getMasterRoot();
         const masterService = new ProjectStructureService(masterRoot, extensionPath);
-        const isMono = Boolean((this.config.monorepoGit || '').trim());
-        masterService.setMonorepoMainDir(
-            isMono ? path.join(masterRoot, 'repos', 'mono-main') : undefined
-        );
+        masterService.setMonorepoMainDir(path.join(masterRoot, 'repos', 'mono-main'));
         masterService.copyRootStructureToIteration(iterDir);
 
         // Fallback to current-window service in case master baseline is empty.
@@ -1679,12 +1662,9 @@ class Harness {
         // Align detection roots with monorepo config so it scans the configured
         // frontend/backend subdirectories (and the mono-main clone) rather than
         // only the hardcoded conventional candidates.
-        const isMono = Boolean((this.config.monorepoGit || '').trim());
-        this.projectStructureService.setMonorepoMode(isMono);
-        this.projectStructureService.setMonorepoMainDir(
-            isMono ? path.join(workspaceRoot, 'repos', 'mono-main') : undefined
-        );
-        this.projectStructureService.setMonorepoDirs(isMono ? this.config.monorepoDirs : undefined);
+        this.projectStructureService.setMonorepoMode(true);
+        this.projectStructureService.setMonorepoMainDir(path.join(workspaceRoot, 'repos', 'mono-main'));
+        this.projectStructureService.setMonorepoDirs(this.config.monorepoDirs);
 
         const detected = this.projectStructureService.detectStructureFromWorkspace();
         const previewPath = this.projectStructureService.writePreviewStructure(detected.content);
@@ -2098,6 +2078,11 @@ class Harness {
         const iterationPath = this.getIterationDir(task);
         try {
             const result = this.capabilityDeltaService.generateForIteration(workspaceRoot, iterationPath);
+            if (result.warnings.length > 0) {
+                const preview = result.warnings.slice(0, 2).join('；');
+                const tail = result.warnings.length > 2 ? `（+${result.warnings.length - 2}）` : '';
+                vscode.window.showWarningMessage(`领域能力增量已降级放行：${preview}${tail}`);
+            }
             const iterationId = path.basename(path.resolve(iterationPath));
             const repoRoot = workspaceRoot;
             try {

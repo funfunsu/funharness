@@ -178,6 +178,7 @@ describe('领域知识流转覆盖基线', () => {
         const tmpDir = makeTempDir();
         try {
             fs.mkdirSync(path.join(tmpDir, '.codegraph'), { recursive: true });
+            fs.writeFileSync(path.join(tmpDir, '.codegraph', 'codegraph.db'), 'mock');
 
             let ensureCliCalls = 0;
             let buildCalls = 0;

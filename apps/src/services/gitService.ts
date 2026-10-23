@@ -806,7 +806,7 @@ export class GitService {
         this.clearOperationNotices();
         const descriptors = this.resolveRepoDescriptors('');
         if (descriptors.length === 0) {
-            return { success: false, message: '请填写单一仓库 Git 地址' };
+            return { success: false, message: '当前仅支持 Monorepo：请填写有效 Git 地址' };
         }
 
         const baseBranch = (this.config.baseBranch || 'main').trim();
@@ -842,7 +842,7 @@ export class GitService {
 
         const descriptors = this.resolveRepoDescriptors(iterationDir);
         if (descriptors.length === 0) {
-            return { success: false, message: '请先在高级设置配置至少一个 Git 地址' };
+            return { success: false, message: '请先在高级设置配置 Monorepo Git 地址' };
         }
 
         const expectedWorktrees: string[] = [];
@@ -889,8 +889,8 @@ export class GitService {
     }
 
     /**
-     * Best-effort cleanup used by task reset: detach iteration frontend/backend worktrees
-     * from their main repos first, then remove their directories from disk.
+     * Best-effort cleanup used by task reset: detach iteration worktrees
+     * from their main repo first, then remove their directories from disk.
      */
     async detachIterationWorktrees(iterationDir: string): Promise<{ success: boolean; errors: string[] }> {
         this.currentLogDir = iterationDir;
@@ -935,7 +935,7 @@ export class GitService {
         clearDirChildrenPreserving(dirPath, preserveNames);
     }
 
-    private getMainRepoDir(kind: 'frontend' | 'backend' | 'mono'): string {
+    private getMainRepoDir(kind: 'mono'): string {
         return path.join(this.workspaceRoot, 'repos', `${kind}-main`);
     }
 
@@ -1480,9 +1480,9 @@ export class GitService {
     }
 
     /** Capture current HEAD commit for each managed iteration repository. */
-    async captureIterationRepoHeads(iterationDir: string): Promise<Partial<Record<'frontend' | 'backend' | 'mono', string>>> {
+    async captureIterationRepoHeads(iterationDir: string): Promise<Partial<Record<'mono', string>>> {
         this.currentLogDir = iterationDir;
-        const heads: Partial<Record<'frontend' | 'backend' | 'mono', string>> = {};
+        const heads: Partial<Record<'mono', string>> = {};
         const repos = this.resolveRepoDescriptors(iterationDir);
 
         for (const repo of repos) {
@@ -1506,7 +1506,7 @@ export class GitService {
     async rollbackIterationCodeToDevCheckpoint(
         task: Feature,
         iterationDir: string,
-        snapshotHeads?: Partial<Record<'frontend' | 'backend' | 'mono', string>>,
+        snapshotHeads?: Partial<Record<'mono', string>>,
     ): Promise<{ success: boolean; message: string; usedFallback?: boolean }> {
         this.currentLogDir = iterationDir;
         this.clearOperationNotices();
@@ -1796,7 +1796,7 @@ export class GitService {
             return { success: false, message: '无法识别迭代分支名' };
         }
 
-        type RepoCtx = { kind: 'frontend' | 'backend' | 'mono'; label: string; remote: string; mainDir: string; worktreeDir: string };
+        type RepoCtx = { kind: 'mono'; label: string; remote: string; mainDir: string; worktreeDir: string };
         const repos: RepoCtx[] = this.resolveRepoDescriptors(iterationDir);
 
         // Quick check: skip the entire pipeline when no worktree has uncommitted changes
@@ -1926,7 +1926,9 @@ export class GitService {
         const failures: Array<{ repo: string; reason: string }> = [];
 
         for (const repo of repos) {
-            const cleanupResult = await this.cleanupMergedBranch(repo.mainDir, repo.worktreeDir, sourceBranch, target);
+            const cleanupResult = await this.cleanupMergedBranch(repo.mainDir, repo.worktreeDir, sourceBranch, target, {
+                keepWorktreeDir: true,
+            });
             if (!cleanupResult.ok) {
                 failures.push({ repo: repo.label, reason: cleanupResult.reason || '未知错误' });
             }
@@ -1937,14 +1939,14 @@ export class GitService {
             return {
                 success: true,
                 cleanupComplete: false,
-                message: `✅ 远程已完成合并，但部分清理步骤失败：\n${detail}\n可手动清理本地 worktree/迭代分支。`,
+                message: `✅ 远程已完成合并，但部分清理步骤失败：\n${detail}\n已按温归档策略保留本地 worktree 目录，可手动补清理分支。`,
             };
         }
 
         return {
             success: true,
             cleanupComplete: true,
-            message: `✅ 远程已完成合并，并清理迭代分支 ${sourceBranch}`,
+            message: `✅ 远程已完成合并，并清理迭代分支 ${sourceBranch}（worktree 目录保留用于温归档）`,
         };
     }
 
@@ -2128,7 +2130,7 @@ export class GitService {
      * Failures are logged but swallowed — the primary origin push is the source of truth.
      */
     private async pushToMirror(repoDir: string, branch: string): Promise<void> {
-        const mirrorUrl = (this.config.githubMirrorGit || '').trim();
+        const mirrorUrl = (this.config.mirrorRemotes || this.config.githubMirrorGit || '').trim();
         if (!mirrorUrl) {
             return;
         }
@@ -2179,7 +2181,13 @@ export class GitService {
         return null;
     }
 
-    private async cleanupMergedBranch(mainRepoDir: string, worktreeDir: string, sourceBranch: string, targetBranch: string): Promise<{ ok: boolean; reason?: string }> {
+    private async cleanupMergedBranch(
+        mainRepoDir: string,
+        worktreeDir: string,
+        sourceBranch: string,
+        targetBranch: string,
+        options: { keepWorktreeDir?: boolean } = {},
+    ): Promise<{ ok: boolean; reason?: string }> {
         if (!fs.existsSync(mainRepoDir)) {
             return { ok: false, reason: `主仓库目录不存在：${mainRepoDir}` };
         }
@@ -2193,16 +2201,28 @@ export class GitService {
         }
 
         const failures: string[] = [];
+        const keepWorktreeDir = options.keepWorktreeDir === true;
 
         // ── Local cleanup (worktree + local branch) ──
         const registered = await this.hasRegisteredWorktreeAtPath(mainRepoDir, worktreeDir);
         if (registered) {
-            const removed = await this.execCmd(`git worktree remove --force "${worktreeDir}"`, mainRepoDir);
-            if (!removed) {
-                failures.push(`移除 worktree 失败：${this.lastExecError}`);
+            if (keepWorktreeDir) {
+                // Keep iteration folder for warm-archive; switch away from source branch
+                // so local branch deletion below can still proceed.
+                const switched = await this.switchToBranch(worktreeDir, targetBranch);
+                if (!switched) {
+                    failures.push(`保留 worktree 目录时切换到基线分支失败：${this.lastExecError}`);
+                }
+            } else {
+                const removed = await this.execCmd(`git worktree remove --force "${worktreeDir}"`, mainRepoDir);
+                if (!removed) {
+                    failures.push(`移除 worktree 失败：${this.lastExecError}`);
+                }
             }
         }
-        await this.execCmd('git worktree prune', mainRepoDir);
+        if (!keepWorktreeDir) {
+            await this.execCmd('git worktree prune', mainRepoDir);
+        }
 
         const deletedLocal = await this.execCmd(`git branch -D ${sourceBranch}`, mainRepoDir);
         if (!deletedLocal) {

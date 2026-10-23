@@ -34,7 +34,7 @@ function readIfPresent(candidate: string): string | undefined {
  *
  * Search order (first non-empty wins):
  *   1. <iterDir>/specs/constitution.md                     (per-iteration override)
- *   2. <masterRoot>/repos/{mono-main,backend-main,frontend-main}/specs/constitution.md
+ *   2. <masterRoot>/repos/mono-main/specs/constitution.md
  *   3. <workspaceRoot>/specs/constitution.md
  *   4. <masterRoot>/specs/constitution.md
  *   5. Legacy .spec/* fallbacks for backward compatibility
@@ -56,8 +56,6 @@ export function resolveConstitution(
         path.join(iterDir, LEGACY_CONSTITUTION_DIR, CONSTITUTION_FILE),
         path.join(workspaceRoot, LEGACY_CONSTITUTION_DIR, CONSTITUTION_FILE),
         path.join(masterRoot, 'repos', 'mono-main', LEGACY_CONSTITUTION_DIR, CONSTITUTION_FILE),
-        path.join(masterRoot, 'repos', 'backend-main', LEGACY_CONSTITUTION_DIR, CONSTITUTION_FILE),
-        path.join(masterRoot, 'repos', 'frontend-main', LEGACY_CONSTITUTION_DIR, CONSTITUTION_FILE),
         path.join(masterRoot, LEGACY_CONSTITUTION_DIR, CONSTITUTION_FILE),
     ];
     const seen = new Set<string>();

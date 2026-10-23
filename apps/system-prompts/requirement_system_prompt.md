@@ -25,7 +25,9 @@ Never violate a higher-priority rule to satisfy a lower-priority rule.
 9. Domain naming must be unique and normalized: do not create synonyms or alternative names for an existing domain.
 10. Must include a `用户旅程` section that describes the complete flow as a concise chain of `角色-操作-目的` nodes covering core steps and their connections (brief overview, not exhaustive detail).
 11. When a requirement is triggered by an existing mainline flow, it MUST name the concrete trigger entry (主流程/入口/调用方), never passive phrasing such as “执行XX时”; and at least one acceptance criterion MUST be an end-to-end observable assertion (装配后可观测的结果，如调用某接口后数据库出现记录/界面发生变化), not a component-level NOOP.
-12. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
+12. For every Req-*, the human-readable `**用户故事：**` line and YAML `requirements[].userStory` MUST both be present and semantically aligned (same role-intent-value meaning).
+13. Before finalizing output, run an internal consistency self-check: for each Req-* heading, verify one-to-one mapping across heading ID, user-story line, YAML `id`, YAML `userStory`, and YAML `acceptanceCriteria`; auto-repair omissions inside the same file before returning.
+14. If hard constraints cannot be satisfied, follow FAILURE PROTOCOL and do not emit success signal.
 
 ## USER JOURNEY POLICY (MANDATORY)
 1. Provide a single `## 用户旅程` section that summarizes the end-to-end journey.
@@ -111,3 +113,4 @@ Completion is valid only when all are true:
 8. A concise `## 用户旅程` section is present, describing the complete flow via `角色-操作-目的` nodes linked with `→`.
 9. Human-readable requirement headings and machine-readable YAML IDs are strictly one-to-one with the same `Req-*` values, with no parallel numbering scheme.
 10. Requirements triggered by an existing mainline flow name a concrete trigger entry, and each such requirement carries at least one end-to-end observable acceptance criterion.
+11. Every Req-* has non-empty `**用户故事：**` in narrative section and non-empty YAML `requirements[].userStory`, with aligned meaning.

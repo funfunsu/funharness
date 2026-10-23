@@ -26,7 +26,6 @@ import {
     resolveSpecFile,
     resolveFeaturePlanFileForIteration,
     getDocsRootDirName,
-    isMonoMode,
     isOsScriptFile,
     isAiQuickChatButtonValid,
     normalizeCustomButton,
@@ -37,9 +36,12 @@ import { appendHarnessLog } from './harnessLog';
 import { extractMachineBlock, validateTraceability } from '../specTrace';
 import { readTextIfExists, safeRemovePath, writeTextAtomic } from './fileOps';
 import { SpecDeltaService } from './specDeltaService';
+import { CapabilityDeltaService } from './capabilityDeltaService';
 import { DomainKnowledgeAggregateService, SuspectedDomainRecord } from './domainKnowledgeAggregateService';
 import { DomainAdjudicationDecision, DomainRegistryService } from './domainRegistryService';
 import { CodeGraphEvidenceSnapshotWriter } from './codegraph/codeGraphEvidenceSnapshotWriter';
+import { isCodeGraphInitialized } from './codegraph/codeGraphState';
+import { resolvePathAgainstRoot } from './pathPolicy';
 import { sanitizePopupText, showErrorMessageSafe, showWarningMessageSafe } from './popupMessage';
 
 interface HarnessActionsDeps {
@@ -71,16 +73,23 @@ interface HarnessActionsDeps {
 export class HarnessActionsService {
     constructor(private readonly deps: HarnessActionsDeps) {}
     private specDeltaService?: SpecDeltaService;
+    private capabilityDeltaService?: CapabilityDeltaService;
     private domainKnowledgeAggregateService?: DomainKnowledgeAggregateService;
     private domainRegistryService?: DomainRegistryService;
     /** Prevent duplicate prompt dispatch for the same (task, step) while one is in-flight. */
     private readonly inFlightStageDispatchKeys: Set<string> = new Set();
     /** Prevent duplicate git/push/merge actions for the same task while one is in-flight. */
     private readonly inFlightGitActionKeys: Set<string> = new Set();
+    /** Prevent duplicate manual-complete auto-resume clicks while next subtask dispatch is in-flight. */
+    private readonly inFlightManualResumeFeatureIds: Set<string> = new Set();
     private readonly artifactRepairTimers: Map<string, NodeJS.Timeout> = new Map();
     private readonly codeGraphEvidenceSnapshotWriter = new CodeGraphEvidenceSnapshotWriter();
     private static readonly DOMAIN_BLOCK_AUTO_FIX = '自动补';
     private static readonly DOMAIN_BLOCK_MANUAL_FIX = '去处理';
+
+    isManualResumeInFlight(featureId: string): boolean {
+        return this.inFlightManualResumeFeatureIds.has(featureId);
+    }
 
     private readonly stageArtifacts = {
         req: 'requirements',
@@ -108,6 +117,13 @@ export class HarnessActionsService {
             );
         }
         return this.domainKnowledgeAggregateService;
+    }
+
+    private getCapabilityDeltaService(): CapabilityDeltaService {
+        if (!this.capabilityDeltaService) {
+            this.capabilityDeltaService = new CapabilityDeltaService(this.getDomainRegistryService());
+        }
+        return this.capabilityDeltaService;
     }
 
     private getDomainRegistryService(): DomainRegistryService {
@@ -383,7 +399,6 @@ export class HarnessActionsService {
             designContext: task.desc || '',
             outputFiles: '- (快捷模式未拆分子任务，请按任务描述输出实现文件)',
             acceptanceCriteria: '- 代码可正常编译运行并满足任务描述',
-            taskSplitMode: this.resolveFeatureSplitMode(task),
             'current ISO timestamp': new Date().toISOString(),
             'list each file you created, one per line': '请按实际创建文件填写',
             'real Task ID from the instruction': task.id,
@@ -418,7 +433,6 @@ export class HarnessActionsService {
             id,
             name,
             desc,
-            taskSplitMode: 'compact',
             stage: STAGE.INITIALIZING,
             autoAdvanceEnabled: true,
             specDriftRepairEnabled: true,
@@ -458,7 +472,6 @@ export class HarnessActionsService {
             id,
             name: normalizedTitle,
             desc: normalizedDesc,
-            taskSplitMode: 'compact',
             stage: STAGE.INITIALIZING,
             autoAdvanceEnabled: true,
             specDriftRepairEnabled: true,
@@ -649,6 +662,13 @@ export class HarnessActionsService {
         if (!passed) {
             return false;
         }
+        const domainSedimentation = await this.runDomainSedimentationWritable(task);
+        if (!domainSedimentation.passed) {
+            showErrorMessageSafe(`领域沉淀门禁未通过：${domainSedimentation.summary}`, { modal: true });
+            return false;
+        }
+        vscode.window.showInformationMessage(domainSedimentation.summary);
+
         const iterDir = this.deps.getIterationDir(task);
         vscode.window.showInformationMessage('正在提交代码并创建/更新各远程 PR/MR...');
         const result = await this.deps.gitService.submitBranchForChangeRequests(task, iterDir);
@@ -663,6 +683,132 @@ export class HarnessActionsService {
         }
         vscode.window.showInformationMessage(result.message);
         return true;
+    }
+
+    private async runDomainSedimentationWritable(task: Feature): Promise<{ passed: boolean; summary: string }> {
+        try {
+            const workspaceRoot = this.deps.getMasterRoot();
+            const docsRepoRoot = this.resolveDomainBaselineRepoRoot(workspaceRoot);
+            this.ensureDomainRegistrySeed(workspaceRoot, docsRepoRoot);
+
+            const iterDir = this.deps.getIterationDir(task);
+            const iterationId = path.basename(path.resolve(iterDir));
+
+            const capabilityDelta = this.getCapabilityDeltaService().generateForIteration(workspaceRoot, iterDir);
+            const aggregateService = this.getDomainKnowledgeAggregateService();
+            const context = aggregateService.loadDomainKnowledgeContext(docsRepoRoot, iterationId);
+            const changeSet = context.draftChangeSet;
+
+            const projection = aggregateService.previewProjection(
+                changeSet,
+                context.baselineVersion,
+                context.baselineSnapshot,
+                context.registry,
+            );
+            const { conflicts, blocking } = aggregateService.detectConflicts(
+                changeSet,
+                projection,
+                context.baselineVersion,
+            );
+            if (blocking) {
+                const blockingSummary = conflicts
+                    .filter(item => item.severity === 'blocking')
+                    .slice(0, 3)
+                    .map(item => item.message)
+                    .join('；');
+                return {
+                    passed: false,
+                    summary: blockingSummary || '存在未解决的阻断冲突',
+                };
+            }
+
+            const commitSummary = aggregateService.commitChangeSet(
+                docsRepoRoot,
+                changeSet,
+                context.baselineVersion,
+                changeSet.sourceRevisionSet,
+                true,
+                'deterministic-v1',
+                [],
+            );
+
+            const baselineCommit = await this.deps.gitService.commitDomainBaseline(docsRepoRoot);
+            if (!baselineCommit.success) {
+                return {
+                    passed: false,
+                    summary: baselineCommit.message || '提交领域基线失败',
+                };
+            }
+
+            const relDeltaPath = path.relative(workspaceRoot, capabilityDelta.deltaPath).replace(/\\/g, '/');
+            const writeSummary = commitSummary.skippedAsNoChange
+                ? '领域沉淀无新增变更'
+                : `领域沉淀已更新 ${commitSummary.processedDomains} 个领域`;
+            const fallbackSummary = capabilityDelta.warnings.length > 0
+                ? `；降级告警 ${capabilityDelta.warnings.length} 条（已放行）`
+                : '';
+            return {
+                passed: true,
+                summary: `${writeSummary}${fallbackSummary}；${baselineCommit.message}；delta=${relDeltaPath}`,
+            };
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error || 'unknown');
+            return {
+                passed: false,
+                summary: detail,
+            };
+        }
+    }
+
+    private async verifyDomainSedimentationReadOnly(task: Feature): Promise<{ passed: boolean; summary: string }> {
+        try {
+            const workspaceRoot = this.deps.getMasterRoot();
+            const docsRepoRoot = this.resolveDomainBaselineRepoRoot(workspaceRoot);
+            this.ensureDomainRegistrySeed(workspaceRoot, docsRepoRoot);
+
+            const iterDir = this.deps.getIterationDir(task);
+            const iterationId = path.basename(path.resolve(iterDir));
+            const aggregateService = this.getDomainKnowledgeAggregateService();
+            const context = aggregateService.loadDomainKnowledgeContext(docsRepoRoot, iterationId);
+            const changeSet = context.draftChangeSet;
+
+            const projection = aggregateService.previewProjection(
+                changeSet,
+                context.baselineVersion,
+                context.baselineSnapshot,
+                context.registry,
+            );
+            const { conflicts, blocking } = aggregateService.detectConflicts(
+                changeSet,
+                projection,
+                context.baselineVersion,
+            );
+            if (blocking) {
+                const blockingSummary = conflicts
+                    .filter(item => item.severity === 'blocking')
+                    .slice(0, 3)
+                    .map(item => item.message)
+                    .join('；');
+                return {
+                    passed: false,
+                    summary: blockingSummary || '存在未解决的阻断冲突',
+                };
+            }
+
+            const count = (changeSet.domainChanges || []).length;
+            return {
+                passed: true,
+                summary: count > 0
+                    ? `领域沉淀只读复核通过（${count} 条变更）`
+                    : '领域沉淀只读复核通过（无待复核变更）',
+            };
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error || 'unknown');
+            return {
+                passed: false,
+                summary: detail,
+            };
+        }
     }
 
     private runWarmArchiveCleanup(iterDir: string): { removedCount: number; failures: string[] } {
@@ -703,7 +849,7 @@ export class HarnessActionsService {
                 continue;
             }
             try {
-                safeRemovePath(normalizedTarget, { recursive: true });
+                this.removeWarmArchiveTargetSafely(normalizedTarget);
                 removedCount += 1;
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error || 'unknown');
@@ -712,6 +858,19 @@ export class HarnessActionsService {
         }
 
         return { removedCount, failures };
+    }
+
+    /**
+     * Warm-archive safety: when target is a junction/symlink, remove only the link entry.
+     * This prevents recursive deletion of shared dependency directories outside the worktree.
+     */
+    private removeWarmArchiveTargetSafely(targetPath: string): void {
+        const stat = fs.lstatSync(targetPath);
+        if (stat.isSymbolicLink()) {
+            fs.rmSync(targetPath, { recursive: false, force: true });
+            return;
+        }
+        safeRemovePath(targetPath, { recursive: true });
     }
 
     async commitToBaselineByFeatureId(featureId: string): Promise<void> {
@@ -788,11 +947,10 @@ export class HarnessActionsService {
                 return;
             }
 
-            const splitMode = this.resolveFeatureSplitMode(task);
             const promptContent = step === 'dev' ? this.renderQuickDevPrompt(rendered.content, task, iterDir) : rendered.content;
             const repairSection = this.buildRepairFeedbackSection(repairFeedback);
             const stageRuntimeSection = this.buildStageRuntimeSection(step);
-            const query = `${promptContent}${repairSection}\n\n${stageRuntimeSection}\n运行参数：taskSplitMode=${splitMode}`;
+            const query = `${promptContent}${repairSection}\n\n${stageRuntimeSection}`;
             await this.deps.dispatchAi(query, iterDir, 'stage-agent', task.aiProvider, { stage: step, taskId: task.id });
             vscode.window.showInformationMessage(`已派发 ${step.toUpperCase()} Agent（Prompt来源: ${rendered.source}）`);
             this.startArtifactRepairWatch(task, step);
@@ -849,23 +1007,19 @@ export class HarnessActionsService {
         if (!task) return;
 
         const cfg = this.deps.getConfig();
-        const isMono = Boolean(cfg.monorepoGit?.trim());
         const dirs = cfg.monorepoDirs || DEFAULT_MONOREPO_DIRS;
         const rootDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
         const iterDir = this.deps.getIterationDir(task);
-        // In monorepo mode the frontend/backend subfolders use the configured names; in multi-repo
-        // mode they are the fixed worktree subdirs. The monorepo main repo is a dedicated clone at
-        // repos/mono-main; multi-repo mode uses per-side clones under repos/.
-        const feSub = isMono ? (dirs.frontend || DEFAULT_MONOREPO_DIRS.frontend) : 'frontend';
-        const beSub = isMono ? (dirs.backend || DEFAULT_MONOREPO_DIRS.backend) : 'backend';
+        const feSub = dirs.frontend || DEFAULT_MONOREPO_DIRS.frontend;
+        const beSub = dirs.backend || DEFAULT_MONOREPO_DIRS.backend;
         const locationMap = {
             worktree: iterDir,
             mono: iterDir,
             frontend: path.join(iterDir, feSub),
             backend: path.join(iterDir, beSub),
             mainMono: path.join(rootDir, 'repos', 'mono-main'),
-            mainFrontend: isMono ? path.join(rootDir, 'repos', 'mono-main') : path.join(rootDir, 'repos', 'frontend-main'),
-            mainBackend: isMono ? path.join(rootDir, 'repos', 'mono-main') : path.join(rootDir, 'repos', 'backend-main'),
+            mainFrontend: path.join(rootDir, 'repos', 'mono-main'),
+            mainBackend: path.join(rootDir, 'repos', 'mono-main'),
         } as const;
 
         // Lazy-init entry point: initialize only when user explicitly opens iteration folders.
@@ -912,11 +1066,11 @@ export class HarnessActionsService {
             return;
         }
 
-        if (!fs.existsSync(path.join(iterDir, '.codegraph'))) {
+        if (!isCodeGraphInitialized(iterDir)) {
             await this.runCodeGraphInitOnFirstCreate(task, iterDir, initResult.wasNewlyCreated, 'syncCodeGraphByFeatureId');
         }
 
-        if (!fs.existsSync(path.join(iterDir, '.codegraph'))) {
+        if (!isCodeGraphInitialized(iterDir)) {
             vscode.window.showWarningMessage('CodeGraph 自动初始化未完成，暂无法同步。请根据提示先完成初始化后重试。');
             return;
         }
@@ -1156,9 +1310,19 @@ export class HarnessActionsService {
     async nextFeatureByFeatureId(featureId: string): Promise<void> {
         const task = this.getFeatureById(featureId);
         if (!task) return;
+        if (this.inFlightManualResumeFeatureIds.has(task.id)) {
+            showWarningMessageSafe('正在派发下一子任务，请稍候。');
+            return;
+        }
         const scheduler = this.deps.getScheduler(task);
-        await scheduler.manualNext(task);
+        this.inFlightManualResumeFeatureIds.add(task.id);
         this.deps.saveAndRender();
+        try {
+            await scheduler.manualNext(task);
+        } finally {
+            this.inFlightManualResumeFeatureIds.delete(task.id);
+            this.deps.saveAndRender();
+        }
     }
 
     async retryFeatureByFeatureId(featureId: string, subId: string): Promise<void> {
@@ -1173,13 +1337,38 @@ export class HarnessActionsService {
         const task = this.getFeatureById(featureId);
         if (!task) return;
         const scheduler = this.deps.getScheduler(task);
-        scheduler.updateSubFeatureStatus(subId, status);
+        if (status === 'done' && task.stage === STAGE.DEVELOPING) {
+            const checked = scheduler.tryMarkDoneWithOutputVerification(subId, 'manual-status');
+            if (!checked.verificationPassed) {
+                showWarningMessageSafe(`任务 ${subId} 输出校验未通过，但已按手工决策标记完成。`);
+            }
+        } else {
+            scheduler.updateSubFeatureStatus(subId, status);
+        }
         this.deps.saveAndRender();
 
         if (status === 'done' && task.stage === STAGE.DEVELOPING) {
-            await scheduler.startAuto(task);
+            if (this.inFlightManualResumeFeatureIds.has(task.id)) {
+                showWarningMessageSafe('正在派发下一子任务，请稍候。');
+                return;
+            }
+
+            this.inFlightManualResumeFeatureIds.add(task.id);
             this.deps.saveAndRender();
-            vscode.window.showInformationMessage(`已手动修正子任务 ${subId} 为完成，并自动继续执行下一子任务`);
+            vscode.window.showInformationMessage(`已手动修正子任务 ${subId} 为完成，正在自动派发下一子任务...`);
+            void scheduler.startAuto(task)
+                .then(() => {
+                    this.deps.saveAndRender();
+                    vscode.window.showInformationMessage(`子任务 ${subId} 已完成，下一子任务已触发。`);
+                })
+                .catch((error) => {
+                    const message = error instanceof Error ? error.message : String(error);
+                    showWarningMessageSafe(`自动派发下一子任务失败：${message}`);
+                })
+                .finally(() => {
+                    this.inFlightManualResumeFeatureIds.delete(task.id);
+                    this.deps.saveAndRender();
+                });
             return;
         }
 
@@ -1659,6 +1848,20 @@ export class HarnessActionsService {
                 return;
             }
 
+            const readOnlyVerify = await this.verifyDomainSedimentationReadOnly(activeTask);
+            if (!readOnlyVerify.passed) {
+                appendHarnessLog(iterDir, 'domain-gate', `[${activeTask.id}] ❌ read-only verify failed: ${readOnlyVerify.summary}`);
+                showErrorMessageSafe(
+                    `领域沉淀只读复核未通过：${readOnlyVerify.summary}`,
+                    {
+                        modal: true,
+                        detail: '请回到开发阶段并重新执行「推进」，完成可写沉淀后再重试完成。',
+                    },
+                );
+                return;
+            }
+            appendHarnessLog(iterDir, 'domain-gate', `[${activeTask.id}] ✅ read-only verify passed`);
+
             const cleanupResult = await this.deps.gitService.cleanupIterationAfterRemoteMerge(activeTask, iterDir);
             activeTask.stage = STAGE.DONE;
             this.deps.onPass(activeTask);
@@ -1829,8 +2032,7 @@ export class HarnessActionsService {
         entryPoint: 'openFolderLocationByFeatureId' | 'runCustomButtonByFeatureId' | 'syncCodeGraphByFeatureId',
     ): Promise<void> {
         if (entryPoint === 'openFolderLocationByFeatureId' && !wasNewlyCreated) {
-            const codeGraphDir = path.join(iterDir, '.codegraph');
-            if (fs.existsSync(codeGraphDir)) {
+            if (isCodeGraphInitialized(iterDir)) {
                 return;
             }
         }
@@ -1878,14 +2080,11 @@ export class HarnessActionsService {
      * - 'master':   `<masterRoot>/script/`.
      * - 'worktree': the committed scripts dir inside THIS iteration worktree (iteration context),
      *               falling back to the main clone for 'main'-placement buttons.
-     *               In multi-repo mode, searches frontend-main then backend-main (or their
-     *               worktree equivalents) to locate the script.
      * `runBaseDir` is the iteration worktree dir for iteration buttons, else the master root.
      */
     private resolveScriptDir(button: CustomButton, runBaseDir: string, isIterationContext: boolean): string {
         const masterRoot = this.deps.getMasterRoot();
         const config = this.deps.getConfig();
-        const isMono = Boolean((config.monorepoGit || '').trim());
         const scriptsSubdir = getScriptsSubdir(config);
         const source = button.scriptSource || 'master';
 
@@ -1893,30 +2092,10 @@ export class HarnessActionsService {
             return path.join(masterRoot, CUSTOM_SCRIPT_DIR);
         }
 
-        const repoScriptsDir = (): string => {
-            if (isMono) {
-                return path.join(masterRoot, 'repos', 'mono-main', scriptsSubdir);
-            }
-            // Multi-repo: try frontend-main first, fall back to backend-main.
-            const feDir = path.join(masterRoot, 'repos', 'frontend-main', scriptsSubdir);
-            const script = (button.script || '').trim();
-            if (script && fs.existsSync(path.join(feDir, script))) {
-                return feDir;
-            }
-            return path.join(masterRoot, 'repos', 'backend-main', scriptsSubdir);
-        };
+        const repoScriptsDir = (): string => path.join(masterRoot, 'repos', 'mono-main', scriptsSubdir);
 
         if (source === 'worktree' && isIterationContext) {
-            if (isMono) {
-                return path.join(runBaseDir, scriptsSubdir);
-            }
-            // Multi-repo worktree: try frontend subdir first, fall back to backend.
-            const feDir = path.join(runBaseDir, 'frontend', scriptsSubdir);
-            const script = (button.script || '').trim();
-            if (script && fs.existsSync(path.join(feDir, script))) {
-                return feDir;
-            }
-            return path.join(runBaseDir, 'backend', scriptsSubdir);
+            return path.join(runBaseDir, scriptsSubdir);
         }
         // 'worktree' with no worktree (main-panel button): use the main clone.
         return repoScriptsDir();
@@ -2244,14 +2423,8 @@ export class HarnessActionsService {
         return path.join(this.deps.getMasterRoot(), BASE, 'domain-suspected.json');
     }
 
-    /**
-     * Resolve the tracked repository root that should own docs/domains in monorepo mode.
-     */
+    /** Resolve the tracked repository root that should own docs/domains. */
     private resolveDomainBaselineRepoRoot(workspaceRoot: string): string {
-        if (!isMonoMode(this.deps.getConfig())) {
-            return workspaceRoot;
-        }
-
         const monoMainRoot = path.join(workspaceRoot, 'repos', 'mono-main');
         if (fs.existsSync(monoMainRoot)) {
             return monoMainRoot;
@@ -2471,6 +2644,7 @@ export class HarnessActionsService {
         const scheduler = this.deps.getScheduler(task);
         const subTasks = scheduler.parseSubFeaturesMd();
         const errors: string[] = [];
+        const iterDir = this.deps.getIterationDir(task);
 
         for (const st of subTasks) {
             for (const raw of st.output) {
@@ -2489,18 +2663,23 @@ export class HarnessActionsService {
                     continue;
                 }
 
-                if (/[:：]\s*\S+/.test(token)) {
+                if (/(?:\s|^)[：:]\s+\S+/.test(token)) {
                     errors.push(`任务 ${st.id} 输出项包含说明性后缀，禁止使用：${raw}`);
-                    continue;
-                }
-
-                if (/^[a-zA-Z]:[\\/]/.test(token) || token.startsWith('/')) {
-                    errors.push(`任务 ${st.id} 输出项必须是仓库相对路径，禁止绝对路径：${raw}`);
                     continue;
                 }
 
                 if (/^\.\.?[\\/]/.test(token)) {
                     errors.push(`任务 ${st.id} 输出项必须从仓库根相对路径开始，禁止 ./ 或 ../：${raw}`);
+                    continue;
+                }
+
+                const resolved = resolvePathAgainstRoot(iterDir, token);
+                if (!resolved) {
+                    errors.push(`任务 ${st.id} 输出项为空或非法：${raw}`);
+                    continue;
+                }
+                if (!resolved.insideRoot) {
+                    errors.push(`任务 ${st.id} 输出项必须位于当前迭代目录内，禁止引用目录外路径：${raw}`);
                     continue;
                 }
 
@@ -2779,12 +2958,9 @@ export class HarnessActionsService {
         }
 
         const docsRootCandidate = path.join(iterDir, getDocsRootDirName(cfg), fileName);
-        if (!isMonoMode(cfg)) {
-            // Legacy flat docs-root location (docs/<file>) for non-monorepo mode.
-            candidates.unshift(docsRootCandidate);
-        } else if (this.isLegacyMonoArtifactForTask(docsRootCandidate, fileName, path.basename(iterDir))) {
-            // In monorepo mode, only migrate docs-root files that clearly belong to this
-            // iteration task to avoid consuming repository-level project documents.
+        if (this.isLegacyMonoArtifactForTask(docsRootCandidate, fileName, path.basename(iterDir))) {
+            // Only migrate docs-root files that clearly belong to this iteration task
+            // to avoid consuming repository-level project documents.
             candidates.unshift(docsRootCandidate);
         }
 
@@ -2874,10 +3050,6 @@ export class HarnessActionsService {
             return task.autoAdvanceEnabled;
         }
         return this.deps.getConfig().autoAdvanceEnabled;
-    }
-
-    private resolveFeatureSplitMode(task: Feature): 'standard' | 'compact' {
-        return task.taskSplitMode || 'compact';
     }
 
     /**
