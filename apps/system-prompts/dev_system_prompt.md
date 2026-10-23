@@ -53,6 +53,7 @@ Create exactly the files required by runtime instruction.
 
 ## B) Signal file (last action)
 Create the signal file exactly as specified in runtime instruction (path, file name, content fields).
+`files:` entries in the signal content must use paths relative to `currentWorkSpace` and `/` separators.
 
 ## C) Backend acceptance script (when required)
 Create the acceptance script exactly as specified in runtime instruction.

@@ -1,0 +1,102 @@
+{
+  "iteration": "liu-cheng-you-hua-20261021",
+  "generatedAt": "2020-05-04T08:49:16.000Z",
+  "contentHash": "9a633261947f8a20b7c2d86a5c505920589cf74f",
+  "domains": [
+    {
+      "canonical": null,
+      "rawDomain": null,
+      "isSuspectedNew": true,
+      "capabilities": [
+        {
+          "reqId": "Req-1",
+          "title": "开发阶段推进评审前必须通过可写领域沉淀门禁",
+          "userStory": "作为迭代负责人，我希望在开发阶段点击推进时先完成一次可写领域沉淀，以确保领域基线与迭代增量已落盘后再进入提交流程。",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-2",
+          "title": "完成阶段前必须通过只读领域复核门禁",
+          "userStory": "作为审核人员，我希望任务进入完成前再做一次只读领域复核，以避免未解决冲突或不一致进入 DONE。",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-3",
+          "title": "Git 设置消息与存储契约统一为 Monorepo + mirrorRemotes",
+          "userStory": "作为配置维护者，我希望 Git 设置只承认 Monorepo 主仓库并支持镜像远端列表，减少多仓分歧与旧字段混用。",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-4",
+          "title": "CodeGraph 已初始化判定必须基于真实状态而非目录存在",
+          "userStory": "作为开发者，我希望系统判断 CodeGraph 是否可用时基于真实初始化状态，避免仅有占位目录导致误判。",
+          "status": "active"
+        }
+      ],
+      "contracts": [
+        {
+          "id": "API-4",
+          "reqId": "Req-4",
+          "method": "EVENT",
+          "path": "/internal/codegraph/sync",
+          "requestShape": {
+            "featureId": "string"
+          },
+          "responseShape": {
+            "initialized": "boolean",
+            "initializedByCompensation": "boolean",
+            "syncExecuted": "boolean",
+            "warning": "string?"
+          }
+        },
+        {
+          "id": "API-1",
+          "reqId": "Req-1",
+          "method": "EVENT",
+          "path": "/internal/harness/pass-by-feature/developing-gate",
+          "requestShape": {
+            "featureId": "string",
+            "directComplete": "boolean?"
+          },
+          "responseShape": {
+            "passed": "boolean",
+            "summary": "string",
+            "submitTriggered": "boolean"
+          }
+        },
+        {
+          "id": "API-2",
+          "reqId": "Req-2",
+          "method": "EVENT",
+          "path": "/internal/harness/pass-by-feature/review-gate",
+          "requestShape": {
+            "featureId": "string",
+            "directComplete": "boolean?"
+          },
+          "responseShape": {
+            "passed": "boolean",
+            "summary": "string",
+            "doneTransition": "boolean"
+          }
+        },
+        {
+          "id": "API-3",
+          "reqId": "Req-3",
+          "method": "MESSAGE",
+          "path": "/webview/saveGit",
+          "requestShape": {
+            "bb": "string",
+            "mg": "string",
+            "mr": "string?",
+            "gmg": "string?"
+          },
+          "responseShape": {
+            "saved": "boolean",
+            "normalizedMirrorRemotes": "string"
+          }
+        }
+      ],
+      "invariants": []
+    }
+  ]
+}

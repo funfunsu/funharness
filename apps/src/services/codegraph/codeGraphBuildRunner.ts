@@ -1,6 +1,5 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import { spawnSync } from 'child_process';
+import { isCodeGraphInitialized } from './codeGraphState';
 
 export interface CodeGraphBuildInput {
     worktreePath: string;
@@ -68,11 +67,10 @@ export class CodeGraphBuildRunner {
             };
         }
 
-        const codeGraphDir = path.join(input.worktreePath, '.codegraph');
-        if (!fs.existsSync(codeGraphDir)) {
+        if (!isCodeGraphInitialized(input.worktreePath)) {
             return {
                 status: 'warning',
-                summary: 'codegraph init completed but .codegraph directory is missing',
+                summary: 'codegraph init completed but no initialized graph artifacts were found',
                 startedAt,
                 endedAt,
             };

@@ -4,10 +4,10 @@
  * Git 配置单仓库覆盖基线。
  *
  * 覆盖场景：
- * 1. 只保留单一仓库模式，前端/后端分离 Git 仅作为历史兼容字段被忽略。
- * 2. 无 monorepoGit 时，不再返回多仓库 descriptor，避免再次触发前后端双仓库分支。
+ * 1. 只保留单一仓库模式，无 monorepoGit 时不返回任何 descriptor。
+ * 2. 有 monorepoGit 时仅返回 mono 仓库 descriptor。
  *
- * 这组测试守护的是“Git 设置页与初始化逻辑只承认单仓库配置”，后续改动不能重新引入多仓库模式。
+ * 这组测试守护“Git 设置页与初始化逻辑只承认 monorepo 配置”，后续改动不能重新引入分仓路径。
  */
 
 const { describe, test } = require('node:test');
@@ -17,12 +17,10 @@ const { GitService } = require('../out/services/gitService');
 const { DEFAULT_CONFIG } = require('../out/models');
 
 describe('Git settings single-repo baseline', () => {
-    test('legacy frontend/backend remotes are ignored in single-repo mode', () => {
+    test('returns no descriptors when monorepo remote is empty', () => {
         const gitService = new GitService({
             ...DEFAULT_CONFIG,
             monorepoGit: '',
-            frontendGit: 'https://example.com/frontend.git',
-            backendGit: 'https://example.com/backend.git',
         }, '/tmp/fun-harness');
 
         const descriptors = gitService.resolveRepoDescriptors('');
@@ -33,8 +31,6 @@ describe('Git settings single-repo baseline', () => {
         const gitService = new GitService({
             ...DEFAULT_CONFIG,
             monorepoGit: 'https://example.com/mono.git',
-            frontendGit: 'https://example.com/frontend.git',
-            backendGit: 'https://example.com/backend.git',
         }, '/tmp/fun-harness');
 
         const descriptors = gitService.resolveRepoDescriptors('');

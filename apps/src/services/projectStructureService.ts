@@ -1217,7 +1217,6 @@ export class ProjectStructureService {
             // Highest priority: the folder the user configured via monorepoDirs.frontend.
             ...this.getConfiguredFrontendCandidates(),
             this.workspaceRoot,
-            path.join(this.workspaceRoot, 'repos', 'frontend-main'),
             path.join(this.workspaceRoot, 'frontend'),
             // Monorepo layout: dedicated main clone at repos/mono-main, with an apps/ folder.
             path.join(this.workspaceRoot, 'repos', 'mono-main', 'apps'),
@@ -1247,7 +1246,6 @@ export class ProjectStructureService {
         const candidates = [
             // Highest priority: the folder the user configured via monorepoDirs.backend.
             ...this.getConfiguredBackendCandidates(),
-            path.join(this.workspaceRoot, 'repos', 'backend-main'),
             path.join(this.workspaceRoot, 'backend'),
             this.workspaceRoot,
             // Monorepo layout: dedicated main clone at repos/mono-main, with an apps/ folder.

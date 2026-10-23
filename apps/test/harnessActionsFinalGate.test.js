@@ -98,6 +98,9 @@ function createServiceHarness(
         submit: 0,
         refresh: 0,
         cleanup: 0,
+        commitDomainBaseline: 0,
+        writableDomainGate: 0,
+        readOnlyDomainGate: 0,
         onPass: 0,
         saveAndRender: 0,
     };
@@ -114,6 +117,10 @@ function createServiceHarness(
         async cleanupIterationAfterRemoteMerge() {
             calls.cleanup += 1;
             return options.cleanupResult;
+        },
+        async commitDomainBaseline() {
+            calls.commitDomainBaseline += 1;
+            return { success: true, message: 'ok' };
         },
     };
 
@@ -137,6 +144,14 @@ function createServiceHarness(
 
     // Avoid unrelated spec-delta drift dependencies in this focused gate test.
     service.runDevDriftGateWithRepair = async () => true;
+    service.runDomainSedimentationWritable = async () => {
+        calls.writableDomainGate += 1;
+        return { passed: true, summary: 'writable-domain-gate-ok' };
+    };
+    service.verifyDomainSedimentationReadOnly = async () => {
+        calls.readOnlyDomainGate += 1;
+        return { passed: true, summary: 'readonly-domain-gate-ok' };
+    };
 
     return { service, feature, calls };
 }
@@ -179,10 +194,32 @@ describe('最终执行门禁回归覆盖基线', () => {
         await service.passByFeatureId(feature.id);
 
         assert.equal(calls.refresh, 1);
+        assert.equal(calls.readOnlyDomainGate, 1);
         assert.equal(calls.cleanup, 1);
         assert.equal(feature.stage, STAGE.DONE);
         assert.equal(calls.onPass, 1);
         assert.equal(sink.errors.length, 0);
+    });
+
+    test('blocks completion when read-only domain verification fails', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+
+        const sink = { errors: [], infos: [] };
+        const { service, feature, calls } = createServiceHarness(tmpDir, { gateLevel: 'standard' }, sink);
+        service.verifyDomainSedimentationReadOnly = async () => {
+            calls.readOnlyDomainGate += 1;
+            return { passed: false, summary: 'domain-conflict-blocking' };
+        };
+
+        await service.passByFeatureId(feature.id);
+
+        assert.equal(calls.refresh, 1);
+        assert.equal(calls.readOnlyDomainGate, 1);
+        assert.equal(calls.cleanup, 0);
+        assert.equal(feature.stage, STAGE.READY_FOR_REVIEW);
+        assert.equal(calls.onPass, 0);
+        assert.equal(sink.errors.length >= 0, true);
     });
 
     test('keeps task pending and shows the real preparation failure', async () => {
@@ -241,12 +278,36 @@ describe('最终执行门禁回归覆盖基线', () => {
 
         await service.passByFeatureId(feature.id);
 
+        assert.equal(calls.writableDomainGate, 1);
         assert.equal(calls.submit, 1);
         assert.equal(calls.refresh, 0);
         assert.equal(calls.cleanup, 0);
         assert.equal(feature.stage, STAGE.READY_FOR_REVIEW);
         assert.equal(calls.onPass, 0);
         assert.equal(sink.errors.length, 0);
+    });
+
+    test('blocks submit when writable domain sedimentation fails before review submit', async () => {
+        const tmpDir = makeTempDir();
+        tmpDirs.push(tmpDir);
+
+        const sink = { errors: [], infos: [] };
+        const { service, feature, calls } = createServiceHarness(tmpDir, {}, sink);
+        feature.stage = STAGE.DEVELOPING;
+        service.runDomainSedimentationWritable = async () => {
+            calls.writableDomainGate += 1;
+            return { passed: false, summary: 'domain-write-failed' };
+        };
+
+        await service.passByFeatureId(feature.id);
+
+        assert.equal(calls.writableDomainGate, 1);
+        assert.equal(calls.submit, 0);
+        assert.equal(calls.refresh, 0);
+        assert.equal(calls.cleanup, 0);
+        assert.equal(feature.stage, STAGE.DEVELOPING);
+        assert.equal(calls.onPass, 0);
+        assert.equal(sink.errors.length >= 0, true);
     });
 
     test('direct-complete closes task from developing in one click', async () => {
@@ -259,8 +320,10 @@ describe('最终执行门禁回归覆盖基线', () => {
 
         await service.passByFeatureId(feature.id, true);
 
+        assert.equal(calls.writableDomainGate, 1);
         assert.equal(calls.submit, 1);
         assert.equal(calls.refresh, 1);
+        assert.equal(calls.readOnlyDomainGate, 1);
         assert.equal(calls.cleanup, 1);
         assert.equal(feature.stage, STAGE.DONE);
         assert.equal(calls.onPass, 1);

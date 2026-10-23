@@ -1,4 +1,4 @@
-﻿import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubFeature, Feature, FeatureStats, FeatureChangeRequestState, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, DEFAULT_POLL_SCRIPT, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END, normalizeCustomButton } from './models';
+import { Config, CustomButton, ScriptInventory, STAGE, STAGE_LABEL, SubFeature, Feature, FeatureStats, FeatureChangeRequestState, AI_PROVIDERS, DEFAULT_AUTO_POLL_PROMPT, DEFAULT_AUTO_POLL_SKIP_MARKERS, DEFAULT_POLL_SCRIPT, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_START, DEFAULT_AUTO_POLL_IDLE_WEEKDAY_END, normalizeCustomButton } from './models';
 import { HarnessConfigMeta } from './services/featureStoreService';
 import { AutoPollStatus } from './services/autoPollService';
 
@@ -119,6 +119,7 @@ export interface MainFeatureViewModel {
     subTasks: SubFeature[];
     latestFailureReason?: string;
     taskOutputPathWarnings?: string[];
+    manualResumeInFlight?: boolean;
     isAuto: boolean;
     artifacts: {
         requirements: boolean;
@@ -350,7 +351,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
         when: (ctx) => !ctx.allSubTasksDone && !ctx.task.quickMode,
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="nextFeature('${ctx.task.id}')">⏭ 下一个</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" ${ctx.taskView.manualResumeInFlight ? 'disabled' : ''} onclick="nextFeature('${ctx.task.id}', this)">${ctx.taskView.manualResumeInFlight ? '⏳ 派发中...' : '⏭ 下一个'}</button>`,
     },
     {
         key: 'dev-run-quick',
@@ -365,7 +366,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'primary',
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
-        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="pass('${ctx.task.id}', false, this)">📤 提交并待评审</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--primary" onclick="pass('${ctx.task.id}', false, this)">📤 推进</button>`,
     },
     {
         key: 'dev-direct-pass',
@@ -379,7 +380,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         placement: 'header',
         panels: ['main', 'worktree'],
         stages: [STAGE.DEVELOPING],
-        render: (ctx) => `<button class="action-btn action-btn--subtle-danger" onclick="rollbackDev('${ctx.task.id}')">回滚</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--subtle-danger" onclick="rollbackDev('${ctx.task.id}')" title="回滚" aria-label="回滚">↩</button>`,
     },
     {
         key: 'review-spec',
@@ -403,12 +404,20 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="specReview('${ctx.task.id}')">🧭 Spec 评审</button>`,
     },
     {
+        key: 'sync-codegraph',
+        placement: 'side',
+        panels: ['worktree'],
+        stages: 'all',
+        when: (ctx) => ctx.hasWorktree,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="syncCodeGraph('${ctx.task.id}')">🔄 图谱</button>`,
+    },
+    {
         key: 'sync-code',
         placement: 'side',
         panels: ['main', 'worktree'],
         stages: 'all',
         when: (ctx) => ctx.hasWorktree,
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="syncMainCode('${ctx.task.id}')">🔄 拉取</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="syncMainCode('${ctx.task.id}')">⬇ 拉取</button>`,
     },
     {
         key: 'commit-to-baseline',
@@ -416,7 +425,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: 'all',
         when: (ctx) => ctx.hasWorktree,
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="commitToBaseline('${ctx.task.id}')">📤 提交PR/MR</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="commitToBaseline('${ctx.task.id}')">📤PR/MR</button>`,
     },
     {
         key: 'refresh-change-requests',
@@ -424,15 +433,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: 'all',
         when: (ctx) => ctx.hasWorktree,
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="refreshChangeRequests('${ctx.task.id}')">🔁 刷新PR/MR</button>`,
-    },
-    {
-        key: 'sync-codegraph',
-        placement: 'side',
-        panels: ['worktree'],
-        stages: 'all',
-        when: (ctx) => ctx.hasWorktree,
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="syncCodeGraph('${ctx.task.id}')">🧩 图谱同步</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="refreshChangeRequests('${ctx.task.id}')">🔁PR/MR</button>`,
     },
     // 'open-worktree' is rendered as a fixed button in the task card header, not via the action system.
     {
@@ -520,7 +521,7 @@ function buildTaskSideActionsHtml(taskId: string, sideActions: string[]): string
     const normalActions = sideActions.filter(action => !isResetAction(action));
     const resetActions = sideActions.filter(action => isResetAction(action));
     const orderedActions = [...normalActions, ...resetActions];
-    return `<div class="action-label">旁路操作</div><div class="action-group">${orderedActions.join('')}</div>`;
+    return `<div class="action-label">旁路操作</div><div class="action-group action-group--side">${orderedActions.join('')}</div>`;
 }
 
 function buildIterationArtifactsHtml(taskId: string): string {
@@ -629,6 +630,15 @@ export function buildMainPageHtml(
 <head>
 <meta charset="utf-8">
 <style>
+:root{
+    --fh-action-gap:6px;
+    --fh-btn-col-min-compact:54px;
+    --fh-btn-col-min-base:67px;
+    --fh-btn-col-min-side:108px;
+    --fh-btn-col-min-wide:90px;
+    --fh-btn-col-min-todo:49px;
+    --fh-btn-col-min-editor:56px;
+}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#111;color:#eee;padding:14px;font-family:-apple-system;padding-bottom:20px}
 .nav{display:flex;gap:8px;margin-bottom:10px}
@@ -650,25 +660,30 @@ body{background:#111;color:#eee;padding:14px;font-family:-apple-system;padding-b
 .task-desc-editor-wrap{display:none}
 .task-desc-wrap.editing .task-desc-editor-wrap{display:block}
 .task-desc-editor{width:100%;min-height:108px;max-height:260px;overflow-y:auto;padding:10px;border-radius:8px;background:#232326;border:1px solid #3a3a42;color:#f4f4f6;font-size:12px;line-height:1.6;white-space:pre-wrap;outline:none;resize:vertical;margin:0}
-.task-desc-editor-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:6px}
-.task-desc-editor-actions button{width:auto;min-width:72px;padding:7px 12px;border-radius:8px;border:none;font-size:11px;color:#fff;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+.task-desc-editor-actions{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(var(--fh-btn-col-min-base),1fr));margin-top:6px;width:100%}
+.task-desc-editor-actions button{width:100%;min-width:0;padding:5px 8px;border-radius:8px;border:none;font-size:8px;color:#fff;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
 .task-progress{height:6px;background:#333;border-radius:3px;margin:6px 0}
 .progress-bar{height:100%;background:#34c759;border-radius:3px}
 .task-status{font-size:12px;color:#ccc;margin-top:4px}
+.task-status-pending{display:flex;align-items:center;gap:6px;color:#4aa8ff;font-weight:600}
+.task-status-pending-dot{width:8px;height:8px;border-radius:999px;background:#4aa8ff;box-shadow:0 0 0 0 rgba(74,168,255,.45);animation:task-pending-pulse 1.2s ease-out infinite}
+@keyframes task-pending-pulse{0%{transform:scale(1);box-shadow:0 0 0 0 rgba(74,168,255,.45)}70%{transform:scale(1.15);box-shadow:0 0 0 8px rgba(74,168,255,0)}100%{transform:scale(1);box-shadow:0 0 0 0 rgba(74,168,255,0)}}
 .action{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
 .action button{flex:1;padding:8px;border-radius:8px;border:none;font-size:11px;min-width:80px}
-.action-stack{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.action-stack{display:flex;flex-direction:column;gap:8px;margin-top:10px;align-items:stretch;flex:1 1 100%;width:100%}
 .action-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
-.action-group{display:flex;gap:6px;flex-wrap:wrap}
+.action-header .action-label{white-space:nowrap;flex:none}
+.action-group{display:grid;gap:var(--fh-action-gap);grid-template-columns:repeat(auto-fit,minmax(var(--fh-btn-col-min-base),1fr));width:100%}
+.action-group--side{grid-template-columns:repeat(auto-fit,minmax(var(--fh-btn-col-min-side),1fr))}
 .task-prompt-section{display:flex;flex-direction:column;gap:6px}
-.task-prompt-actions{display:flex;gap:6px;flex-wrap:nowrap;align-items:stretch}
-.task-prompt-more{display:flex;gap:6px;flex-wrap:wrap}
-.task-prompt-btn{flex:1 1 0;min-width:0;padding:7px 8px;font-size:10px;white-space:nowrap}
-.task-prompt-more-toggle{flex:0 0 auto;min-width:56px;padding:7px 8px;font-size:10px;white-space:nowrap}
-.action-more-toggle{flex:0 0 auto;min-width:56px;padding:7px 8px;font-size:10px;white-space:nowrap}
+.task-prompt-actions{display:grid;gap:var(--fh-action-gap);grid-template-columns:repeat(auto-fit,minmax(var(--fh-btn-col-min-base),1fr));align-items:stretch;width:100%}
+.task-prompt-more{display:grid;gap:var(--fh-action-gap);grid-template-columns:repeat(auto-fit,minmax(var(--fh-btn-col-min-base),1fr));width:100%}
+.task-prompt-btn{min-width:0;padding:5px 6px;font-size:7px;white-space:nowrap}
+.task-prompt-more-toggle{min-width:0;padding:5px 6px;font-size:7px;white-space:nowrap}
+.action-more-toggle{min-width:0;padding:5px 6px;font-size:7px;white-space:nowrap}
 .ai-interaction-section{display:flex;flex-direction:column;gap:6px}
 .action-label{font-size:11px;color:#8f8f94;text-transform:uppercase;letter-spacing:.04em}
-.action-btn{flex:1;min-width:80px;padding:8px 10px;border-radius:8px;border:1px solid transparent;font-size:11px;font-weight:600;line-height:1;display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;transition:background-color .16s ease,border-color .16s ease,color .16s ease,transform .12s ease}
+.action-btn{flex:1 1 67px;min-width:0;width:100%;padding:5px 7px;border-radius:8px;border:1px solid transparent;font-size:8px;font-weight:600;line-height:1;display:inline-flex;align-items:center;justify-content:center;gap:4px;cursor:pointer;transition:background-color .16s ease,border-color .16s ease,color .16s ease,transform .12s ease}
 .action-btn:hover{transform:translateY(-1px)}
 .action-btn:active{transform:translateY(0)}
 .action-btn:focus-visible{outline:1px solid #6aa8ff;outline-offset:1px}
@@ -683,11 +698,11 @@ body{background:#111;color:#eee;padding:14px;font-family:-apple-system;padding-b
 .action-btn--warning:hover{background:#ffb143}
 .action-btn--danger{background:#ff3b30;color:#fff}
 .action-btn--danger:hover{background:#ff5550}
-.action-btn--subtle-danger{flex:none;min-width:auto;padding:0;background:transparent;border:none;color:#8f8f94}
+.action-btn--subtle-danger{flex:none;width:auto;min-width:auto;padding:0;background:transparent;border:none;color:#8f8f94;justify-self:end;margin-left:auto}
 .action-btn--subtle-danger:hover{background:transparent;color:#ff8b85;transform:none}
 .action-btn--icon-only{flex:none;min-width:auto;width:36px;padding:8px}
-.action-btn__icon{width:14px;height:14px;display:block}
-.action-btn--previous{flex:none;min-width:auto;padding:0;background:transparent;border:none;color:#8f8f94;font-size:11px;line-height:1.2}
+.action-btn__icon{width:10px;height:10px;display:block}
+.action-btn--previous{flex:none;width:auto;min-width:auto;padding:0;background:transparent;border:none;color:#8f8f94;font-size:11px;line-height:1.2}
 .action-btn--previous:hover{background:transparent;color:#d0d0d6;transform:none}
 .fixed-bottom{position:sticky;bottom:0;background:#111;padding-top:8px;padding-bottom:4px;margin-top:10px}
 .input-card{background:#1c1c1e;border-radius:12px;padding:12px}
@@ -695,6 +710,7 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .btn-primary{background:#007aff;color:white;padding:10px;border:none;border-radius:8px;width:100%}
 .sub-task-list{margin-top:8px;font-size:11px;max-height:200px;overflow-y:auto}
 .sub-task{padding:4px 0;display:flex;align-items:center;gap:6px}
+.sub-task .action-btn{width:auto;min-width:auto;flex:none;white-space:nowrap}
 .st-done{color:#34c759}.st-doing{color:#007aff}.st-failed{color:#ff3b30}.st-todo{color:#666}
 .health-line{display:flex;align-items:center;gap:8px;margin-top:4px}
 .health-badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
@@ -706,13 +722,14 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .task-config>summary::-webkit-details-marker{display:none}
 .task-config[open]>summary{color:#fff}
 .task-config-body{margin-top:6px}
-.config-actions{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
-.config-actions button{flex:1;padding:6px;border-radius:8px;border:none;font-size:11px;min-width:120px}
+.config-actions{display:grid;gap:var(--fh-action-gap);margin-top:6px;grid-template-columns:repeat(auto-fit,minmax(var(--fh-btn-col-min-base),1fr));width:100%}
+.config-actions button{flex:1;padding:4px;border-radius:8px;border:none;font-size:8px;min-width:0;width:100%}
+.config-actions--automation .action-btn{padding:6px 10px;font-size:11px;line-height:1.2}
 .stage-more{margin-top:6px}
 .stage-more>summary{cursor:pointer;font-size:12px;color:#aaa;list-style:none}
 .stage-more>summary::-webkit-details-marker{display:none}
-.stage-more-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
-.stage-more-actions button{flex:1;padding:8px;border-radius:8px;border:none;font-size:11px;min-width:120px}
+.stage-more-actions{display:grid;gap:var(--fh-action-gap);grid-template-columns:repeat(auto-fit,minmax(var(--fh-btn-col-min-base),1fr));margin-top:6px;width:100%}
+.stage-more-actions button{flex:1;padding:6px;border-radius:8px;border:none;font-size:8px;min-width:0;width:100%}
 .task-hidden{display:none}
 .mode-banner{margin:10px 0 12px;padding:8px 10px;background:#1d2e3b;border:1px solid #2f556f;border-radius:8px;color:#9ecff0;font-size:12px}
 .custom-btn-settings{margin:0 0 12px;padding:12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
@@ -724,15 +741,16 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .custom-btn-settings .hint{font-size:12px;color:#a9a9b0;line-height:1.5;margin-bottom:8px}
 .custom-btn-settings .kv{font-size:12px;color:#c8c8ce;line-height:1.6}
 .custom-btn-settings .kv b{color:#fff}
-.custom-btn-settings .inline-actions{display:flex;gap:8px;flex-wrap:wrap}
-.custom-btn-settings .inline-actions button{flex:1;min-width:160px;width:auto;margin-top:0}
-.custom-btn-settings .inline-actions--dual{flex-wrap:nowrap}
-.custom-btn-settings .inline-actions--dual .action-btn{min-width:0;flex:1;padding:8px 10px;font-size:11px}
+.custom-btn-settings .inline-actions{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(var(--fh-btn-col-min-wide),1fr));width:100%}
+.custom-btn-settings .inline-actions button{flex:1;min-width:0;width:100%;margin-top:0}
+.custom-btn-settings .inline-actions--dual{grid-template-columns:repeat(2,minmax(0,1fr))}
+.custom-btn-settings .inline-actions--dual .action-btn{min-width:0;flex:1;padding:5px 7px;font-size:8px}
 .iteration-artifact-section{display:flex;flex-direction:column;gap:6px}
 .custom-button-section{display:flex;flex-direction:column;gap:6px}
 .custom-button-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .custom-button-header .action-label{margin:0}
-.custom-button-gear{width:auto;min-width:auto;padding:4px 8px;font-size:12px;border-radius:8px;border:none;background:#2f2f35;color:#ddd;cursor:pointer}
+.custom-button-gear{width:auto;min-width:auto;margin-left:auto;padding:0 2px;font-size:8px;border:none;background:transparent;color:#8f8f94;cursor:pointer;display:inline-flex;align-items:center;justify-content:flex-end;text-align:right}
+.custom-button-gear:hover{background:transparent;color:#d0d0d6}
 .cb-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
 .cb-row input,.cb-row select{margin:0;min-width:0;box-sizing:border-box;padding:8px;border-radius:8px;border:none;background:#2c2c2e;color:#fff}
 .cb-name{flex:1 1 120px}
@@ -747,13 +765,14 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .autopoll-title{font-weight:600;font-size:13px;margin-bottom:6px}
 .autopoll-hint{font-size:12px;color:#a9a9b0;line-height:1.5;margin-bottom:8px}
 .autopoll-warn{font-size:12px;color:#ffd56a;background:#2b2308;border:1px solid #7a5d00;border-radius:8px;padding:8px;margin-bottom:8px}
-.autopoll-card button{width:100%;padding:8px;border-radius:8px;border:none;font-size:12px}
+.autopoll-card button{width:100%;padding:6px;border-radius:8px;border:none;font-size:8px}
 .sub-task-panel{margin-top:8px;background:#1a1a1a;border-radius:8px;padding:6px 8px}
 .sub-task-panel>summary{cursor:pointer;font-size:12px;color:#bbb;list-style:none}
 .sub-task-panel>summary::-webkit-details-marker{display:none}
 .sub-task-panel[open]>summary{color:#fff}
 .todo-card{margin:0 0 12px;padding:12px;background:#1c1c1e;border:1px solid #34343a;border-radius:10px}
 .todo-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.todo-head .todo-add-btn{width:auto;flex:none}
 .todo-title{font-weight:600;font-size:13px}
 .todo-list{display:flex;flex-direction:column;gap:8px}
 .todo-item{background:#232326;border:1px solid #34343a;border-radius:8px;padding:8px}
@@ -762,15 +781,15 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .todo-item-title.done{text-decoration:line-through;color:#a0a0a7}
 .todo-item-desc{margin-top:4px;font-size:12px;color:#b8b8bf;white-space:pre-wrap;line-height:1.5;word-break:break-word}
 .todo-item-meta{margin-top:6px;font-size:11px;color:#8f8f96}
-.todo-item-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
-.todo-item-actions button{flex:1;min-width:72px;padding:6px 8px;border:none;border-radius:7px;font-size:11px}
+.todo-item-actions{display:grid;gap:var(--fh-action-gap);grid-template-columns:repeat(auto-fit,minmax(var(--fh-btn-col-min-base),1fr));margin-top:8px;width:100%}
+.todo-item-actions button{flex:1;min-width:0;width:100%;padding:4px 6px;border:none;border-radius:7px;font-size:8px}
 .todo-error{margin:0 0 8px;padding:8px 10px;border:1px solid #7a5d00;border-radius:8px;background:#2b2308;color:#ffd56a;font-size:12px;line-height:1.5}
 .todo-empty{padding:12px;border:1px dashed #4a4a52;border-radius:8px;color:#a9a9b0;font-size:12px;line-height:1.5;text-align:center}
 .todo-editor{display:none;margin:10px 0 8px;padding:10px;background:#232326;border:1px solid #34343a;border-radius:8px}
 .todo-editor.open{display:block}
 .todo-editor-head{font-size:12px;color:#d6d6dc;margin-bottom:8px}
-.todo-editor-actions{display:flex;gap:6px;flex-wrap:wrap}
-.todo-editor-actions button{flex:1;min-width:80px;padding:8px;border:none;border-radius:8px;font-size:11px}
+.todo-editor-actions{display:grid;gap:var(--fh-action-gap);grid-template-columns:repeat(auto-fit,minmax(var(--fh-btn-col-min-base),1fr));width:100%}
+.todo-editor-actions button{flex:1;min-width:0;width:100%;padding:6px;border:none;border-radius:8px;font-size:8px}
 .todo-loading{font-size:12px;color:#a9a9b0;margin-bottom:6px}
 .delta-badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;cursor:pointer}
 .delta-pass{background:#163a24;color:#7ee2a8}
@@ -818,6 +837,12 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .domain-workspace-card{margin:0 0 12px;padding:12px;background:#15161a;border:1px solid #2f3a44;border-radius:10px}
 .domain-workspace-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 .domain-workspace-title{font-weight:700;font-size:13px;color:#d8eaff}
+.domain-workspace-card .refresh{color:#9ecff0}
+.domain-workspace-card .refresh:hover{color:#c3e0f8}
+.domain-workspace-card .action-btn{font-size:10px;line-height:1.2;padding:6px 9px}
+.domain-workspace-card .action-btn--neutral{background:#3f444c;color:#edf3fa}
+.domain-workspace-card .action-btn--neutral:hover{background:#525862}
+.domain-workspace-card .action-btn--primary{color:#fff}
 .dw-commit-row{margin-top:10px}
 .dw-commit-row:empty{margin-top:0}
 .dw-commit-row .action-btn{width:100%;justify-content:center}
@@ -845,6 +870,34 @@ input,textarea{width:100%;padding:10px;border-radius:8px;border:none;background:
 .dw-summary:hover{color:#bcd7ef}
 .dw-file-list{margin:6px 0 0;padding-left:18px;font-size:11px;color:#9fc6e8;line-height:1.5}
 .dw-file-list li{word-break:break-all}
+@media (max-width:320px){
+    .dk-gov-actions,
+    .domain-workspace-commit-bar,
+    .dw-conflict-row{
+        grid-template-columns:1fr !important;
+        display:grid;
+    }
+    .action-btn,
+    .task-prompt-btn,
+    .task-prompt-more-toggle,
+    .action-more-toggle,
+    .task-desc-editor-actions button,
+    .todo-item-actions button,
+    .todo-editor-actions button,
+    .config-actions button,
+    .stage-more-actions button,
+    .custom-btn-settings .inline-actions button{
+        width:100%;
+        white-space:normal;
+        word-break:break-word;
+        line-height:1.35;
+    }
+    .todo-head .todo-add-btn{
+        width:auto;
+        min-width:auto;
+        white-space:nowrap;
+    }
+}
 </style>
 </head>
 <body>
@@ -885,7 +938,7 @@ ${!readOnly ? '<div class="hint">脚本目录为 scripts/。</div>' : ''}
 ${`<div class="todo-card" id="workspace-todo-panel">
 <div class="todo-head">
 <div class="todo-title">${isWorktreeSubview ? '📝 待办（工作区）' : '📝 待办'}</div>
-<button class="action-btn action-btn--primary" style="padding:6px 10px;font-size:11px;min-width:auto;flex:none" onclick="openTodoCreateEditor()">＋ 添加待办</button>
+<button class="action-btn action-btn--primary todo-add-btn" style="padding:6px 10px;font-size:11px;min-width:auto;flex:none;width:auto" onclick="openTodoCreateEditor()">＋ 添加待办</button>
 </div>
 <div id="todo-loading" class="todo-loading" style="display:none">正在加载待办列表...</div>
 <div id="todo-error" class="todo-error" style="display:none"></div>
@@ -918,7 +971,6 @@ ${visibleTaskViews.map(view => {
     const health = view.health;
     const taskAutoAdvance = t.autoAdvanceEnabled !== false;
     const taskSpecDriftRepair = t.specDriftRepairEnabled !== false;
-    const effectiveSplitMode = t.taskSplitMode || 'compact';
     const artifactStatus = [
         `REQ:${artifacts.requirements ? 'Y' : 'N'}`,
         `DES:${artifacts.design ? 'Y' : 'N'}`,
@@ -941,6 +993,7 @@ ${visibleTaskViews.map(view => {
     const showSubTasks = (t.stage === STAGE.WRITING_TASKS || t.stage === STAGE.DEVELOPING) && subTasks.length > 0;
     const canOperateSubTasks = t.stage === STAGE.DEVELOPING;
     const allSubTasksDone = t.stage === STAGE.DEVELOPING && stats.total > 0 && stats.done >= stats.total;
+    const manualResumeInFlight = view.manualResumeInFlight === true;
     const outputWarnings = view.taskOutputPathWarnings || [];
     const outputWarningsPreview = outputWarnings.slice(0, 2);
     const hasWorktree = Boolean(t.worktreePath) || health.worktreeExists || health.frontendExists || health.backendExists;
@@ -1014,11 +1067,12 @@ ${!t.quickMode ? `<div>阶段：${STAGE_LABEL[t.stage] || t.stage}</div>
 <div class="task-status">原因：${health.summary || '-'}</div>
 ${(t.stage === STAGE.DEVELOPING || t.stage === STAGE.READY_FOR_REVIEW) ? `<div class="health-line" style="margin:4px 0">${buildDeltaBadgeHtml(t.id, view.specDeltaStatus)}</div>` : ''}
 ${view.latestFailureReason ? `<div class="task-status">最近失败：${view.latestFailureReason}</div>` : ''}
+${manualResumeInFlight ? '<div class="task-status task-status-pending"><span class="task-status-pending-dot" aria-hidden="true"></span>正在派发下一子任务，请稍候...</div>' : ''}
 ${outputWarningsPreview.length > 0 ? `<div class="task-status" style="color:#ffb143">输出路径告警：${outputWarningsPreview.map(escapeHtml).join('；')}${outputWarnings.length > outputWarningsPreview.length ? `（+${outputWarnings.length - outputWarningsPreview.length}）` : ''}</div>` : ''}
 <div class="task-status">待办:${stats.todo} 执行中:${stats.doing} 完成:${stats.done}${stats.failed > 0 ? ` 失败:${stats.failed}` : ''}</div>
 <div class="task-progress"><div class="progress-bar" style="width:${view.pct}%"></div></div>
 <div style="font-size:12px">进度：${view.pct}%</div>` : ''}
-${isWorktreeSubview ? `<div class="config-actions" style="margin-top:6px">
+${isWorktreeSubview ? `<div class="config-actions config-actions--automation" style="margin-top:6px">
 <button class="action-btn action-btn--neutral" onclick="setFeatureAutomation('${t.id}',${!taskAutoAdvance})">${taskAutoAdvance ? '⛔ 关闭批次自动推进' : '▶ 开启批次自动推进'}</button>
 <button class="action-btn action-btn--neutral" onclick="setSpecDriftRepair('${t.id}',${!taskSpecDriftRepair})">${taskSpecDriftRepair ? '⛔ 关闭漂移自动修复' : '▶ 开启漂移自动修复'}</button>
 </div>
@@ -1034,7 +1088,6 @@ ${!isWorktreeSubview ? `<details class="task-config">
 <summary>⚙ 展开配置</summary>
 <div class="task-config-body">
 <div class="task-status">Worktree：${t.worktreePath || '-'}</div>
-<div class="task-status">拆分模式：${effectiveSplitMode === 'compact' ? '急速模式' : '标准模式'}</div>
 <div class="task-status">基线分支：${t.baseBranchUsed || '-'}</div>
 <div class="task-status">迭代分支：${t.iterationBranch || '-'}</div>
 <div class="health-line"><span class="health-badge ${healthClass}">${healthLabel}</span><span class="task-status">${healthStatus}</span></div>
@@ -1059,9 +1112,9 @@ ${subTasks.map(st => {
     const actions = !canOperateSubTasks
         ? ''
         : st.status === 'failed'
-        ? ` <button class="action-btn action-btn--neutral" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="retry('${st.id}','${t.id}')">重跑</button> <button class="action-btn action-btn--success" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="setSubStatus('${t.id}','${st.id}','done')">标记完成</button>`
+        ? ` <button class="action-btn action-btn--neutral" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="retry('${st.id}','${t.id}')">重跑</button> <button class="action-btn action-btn--success" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" ${manualResumeInFlight ? 'disabled' : ''} onclick="setSubStatus('${t.id}','${st.id}','done', this)">${manualResumeInFlight ? '派发中...' : '标记完成'}</button>`
         : st.status === 'doing'
-            ? `${redoAction} <button class="action-btn action-btn--success" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" onclick="setSubStatus('${t.id}','${st.id}','done')">标记完成</button>`
+            ? `${redoAction} <button class="action-btn action-btn--success" style="padding:2px 6px;font-size:10px;min-width:auto;flex:none" ${manualResumeInFlight ? 'disabled' : ''} onclick="setSubStatus('${t.id}','${st.id}','done', this)">${manualResumeInFlight ? '派发中...' : '标记完成'}</button>`
             : '';
     return `<div class="sub-task"><span class="${cls}">${icon} ${st.id}</span> <span>${st.name}</span>${actions}</div>`;
 }).join('')}
@@ -2167,7 +2220,21 @@ function commitToBaseline(id){postHarnessMessage({type:'commitToBaseline',id})}
 function refreshChangeRequests(id){postHarnessMessage({type:'refreshChangeRequests',id})}
 function startAuto(id){postHarnessMessage({type:'startAuto',id})}
 function pauseAuto(id){postHarnessMessage({type:'pauseAuto',id})}
-function nextFeature(id){postHarnessMessage({type:'nextFeature',id})}
+const __manualResumePendingTaskIds=new Set();
+function nextFeature(id,el){
+    var taskId=String(id||'');
+    if(__manualResumePendingTaskIds.has(taskId)){return;}
+    __manualResumePendingTaskIds.add(taskId);
+    postHarnessMessage(
+        {type:'nextFeature',id},
+        {
+            button:el,
+            label:'派发中...',
+            timeoutMs:3000,
+            onRestore:function(){__manualResumePendingTaskIds.delete(taskId);},
+        },
+    );
+}
 function retry(subId,id){postHarnessMessage({type:'retryFeature',subId,id})}
 function syncMainCode(id){postHarnessMessage({type:'syncMainCode',id})}
 function openMasterWorkspace(){postHarnessMessage({type:'openMasterWorkspace'})}
@@ -2313,7 +2380,24 @@ function runAiQuickChatButton(taskId,buttonId){
 }
 
 function toggleAutoPoll(enable){postHarnessMessage({type:'toggleAutoPoll',enable})}
-function setSubStatus(id,subId,status){postHarnessMessage({type:'setSubFeatureStatus',id,subId,status})}
+function setSubStatus(id,subId,status,el){
+    var taskId=String(id||'');
+    if(String(status||'')==='done'){
+        if(__manualResumePendingTaskIds.has(taskId)){return;}
+        __manualResumePendingTaskIds.add(taskId);
+        postHarnessMessage(
+            {type:'setSubFeatureStatus',id,subId,status},
+            {
+                button:el,
+                label:'派发中...',
+                timeoutMs:3000,
+                onRestore:function(){__manualResumePendingTaskIds.delete(taskId);},
+            },
+        );
+        return;
+    }
+    postHarnessMessage({type:'setSubFeatureStatus',id,subId,status});
+}
 function logWebviewEvent(id,event,detail){
     try{postHarnessMessage({type:'logWebviewEvent',id,event,detail});}catch{}
 }
@@ -2586,7 +2670,7 @@ ${readOnly ? '<div>当前窗口仅用于查看，不允许修改配置。</div>'
 
 <div class="section">
 <div class="section-title">Git 配置</div>
-<h5>单一仓库（Monorepo）Git 地址</h5>
+<h5>Monorepo Git 地址（必填）</h5>
 <div class="git-input-row">
 <input id="mg" value="${monorepoGitValue}" placeholder="代码、文档、脚本位于同一仓库" ${disabled}>
 <button id="tokenTogglePrimary" type="button" class="${primaryToggleClass}" data-collapsed-label="${primaryToggleLabel}" onclick="toggleTokenPanel('tokenPanelPrimary','tokenTogglePrimary')" ${disabled}>${primaryToggleLabel}</button>
@@ -2598,15 +2682,16 @@ ${primaryTokenRows}
 <h5>基线分支（如 main、master 或 yourname/integration）</h5>
 <input id="bb" value="${config.baseBranch || ''}" placeholder="如 main 或 yourname/integration" ${disabled}>
 <details class="fold">
-<summary>多镜像仓库地址（可选，推送基线分支时会同时推送到该仓库）</summary>
+<summary>镜像远端地址（可选，推送基线分支时会同步推送）</summary>
 <div class="git-input-row">
-<input id="gmg" value="${config.githubMirrorGit || ''}" placeholder="如 https://github.com/yourname/yourrepo.git" ${disabled}>
+<input id="mr" value="${config.mirrorRemotes || config.githubMirrorGit || ''}" placeholder="如 https://github.com/yourname/yourrepo.git" ${disabled}>
 <button id="tokenToggleMirror" type="button" class="${mirrorToggleClass}" data-collapsed-label="${mirrorToggleLabel}" onclick="toggleTokenPanel('tokenPanelMirror','tokenToggleMirror')" ${disabled}>${mirrorToggleLabel}</button>
 </div>
 <div id="tokenPanelMirror" class="git-token-panel">
 ${mirrorTokenRows}
 </div>
 </details>
+<div class="hint">当前仅支持 Monorepo 工作流。</div>
 <div class="hint">Token 安全存储在 VS Code 凭据库，不写入仓库文件。</div>
 <div class="hint">Token 按「平台 + 域名」全局复用：同一 VS Code 用户下，跨项目/跨 workspace 无需重复设置。</div>
 <div class="hint">获取方式：GitLab 在 User Settings → Access Tokens；GitHub 在 Settings → Developer settings → Personal access tokens。</div>
@@ -2791,7 +2876,7 @@ function postHarnessMessage(payload,options){
     __fhPostRaw(payload);
 }
 function p(x){postHarnessMessage({type:'page',page:x})}
-function saveGit(){postHarnessMessage({type:'saveGit',bb:document.getElementById('bb').value,mg:document.getElementById('mg').value,gmg:document.getElementById('gmg').value})}
+function saveGit(){postHarnessMessage({type:'saveGit',bb:document.getElementById('bb').value,mg:document.getElementById('mg').value,mr:document.getElementById('mr').value})}
 function toggleTokenPanel(panelId,btnId){var panel=document.getElementById(panelId);if(!panel)return;var btn=document.getElementById(btnId);var open=panel.style.display!=='block';panel.style.display=open?'block':'none';if(btn){var collapsed=btn.getAttribute('data-collapsed-label')||'设置';btn.textContent=open?'收起':collapsed;btn.title=open?'收起':collapsed;}}
 function setRemoteApiToken(endpointKey){postHarnessMessage({type:'setRemoteApiToken',endpointKey:endpointKey})}
 function testRemoteApiToken(endpointKey){postHarnessMessage({type:'testRemoteApiToken',endpointKey:endpointKey})}

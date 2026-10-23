@@ -9,6 +9,7 @@ import { AiUsageService } from './services/aiUsageService';
 import { LocalRepairService, LocalRepairState } from './services/localRepairService';
 import { CodeGraphEvidenceProvider } from './services/codegraph/codeGraphEvidenceProvider';
 import { CodeGraphEvidenceSnapshotWriter } from './services/codegraph/codeGraphEvidenceSnapshotWriter';
+import { normalizePathForCompare as normalizeByRootForCompare, normalizePathForDisplay, resolvePathAgainstRoot } from './services/pathPolicy';
 
 export class FeatureScheduler {
     private iterDir: string;
@@ -74,6 +75,24 @@ export class FeatureScheduler {
             .filter(Boolean);
     }
 
+    private normalizePathForCompare(value: string): string {
+        return normalizeByRootForCompare(this.iterDir, this.normalizePotentialPath(value));
+    }
+
+    private dedupePathEntries(values: string[]): string[] {
+        const seen = new Set<string>();
+        const deduped: string[] = [];
+        for (const value of values) {
+            const key = this.normalizePathForCompare(value);
+            if (!key || seen.has(key)) {
+                continue;
+            }
+            seen.add(key);
+            deduped.push(value);
+        }
+        return deduped;
+    }
+
     // Drops "none" placeholder tokens (无 / none / - ...) so wiring fields never pollute output paths.
     private filterWiringEntries(entries: string[]): string[] {
         return entries.filter(entry => {
@@ -87,17 +106,22 @@ export class FeatureScheduler {
         const classified = new Set([...subTask.newFiles, ...subTask.modifiedFiles]);
         const parts: string[] = [];
         for (const f of subTask.newFiles) {
-            parts.push(`- ${f}（新建）`);
+            parts.push(`- ${this.normalizeOutputDisplayPath(f)}（新建）`);
         }
         for (const f of subTask.modifiedFiles) {
-            parts.push(`- ${f}（改造/接线：必须接入既有主干，不得留下孤儿新件）`);
+            parts.push(`- ${this.normalizeOutputDisplayPath(f)}（改造/接线：必须接入既有主干，不得留下孤儿新件）`);
         }
         for (const f of subTask.output) {
             if (!classified.has(f)) {
-                parts.push(`- ${f}`);
+                parts.push(`- ${this.normalizeOutputDisplayPath(f)}`);
             }
         }
         return parts.join('\n');
+    }
+
+    private normalizeOutputDisplayPath(value: string): string {
+        const normalized = this.normalizePotentialPath(value);
+        return normalizePathForDisplay(this.iterDir, normalized);
     }
 
     private stripCommonPathWrappers(value: string): string {
@@ -505,7 +529,6 @@ export class FeatureScheduler {
             acceptanceCriteria,
             techStack,
             codingStandards,
-            taskSplitMode: iterFeature.taskSplitMode || 'compact',
         }).trim();
         const systemPromptSection = devSystemPrompt
             ? `${devSystemPrompt}\n\n=====================================================================\n# 当前要执行的具体任务（请严格按以下指令完成本次编码）\n\n`
@@ -560,7 +583,7 @@ taskId: ${subTask.id}
 status: done
 timestamp: {当前时间}
 files:
-  - {实际创建的文件路径列表}
+    - {实际创建的文件路径列表（相对 currentWorkSpace，使用 / 分隔符）}
 \`\`\`
 ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，请生成验收脚本（平台差异如下）：\n- Windows: \`${windowsTestScriptPath}\`\n- Non-Windows: \`${nonWindowsTestScriptPath}\`\n脚本仅供人工触发验证，不自动执行。` : ''}`;
     }
@@ -1316,22 +1339,34 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         const subTasks = this.parseSubFeaturesMd();
         const subTask = subTasks.find(t => t.id === taskId);
         let outputOk = true;
-        const expectedOutputFiles = this.getPathLikeOutputs(subTask);
-        const signalFiles = this.readSignalFiles(signalFilePath)
+        const expectedOutputFiles = this.dedupePathEntries(this.getPathLikeOutputs(subTask));
+        const signalFiles = this.dedupePathEntries(this.readSignalFiles(signalFilePath)
             .map(item => this.normalizePotentialPath(item))
-            .filter(item => this.looksLikeFilePath(item));
+            .filter(item => this.looksLikeFilePath(item)));
         const filesToCheck = expectedOutputFiles.length > 0 ? expectedOutputFiles : signalFiles;
         const missingPaths: string[] = [];
+        const missingHints: Array<{ expected: string; alternatives: string[] }> = [];
         const existingPaths: string[] = [];
 
         for (const f of filesToCheck) {
-            const fullPath = this.resolveReportedOutputPath(f);
-            if (!fs.existsSync(fullPath)) {
+            const resolved = this.resolveReportedOutputPath(f);
+            const displayPath = this.normalizeOutputDisplayPath(f);
+            if (!resolved.withinIterationRoot) {
                 outputOk = false;
-                missingPaths.push(f);
+                missingPaths.push(displayPath);
                 continue;
             }
-            existingPaths.push(f);
+            if (!fs.existsSync(resolved.fullPath)) {
+                outputOk = false;
+                missingPaths.push(displayPath);
+                const alternatives = this.findMissingOutputAlternatives(f)
+                    .map(item => path.relative(this.iterDir, item).replace(/\\/g, '/'));
+                if (alternatives.length > 0) {
+                    missingHints.push({ expected: displayPath, alternatives });
+                }
+                continue;
+            }
+            existingPaths.push(displayPath);
         }
 
         if (outputOk) {
@@ -1362,9 +1397,17 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
                 `expectedOutputFiles=${JSON.stringify(expectedOutputFiles)}`,
                 `signalFiles=${JSON.stringify(signalFiles)}`,
                 `missing=${JSON.stringify(missingPaths)}`,
+                `missingHints=${JSON.stringify(missingHints)}`,
                 `existing=${JSON.stringify(existingPaths)}`,
             ].join(' | ');
             this.writeLog(taskId, `❌ 输出文件不完整（来源: ${source}, 检查文件数: ${filesToCheck.length}，缺失: ${missingPaths.join(', ') || '(unknown)'}）`);
+            if (missingHints.length > 0) {
+                const hintPreview = missingHints
+                    .slice(0, 3)
+                    .map(item => `${item.expected} -> ${item.alternatives.join(', ')}`)
+                    .join('；');
+                this.writeLog(taskId, `💡 缺失文件候选: ${hintPreview}`);
+            }
             this.writeLog(taskId, `❌ 诊断: ${detail}`);
             appendHarnessLog(this.iterDir, 'scheduler', `[${taskId}] 输出验证失败 | ${detail}`);
             this.onStatusChange();
@@ -1476,7 +1519,12 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         }
         const current = this.getCurrentSubFeature();
         if (current) {
-            this.updateSubFeatureStatus(current.id, 'done');
+            const checked = this.tryMarkDoneWithOutputVerification(current.id, 'manual-next');
+            if (!checked.verificationPassed) {
+                this.writeLog(current.id, `⚠️ 手工完成覆盖输出校验失败（manual-next）`);
+                this.writeLog(current.id, `⚠️ 诊断: ${checked.detail}`);
+                vscode.window.showWarningMessage(`任务 ${current.id} 输出校验未通过，但已按手工决策标记完成。`);
+            }
             this.writeLog(current.id, '⏭ 用户手动标记完成');
         }
         this.clearTimeout();
@@ -1484,6 +1532,21 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
 
         this.startWatching(iterTask);
         await this.dispatchNext(iterTask, current?.id);
+    }
+
+    tryMarkDoneWithOutputVerification(taskId: string, source: 'manual-next' | 'manual-status'): {
+        ok: boolean;
+        detail: string;
+        verificationPassed: boolean;
+    } {
+        const verification = this.verifyTaskOutputs(taskId);
+        this.updateSubFeatureStatus(taskId, 'done');
+        this.writeLog(taskId, `✅ 手工完成记录（source=${source}, checked=${verification.checkedCount}, verification=${verification.ok ? 'passed' : 'failed'})`);
+        return {
+            ok: true,
+            detail: verification.detail,
+            verificationPassed: verification.ok,
+        };
     }
 
     async retrySubFeature(subFeatureId: string, iterFeature: Feature): Promise<void> {
@@ -1625,22 +1688,89 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${message}\n`, 'utf8');
     }
 
-    private resolveReportedOutputPath(value: string): string {
-        if (path.isAbsolute(value)) {
-            return value;
+    private resolveReportedOutputPath(value: string): { fullPath: string; withinIterationRoot: boolean } {
+        const normalized = this.normalizePotentialPath(value);
+        const resolved = resolvePathAgainstRoot(this.iterDir, normalized);
+        if (!resolved) {
+            return {
+                fullPath: path.join(this.iterDir, '__invalid__'),
+                withinIterationRoot: false,
+            };
         }
 
-        const directPath = path.join(this.iterDir, value);
+        if (!resolved.insideRoot) {
+            return {
+                fullPath: resolved.absolutePath,
+                withinIterationRoot: false,
+            };
+        }
+
+        if (resolved.relativePath === '.') {
+            return {
+                fullPath: resolved.absolutePath,
+                withinIterationRoot: false,
+            };
+        }
+
+        const token = resolved.relativePath || normalized;
+        const directPath = path.join(this.iterDir, token);
         if (fs.existsSync(directPath)) {
-            return directPath;
+            return {
+                fullPath: directPath,
+                withinIterationRoot: true,
+            };
         }
 
-        if (/[\\/]/.test(value)) {
-            return directPath;
+        if (/[\\/]/.test(token)) {
+            return {
+                fullPath: directPath,
+                withinIterationRoot: true,
+            };
         }
 
-        const matched = this.findUniqueFileByBasename(value);
-        return matched || directPath;
+        const matched = this.findUniqueFileByBasename(token);
+        return {
+            fullPath: matched || directPath,
+            withinIterationRoot: true,
+        };
+    }
+
+    private verifyTaskOutputs(taskId: string): { ok: boolean; checkedCount: number; detail: string } {
+        const subTask = this.parseSubFeaturesMd().find(task => task.id === taskId);
+        const expectedOutputFiles = this.dedupePathEntries(this.getPathLikeOutputs(subTask));
+        const missingPaths: string[] = [];
+        const missingHints: Array<{ expected: string; alternatives: string[] }> = [];
+        const existingPaths: string[] = [];
+
+        for (const filePath of expectedOutputFiles) {
+            const resolved = this.resolveReportedOutputPath(filePath);
+            const displayPath = this.normalizeOutputDisplayPath(filePath);
+            if (!resolved.withinIterationRoot || !fs.existsSync(resolved.fullPath)) {
+                missingPaths.push(displayPath);
+                const alternatives = this.findMissingOutputAlternatives(filePath)
+                    .map(item => path.relative(this.iterDir, item).replace(/\\/g, '/'));
+                if (alternatives.length > 0) {
+                    missingHints.push({ expected: displayPath, alternatives });
+                }
+                continue;
+            }
+            existingPaths.push(displayPath);
+        }
+
+        const detail = [
+            'source=tasks.md',
+            `expectedOutputFiles=${JSON.stringify(expectedOutputFiles)}`,
+            'signalFiles=[]',
+            `missing=${JSON.stringify(missingPaths)}`,
+            `missingHints=${JSON.stringify(missingHints)}`,
+            `existing=${JSON.stringify(existingPaths)}`,
+        ].join(' | ');
+
+        return {
+            ok: missingPaths.length === 0,
+            checkedCount: expectedOutputFiles.length,
+            detail,
+        };
     }
 
     private findUniqueFileByBasename(fileName: string): string | null {
@@ -1684,14 +1814,49 @@ ${subTask.owner === 'Backend' ? `\n如果验收标准包含接口验证条件，
         return matches[0] || null;
     }
 
+    private findMissingOutputAlternatives(value: string): string[] {
+        const alternatives: string[] = [];
+        const expected = this.normalizePotentialPath(value);
+        if (!expected) {
+            return alternatives;
+        }
+
+        const resolved = resolvePathAgainstRoot(this.iterDir, expected);
+        if (resolved && !resolved.insideRoot) {
+            return alternatives;
+        }
+
+        const directPath = resolved?.absolutePath || path.join(this.iterDir, expected);
+        const ext = path.extname(expected).toLowerCase();
+        if (ext === '.yml' || ext === '.yaml' || ext === '.properties') {
+            const siblingExts = ['.yml', '.yaml', '.properties'].filter(candidate => candidate !== ext);
+            for (const siblingExt of siblingExts) {
+                const siblingPath = path.join(path.dirname(directPath), `${path.basename(directPath, ext)}${siblingExt}`);
+                if (fs.existsSync(siblingPath)) {
+                    alternatives.push(siblingPath);
+                }
+            }
+        }
+
+        const baseName = path.basename(expected);
+        if (baseName) {
+            const matched = this.findUniqueFileByBasename(baseName);
+            if (matched) {
+                alternatives.push(matched);
+            }
+        }
+
+        return this.dedupePathEntries(alternatives);
+    }
+
     private getPathLikeOutputs(subTask: SubFeature | undefined): string[] {
         if (!subTask || subTask.output.length === 0) {
             return [];
         }
-        return subTask.output
+        return this.dedupePathEntries(subTask.output
             .flatMap(item => this.splitOutputEntries(item))
-            .map(item => this.normalizePotentialPath(item))
-            .filter(item => this.looksLikeFilePath(item));
+            .map(item => this.normalizeOutputDisplayPath(item))
+            .filter(item => this.looksLikeFilePath(item)));
     }
 
     /**

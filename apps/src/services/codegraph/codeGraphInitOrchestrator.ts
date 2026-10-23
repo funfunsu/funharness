@@ -1,11 +1,10 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import { CodeGraphDedupeGuard } from './codeGraphDedupeGuard';
 import { CodeGraphInstallProbe } from './codeGraphInstallProbe';
 import { CodeGraphBuildRunner } from './codeGraphBuildRunner';
 import { CodeGraphRunLedger } from './codeGraphRunLedger';
 import { CodeGraphEvidenceSnapshotWriter } from './codeGraphEvidenceSnapshotWriter';
 import { CodeGraphAgentsGuideUpdater } from './codeGraphAgentsGuideUpdater';
+import { isCodeGraphInitialized } from './codeGraphState';
 
 export type CodeGraphInitEntryPoint = 'openFolderLocationByFeatureId' | 'runCustomButtonByFeatureId' | 'syncCodeGraphByFeatureId';
 
@@ -72,8 +71,7 @@ export class CodeGraphInitOrchestrator {
                 });
             }
 
-            const codeGraphDir = path.join(input.worktreePath, '.codegraph');
-            if (fs.existsSync(codeGraphDir)) {
+            if (isCodeGraphInitialized(input.worktreePath)) {
                 const snapshot = this.evidenceSnapshotWriter.writeSnapshot(input.worktreePath);
                 const guide = this.agentsGuideUpdater.ensureUsageGuide(input.worktreePath);
                 return this.persistAndReturn(input, runId, worktreeId, {
