@@ -181,7 +181,7 @@ export class HarnessActionsService {
         const result = this.getSpecDeltaService().evaluateDriftGate(task, iterDir);
 
         if (result.warnings.length > 0) {
-            vscode.window.showWarningMessage(`Spec Delta 漂移告警：${result.warnings.slice(0, 2).join('；')}`);
+            showWarningMessageSafe(`Spec Delta 漂移告警：${result.warnings.slice(0, 2).join('；')}`);
         }
         if (result.passed) {
             return true;
@@ -197,7 +197,7 @@ export class HarnessActionsService {
             vscode.window.showInformationMessage(`Spec Delta 漂移门禁阻断：${briefErrors}\n已自动派发 Spec 文档修复 Agent，请在 AI 完成后重新触发本操作。`);
         } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
-            vscode.window.showWarningMessage(`Spec Delta 漂移门禁阻断：${briefErrors}\n自动修复派发失败：${msg}`);
+            showWarningMessageSafe(`Spec Delta 漂移门禁阻断：${briefErrors} 自动修复派发失败：${msg}`);
         }
         return false;
     }
@@ -206,7 +206,7 @@ export class HarnessActionsService {
         const iterDir = this.deps.getIterationDir(task);
         const result = this.getSpecDeltaService().evaluateDriftGate(task, iterDir);
         if (result.warnings.length > 0) {
-            vscode.window.showWarningMessage(`Spec Delta 漂移告警：${result.warnings.slice(0, 2).join('；')}（详情见 ${result.digestPath}）`);
+            showWarningMessageSafe(`Spec Delta 漂移告警：${result.warnings.slice(0, 2).join('；')}（详情见 ${result.digestPath}）`);
         }
         return result;
     }
@@ -513,7 +513,7 @@ export class HarnessActionsService {
             const detachResult = await this.deps.gitService.detachIterationWorktrees(iterDir);
             if (!detachResult.success && detachResult.errors.length > 0) {
                 this.logTaskReset(task, `worktree 清理告警：${detachResult.errors.join('；')}`);
-                vscode.window.showWarningMessage(`重置前 worktree 清理存在告警：${detachResult.errors.join('；')}`);
+                showWarningMessageSafe(`重置前 worktree 清理存在告警：${detachResult.errors.join('；')}`);
             }
 
             if (fs.existsSync(iterDir)) {
@@ -541,7 +541,7 @@ export class HarnessActionsService {
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             appendHarnessLog(this.resolveTaskLogDir(task), 'reset', `重置失败：${message}`);
-            vscode.window.showErrorMessage(`重置任务失败：${message}`);
+            showErrorMessageSafe('重置任务失败', { detail: message });
         }
     }
 
@@ -625,7 +625,7 @@ export class HarnessActionsService {
     private async runExclusiveGitAction(task: Feature, action: string, runner: () => Promise<void>): Promise<void> {
         const key = `${task.id}:${action}`;
         if (this.inFlightGitActionKeys.has(key)) {
-            vscode.window.showWarningMessage(`已忽略重复触发：${task.name} 的 ${action} 正在执行中`);
+            showWarningMessageSafe(`已忽略重复触发：${task.name} 的 ${action} 正在执行中`);
             return;
         }
         this.inFlightGitActionKeys.add(key);
@@ -908,7 +908,7 @@ export class HarnessActionsService {
                 .filter(entry => entry.state !== 'merged')
                 .map(entry => `${entry.remoteName}: ${entry.state}${entry.lastError ? `（${entry.lastError}）` : ''}`)
                 .join('；');
-            vscode.window.showWarningMessage(`仍有未合并端点：${pending || '请查看任务卡状态面板'}`);
+            showWarningMessageSafe(`仍有未合并端点：${pending || '请查看任务卡状态面板'}`);
         });
     }
 
@@ -918,7 +918,7 @@ export class HarnessActionsService {
 
         const dispatchKey = `${task.id}:${step}`;
         if (this.inFlightStageDispatchKeys.has(dispatchKey)) {
-            vscode.window.showWarningMessage(`已忽略重复触发：${task.name} 的 ${step.toUpperCase()} Agent 正在执行中`);
+            showWarningMessageSafe(`已忽略重复触发：${task.name} 的 ${step.toUpperCase()} Agent 正在执行中`);
             return;
         }
         this.inFlightStageDispatchKeys.add(dispatchKey);
@@ -944,7 +944,7 @@ export class HarnessActionsService {
 
             const rendered = this.deps.renderAgentPrompt(step, task.name, task.desc, iterDir);
             if (!rendered.content.trim()) {
-                vscode.window.showErrorMessage(`未找到可用的 ${step} Prompt，请检查扩展内置 prompts/ 目录。`);
+                showErrorMessageSafe(`未找到可用的 ${step} Prompt，请检查扩展内置 prompts/ 目录。`);
                 return;
             }
 
@@ -1041,7 +1041,7 @@ export class HarnessActionsService {
 
         const targetPath = locationMap[location];
         if (!fs.existsSync(targetPath)) {
-            vscode.window.showWarningMessage(`目录不存在：${targetPath}`);
+            showWarningMessageSafe(`目录不存在：${targetPath}`);
             return;
         }
 
@@ -1171,7 +1171,7 @@ export class HarnessActionsService {
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            vscode.window.showWarningMessage(`同步配置目录到 worktree 失败：${message}`);
+            showWarningMessageSafe(`同步配置目录到 worktree 失败：${message}`);
         }
     }
 
@@ -1242,7 +1242,7 @@ export class HarnessActionsService {
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            vscode.window.showWarningMessage(`写入 worktree 面板状态失败：${message}`);
+            showWarningMessageSafe(`写入 worktree 面板状态失败：${message}`);
         }
     }
 
@@ -1266,7 +1266,9 @@ export class HarnessActionsService {
         vscode.window.showInformationMessage(`检测到代码目录缺失，正在补偿重建：${task.name}`);
         const result = await this.deps.gitService.createIterationBranches(task, iterDir);
         if (!result.success) {
-            showErrorMessageSafe(`补偿拉取失败：${result.message || '未知错误'}`);
+            showErrorMessageSafe('补偿拉取失败', {
+                detail: result.message || '未知错误',
+            });
             return { ok: false, wasNewlyCreated: false };
         }
 
@@ -1292,7 +1294,7 @@ export class HarnessActionsService {
         const currentScheduler = this.deps.getScheduler(task);
         const maxConcurrent = 2;
         if (!currentScheduler.isAutoMode() && activeAutoCount >= maxConcurrent) {
-            vscode.window.showWarningMessage(`自动执行槽位已满（${activeAutoCount}/${maxConcurrent}），请先暂停其他任务`);
+            showWarningMessageSafe(`自动执行槽位已满（${activeAutoCount}/${maxConcurrent}），请先暂停其他任务`);
             return;
         }
         const scheduler = this.deps.getScheduler(task);
@@ -1391,10 +1393,10 @@ export class HarnessActionsService {
         if (step === 'tsk') {
             const validation = this.validateStageArtifact(task, 'tsk');
             if (!validation.valid) {
-                vscode.window.showErrorMessage(
-                    `任务拆解产物校验未通过，无法进入开发阶段：\n- ${validation.errors.join('\n- ')}`,
-                    { modal: true },
-                );
+                showErrorMessageSafe('任务拆解产物校验未通过，无法进入开发阶段', {
+                    modal: true,
+                    detail: validation.errors.map(item => `- ${item}`).join('\n'),
+                });
                 return;
             }
         }
@@ -1421,7 +1423,9 @@ export class HarnessActionsService {
                 await this.runAgentByFeatureId(featureId, targetStage);
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
-                vscode.window.showErrorMessage(`跳转到 ${targetStage.toUpperCase()} 后自动派发 Agent 失败：${message}`);
+                showErrorMessageSafe(`跳转到 ${targetStage.toUpperCase()} 后自动派发 Agent 失败`, {
+                    detail: message,
+                });
             }
 
             this.deps.saveAndRender();
@@ -1479,10 +1483,10 @@ export class HarnessActionsService {
         const registryService = this.getDomainRegistryService();
         const load = registryService.loadRegistry(repoRoot);
         if (load.validationErrors.length > 0) {
-            vscode.window.showErrorMessage(
-                `领域注册表异常：${load.validationErrors.map(item => item.message).join('；')}`,
-                { modal: true },
-            );
+            showErrorMessageSafe('领域注册表异常', {
+                modal: true,
+                detail: load.validationErrors.map(item => item.message).join('；'),
+            });
             return false;
         }
 
@@ -1509,7 +1513,7 @@ export class HarnessActionsService {
 
         if (choice === HarnessActionsService.DOMAIN_BLOCK_AUTO_FIX) {
             if (invalid.length > 0) {
-                vscode.window.showWarningMessage(`存在非 canonical 领域名，无法自动补齐：${invalid.map(item => item.domain).join('、')}`);
+                showWarningMessageSafe(`存在非 canonical 领域名，无法自动补齐：${invalid.map(item => item.domain).join('、')}`);
                 await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(load.filePath));
                 return false;
             }
@@ -1526,13 +1530,10 @@ export class HarnessActionsService {
             );
             const unresolved = missing.filter(item => !finalCanonicals.has(item.domain.toLowerCase()));
             if (unresolved.length > 0) {
-                vscode.window.showErrorMessage(
-                    `自动补失败：仍有未登记领域（${unresolved.length}）`,
-                    {
-                        modal: true,
-                        detail: this.buildDomainBlockDetail(requirementsPath, verified.filePath, unresolved, []),
-                    },
-                );
+                showErrorMessageSafe(`自动补失败：仍有未登记领域（${unresolved.length}）`, {
+                    modal: true,
+                    detail: this.buildDomainBlockDetail(requirementsPath, verified.filePath, unresolved, []),
+                });
                 await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(verified.filePath));
                 return false;
             }
@@ -1716,7 +1717,10 @@ export class HarnessActionsService {
 
         const rollbackResult = await this.deps.gitService.rollbackIterationAppsOnly(task, iterDir);
         if (!rollbackResult.success) {
-            vscode.window.showErrorMessage(rollbackResult.message, { modal: true });
+            showErrorMessageSafe('开发回退失败', {
+                modal: true,
+                detail: rollbackResult.message,
+            });
             return;
         }
 
@@ -1819,13 +1823,10 @@ export class HarnessActionsService {
             const finalGate = await this.runFinalExecutionGate(task, iterDir);
             if (!finalGate.passed) {
                 appendHarnessLog(iterDir, 'execution-gate', `[${activeTask.id}] ❌ final-gate failed: ${finalGate.summary}`);
-                vscode.window.showErrorMessage(
-                    `执行门禁未通过：${finalGate.summary}`,
-                    {
-                        modal: true,
-                        detail: finalGate.outputTail || '请先启动依赖服务并重试。',
-                    },
-                );
+                showErrorMessageSafe(`执行门禁未通过：${finalGate.summary}`, {
+                    modal: true,
+                    detail: finalGate.outputTail || '请先启动依赖服务并重试。',
+                });
                 return;
             }
             if (!finalGate.skipped) {
@@ -1842,10 +1843,10 @@ export class HarnessActionsService {
                     .filter(entry => entry.state !== 'merged')
                     .map(entry => `${entry.remoteName}: ${entry.state}${entry.lastError ? `（${entry.lastError}）` : ''}`)
                     .join('\n');
-                vscode.window.showWarningMessage(
-                    `尚未全部合并到远程主干，请稍后重试通过：\n${unresolved || '存在未完成端点'}`,
-                    { modal: true },
-                );
+                showErrorMessageSafe('尚未全部合并到远程主干，请稍后重试通过', {
+                    modal: true,
+                    detail: unresolved || '存在未完成端点',
+                });
                 return;
             }
 
@@ -1874,7 +1875,7 @@ export class HarnessActionsService {
             const warmArchive = this.runWarmArchiveCleanup(iterDir);
             if (warmArchive.failures.length > 0) {
                 appendHarnessLog(iterDir, 'archive', `[${activeTask.id}] ⚠ warm-archive failure: ${warmArchive.failures.join('；')}`);
-                vscode.window.showWarningMessage(`温归档有部分目录清理失败：${warmArchive.failures[0]}`);
+                showWarningMessageSafe(`温归档有部分目录清理失败：${warmArchive.failures[0]}`);
             } else if (warmArchive.removedCount > 0) {
                 appendHarnessLog(iterDir, 'archive', `[${activeTask.id}] ✅ warm-archive cleaned ${warmArchive.removedCount} directories`);
                 vscode.window.showInformationMessage(`温归档完成：已清理 ${warmArchive.removedCount} 个可再生目录。`);
@@ -1925,11 +1926,29 @@ export class HarnessActionsService {
         const iterDir = this.deps.getIterationDir(task);
         const result = await this.deps.gitService.syncMainCode(task, iterDir);
         if (!result.success) {
-            showErrorMessageSafe(`同步失败：${result.message}`, { modal: true });
+            showErrorMessageSafe('同步主仓库代码失败', {
+                modal: true,
+                detail: result.message,
+            });
         } else {
             vscode.window.showInformationMessage(result.message);
             this.showLocalBaseFallbackNoticeIfAny();
         }
+    }
+
+    async syncMainMonoRepo(): Promise<void> {
+        vscode.window.showInformationMessage('正在更新本地 mono-main 代码...');
+        const result = await this.deps.gitService.syncMainMonoRepo();
+        if (!result.success) {
+            showErrorMessageSafe('更新本地 mono-main 失败', {
+                modal: true,
+                detail: result.message,
+            });
+            return;
+        }
+
+        vscode.window.showInformationMessage(result.message);
+        this.showLocalBaseFallbackNoticeIfAny();
     }
 
     /**
@@ -1954,7 +1973,7 @@ export class HarnessActionsService {
         }
         const button = normalizeCustomButton(raw);
         if (!button.script) {
-            vscode.window.showWarningMessage(`自定义按钮「${button.name}」未选择脚本`);
+            showWarningMessageSafe(`自定义按钮「${button.name}」未选择脚本`);
             return;
         }
 
@@ -1963,7 +1982,7 @@ export class HarnessActionsService {
         if (!initResult.ok) return;
         await this.runCodeGraphInitOnFirstCreate(task, iterDir, initResult.wasNewlyCreated, 'runCustomButtonByFeatureId');
         if (!fs.existsSync(iterDir)) {
-            vscode.window.showWarningMessage(`迭代目录不存在，无法执行：${iterDir}`);
+            showWarningMessageSafe(`迭代目录不存在，无法执行：${iterDir}`);
             return;
         }
 
@@ -1993,7 +2012,7 @@ export class HarnessActionsService {
 
         const iterDir = this.deps.getIterationDir(task);
         if (!iterDir || !fs.existsSync(iterDir)) {
-            vscode.window.showWarningMessage(`当前任务迭代目录不可用，无法发送 AI 快捷对话：${iterDir || '(empty)'}`);
+            showWarningMessageSafe(`当前任务迭代目录不可用，无法发送 AI 快捷对话：${iterDir || '(empty)'}`);
             return { accepted: false, failureReason: 'dispatch_failed' };
         }
 
@@ -2002,7 +2021,7 @@ export class HarnessActionsService {
             return { accepted: true };
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error || 'unknown');
-            vscode.window.showWarningMessage(`AI 快捷对话发送失败：${detail}`);
+            showWarningMessageSafe(`AI 快捷对话发送失败：${detail}`);
             return { accepted: false, failureReason: 'dispatch_failed' };
         }
     }
@@ -2064,13 +2083,13 @@ export class HarnessActionsService {
         }
         const button = normalizeCustomButton(raw);
         if (!button.script) {
-            vscode.window.showWarningMessage(`自定义按钮「${button.name}」未选择脚本`);
+            showWarningMessageSafe(`自定义按钮「${button.name}」未选择脚本`);
             return;
         }
 
         const masterRoot = this.deps.getMasterRoot();
         if (!fs.existsSync(masterRoot)) {
-            vscode.window.showWarningMessage(`主工作区目录不存在，无法执行：${masterRoot}`);
+            showWarningMessageSafe(`主工作区目录不存在，无法执行：${masterRoot}`);
             return;
         }
         this.launchCustomButton(button, masterRoot, false, `主工作区目录不存在：{dir}`, '主面板');
@@ -2115,7 +2134,7 @@ export class HarnessActionsService {
         const scriptPath = path.join(scriptDir, script);
 
         if (!fs.existsSync(scriptPath)) {
-            vscode.window.showWarningMessage(`脚本不存在：${scriptPath}。请确认脚本仍位于所选来源目录中。`);
+            showWarningMessageSafe(`脚本不存在：${scriptPath}。请确认脚本仍位于所选来源目录中。`);
             return;
         }
 
@@ -2246,14 +2265,14 @@ export class HarnessActionsService {
                     vscode.window.showInformationMessage('已派发 Spec 文档修复 Agent，请在 AI 完成后重新评审');
                 } catch (error) {
                     const msg = error instanceof Error ? error.message : String(error);
-                    vscode.window.showWarningMessage(`修复派发失败：${msg}`);
+                    showWarningMessageSafe(`修复派发失败：${msg}`);
                 }
             }
             return;
         }
 
         if (review.warnings.length > 0) {
-            vscode.window.showWarningMessage(`Spec 评审完成：${review.warnings.slice(0, 2).join('；')}（详情已打开）`);
+            showWarningMessageSafe(`Spec 评审完成：${review.warnings.slice(0, 2).join('；')}（详情已打开）`);
             return;
         }
 
@@ -2485,7 +2504,9 @@ export class HarnessActionsService {
         const iterDir = this.deps.getIterationDir(task);
         const result = await this.deps.gitService.createIterationBranches(task, iterDir);
         if (!result.success) {
-            vscode.window.showErrorMessage(result.message || '迭代初始化失败');
+            showErrorMessageSafe('迭代初始化失败', {
+                detail: result.message || '未知错误',
+            });
             return;
         }
 
@@ -3108,7 +3129,7 @@ export class HarnessActionsService {
             if (!fs.existsSync(scriptPath)) {
                 const msg = `脚本不存在：${scriptPath}`;
                 appendHarnessLog(logDir, 'hook', `MISSING: ${scriptPath}`);
-                vscode.window.showWarningMessage(msg);
+                showWarningMessageSafe(msg);
                 resolve();
                 return;
             }
@@ -3135,7 +3156,7 @@ export class HarnessActionsService {
             proc.on('error', (error) => {
                 const errMsg = error instanceof Error ? error.message : String(error);
                 appendHarnessLog(logDir, 'hook', `SPAWN_ERROR: ${scriptName} ${errMsg}`);
-                vscode.window.showWarningMessage(`Hook 脚本执行失败：${scriptName} - ${errMsg}`);
+                showWarningMessageSafe(`Hook 脚本执行失败：${scriptName} - ${errMsg}`);
                 resolve();
             });
 
@@ -3146,7 +3167,7 @@ export class HarnessActionsService {
                 } else {
                     const stderrSnippet = stderr.trim().split('\n').slice(0, 3).join(' | ');
                     appendHarnessLog(logDir, 'hook', `FAILED: ${scriptName} exit=${exitCode} stderr=${stderrSnippet}`);
-                    vscode.window.showWarningMessage(`Hook 脚本执行失败：${scriptName} (exit=${exitCode})`);
+                    showWarningMessageSafe(`Hook 脚本执行失败：${scriptName} (exit=${exitCode})`);
                     resolve();
                 }
             });

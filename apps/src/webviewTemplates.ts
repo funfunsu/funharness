@@ -417,7 +417,7 @@ const FEATURE_ACTION_CONFIGS: FeatureActionConfig[] = [
         panels: ['main', 'worktree'],
         stages: 'all',
         when: (ctx) => ctx.hasWorktree,
-        render: (ctx) => `<button class="action-btn action-btn--neutral" onclick="syncMainCode('${ctx.task.id}')">⬇ 拉取</button>`,
+        render: (ctx) => `<button class="action-btn action-btn--neutral" title="拉取远程基线并合并到当前 worktree" onclick="syncMainCode('${ctx.task.id}')">⬇ 拉取</button>`,
     },
     {
         key: 'commit-to-baseline',
@@ -910,6 +910,7 @@ ${!isWorktreeSubview ? `<div class="nav">
 <div class="header">
 <h4>${isWorktreeSubview ? `🎯 ${escapeHtml(visibleTaskViews[0]?.task.name || '当前迭代任务')}` : '📌 迭代任务'}</h4>
 <div class="header-actions">
+${!isWorktreeSubview ? '<button class="toolbar-btn" title="更新本地 mono-main 目录" onclick="syncMainMonoRepo()">⬇ 更新 mono-main</button>' : ''}
 ${isWorktreeSubview ? '<button class="refresh" title="回到主工作区" onclick="openMasterWorkspace()">↩</button>' : ''}
 <button class="refresh" title="刷新" onclick="refresh()">🔄</button>
 </div>
@@ -2237,6 +2238,7 @@ function nextFeature(id,el){
 }
 function retry(subId,id){postHarnessMessage({type:'retryFeature',subId,id})}
 function syncMainCode(id){postHarnessMessage({type:'syncMainCode',id})}
+function syncMainMonoRepo(){postHarnessMessage({type:'syncMainMonoRepo'},{label:'更新中...',timeoutMs:30000})}
 function openMasterWorkspace(){postHarnessMessage({type:'openMasterWorkspace'})}
 function runCustomButton(id,buttonId){postHarnessMessage({type:'runCustomButton',id,buttonId})}
 function applyCustomButtonSettingsState(){
