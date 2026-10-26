@@ -1,7 +1,7 @@
 {
   "iteration": "liu-cheng-you-hua-20261021",
-  "generatedAt": "2020-05-04T08:49:16.000Z",
-  "contentHash": "9a633261947f8a20b7c2d86a5c505920589cf74f",
+  "generatedAt": "2020-05-18T11:11:20.000Z",
+  "contentHash": "c059236fedec9ac64044acd0d8b4ddc5e7098770",
   "domains": [
     {
       "canonical": null,
@@ -30,6 +30,12 @@
           "reqId": "Req-4",
           "title": "CodeGraph 已初始化判定必须基于真实状态而非目录存在",
           "userStory": "作为开发者，我希望系统判断 CodeGraph 是否可用时基于真实初始化状态，避免仅有占位目录导致误判。",
+          "status": "active"
+        },
+        {
+          "reqId": "Req-5",
+          "title": "主面板必须支持一键更新本地 mono-main 基线",
+          "userStory": "作为开发者，我希望在主面板直接更新本地 mono-main，以便在创建/切换迭代前先拉齐基线代码。",
           "status": "active"
         }
       ],
@@ -86,13 +92,25 @@
           "path": "/webview/saveGit",
           "requestShape": {
             "bb": "string",
-            "mg": "string",
+            "mg": "string?",
             "mr": "string?",
             "gmg": "string?"
           },
           "responseShape": {
             "saved": "boolean",
-            "normalizedMirrorRemotes": "string"
+            "normalizedMirrorRemotes": "string",
+            "blockedByMonorepoRequired": "boolean"
+          }
+        },
+        {
+          "id": "API-5",
+          "reqId": "Req-5",
+          "method": "MESSAGE",
+          "path": "/webview/syncMainMonoRepo",
+          "requestShape": {},
+          "responseShape": {
+            "success": "boolean",
+            "message": "string"
           }
         }
       ],

@@ -1,23 +1,23 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-10-23T10:34:55.041Z
+- generatedAt: 2026-10-26T08:17:53.665Z
 - taskId: task_1792555710201
 - taskName: 流程优化
 - gateLevel: standard
-- totalChanges: 4
-- blockedByGate: 1
+- totalChanges: 8
+- blockedByGate: 3
 
 ## Executive Summary
 
-- highRiskChanges: 1
+- highRiskChanges: 3
 - mediumRiskChanges: 0
-- lowRiskChanges: 3
+- lowRiskChanges: 5
 
 ## Domain Index
 
 | domain | total | high | medium | low | blocked |
 | --- | --- | --- | --- | --- | --- |
-| uncategorized | 4 | 1 | 0 | 3 | 1 |
+| uncategorized | 8 | 3 | 0 | 5 | 3 |
 
 ## Domain Sections
 
@@ -33,4 +33,15 @@
   - changedFiles=32
 - [2026-10-23T10:34:55.034Z] [dev] [low] Development drift gate passed
   - changedFiles=38
+- [2026-10-26T08:04:32.517Z] [dev] [high] Development drift gate blocked
+  - DEV-DRIFT-001: 开发验收阶段检测到代码变更，但 requirements/design/testcase/tasks 未同步更新
+  - DEV-DRIFT-002: 检测到契约敏感代码变更（controller/route/dto/schema/model），但 design.md 未更新
+  - changedFiles=7
+- [2026-10-26T08:05:16.250Z] [dev] [high] Development drift gate blocked
+  - DEV-DRIFT-002: 检测到契约敏感代码变更（controller/route/dto/schema/model），但 design.md 未更新
+  - changedFiles=8
+- [2026-10-26T08:08:38.481Z] [dev] [low] Development drift gate passed
+  - changedFiles=11
+- [2026-10-26T08:10:51.909Z] [dev] [low] Development drift gate passed
+  - changedFiles=1
 

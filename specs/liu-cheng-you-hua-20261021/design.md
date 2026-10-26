@@ -1,11 +1,12 @@
 # 设计文档
 ## 1. 概述
-本设计对应“流程优化”迭代的已实现代码行为，覆盖三类变更：
+本设计对应“流程优化”迭代的已实现代码行为，覆盖四类变更：
 - 开发与完成阶段新增领域沉淀双门禁。
 - Git 设置契约从 `githubMirrorGit` 迁移到 `mirrorRemotes`，并在消息层支持 `mr`。
 - CodeGraph 初始化判定统一使用真实状态判定函数，避免占位目录误判。
+- 主面板新增 `syncMainMonoRepo` 消息链路，用于一键更新本地 mono-main。
 
-说明：当前工作区未发现可用 CodeGraph 证据文件（`.codegraph/evidence.json`、`.harness/process/codegraph-evidence.json` 缺失），以下接缝基于代码与测试推导。
+说明：当前工作区存在 `.harness/process/codegraph-evidence.json` 快照，但 `seams/impactSet` 为空；以下接缝基于代码与测试推导并与现有快照状态对齐。
 
 ## 2. 架构设计
 ### 2.1 路由与接缝
@@ -25,6 +26,10 @@
 4. CodeGraph 初始化判定（Req-4）
 - 路由：`HarnessActionsService.syncCodeGraphByFeatureId`、`Harness.tryRunCodeGraphInitForCurrentWorktree`。
 - 行为：以 `isCodeGraphInitialized` 取代仅判断 `.codegraph` 目录存在。
+
+5. mono-main 一键更新（Req-5）
+- 路由：Webview `syncMainMonoRepo()` -> `HarnessMessageController.handle('syncMainMonoRepo')` -> `HarnessActionsService.syncMainMonoRepo` -> `GitService.syncMainMonoRepo`。
+- 行为：未配置 Monorepo 时按单仓约束失败；已配置时执行主仓更新并返回基线分支提示。
 
 ### 2.2 数据与配置模型
 1. Feature 模型精简
@@ -48,6 +53,9 @@
 4. INV-4（Req-4）
 - CodeGraph 可用性判定不得仅依赖目录存在，必须走统一状态判定函数。
 
+5. INV-5（Req-5）
+- 主面板触发 `syncMainMonoRepo` 时，必须仅针对 Monorepo 主仓执行同步，配置缺失即失败返回。
+
 ## 3. API 契约
 ### 3.1 人工可读
 1. API-1：推进评审门禁
@@ -62,12 +70,18 @@
 
 3. API-3：Git 配置保存消息
 - 入口：`HarnessMessageController.handle('saveGit')`
-- 请求字段：`bb`、`mg`、`mr?`、`gmg?`
+- 请求字段：`bb`、`mg?`、`mr?`、`gmg?`
 - 转发规则：`mirrorRemotes = mr ?? gmg`。
+- 失败规则：当 `mg` 缺省或为空字符串时，`handleSaveGit` 必须按 Monorepo 必填策略阻断初始化。
 
 4. API-4：CodeGraph 同步前置检查
 - 入口：`HarnessActionsService.syncCodeGraphByFeatureId(featureId)`
 - 规则：若 `isCodeGraphInitialized(iterDir)=false`，先尝试初始化；仍失败则告警并终止同步。
+
+5. API-5：mono-main 一键更新
+- 入口：`HarnessMessageController.handle('syncMainMonoRepo')`
+- 请求字段：无
+- 转发规则：调用 `syncMainMonoRepo()`，由 `GitService.syncMainMonoRepo()` 统一执行 Monorepo 描述符解析与主仓同步。
 
 ## 4. 机器可读区
 ```yaml
@@ -102,12 +116,13 @@ apiContracts:
     path: /webview/saveGit
     request:
       bb: string
-      mg: string
+      mg: string?
       mr: string?
       gmg: string?
     response:
       saved: boolean
       normalizedMirrorRemotes: string
+      blockedByMonorepoRequired: boolean
   - id: API-4
     requirementIds: [Req-4]
     method: EVENT
@@ -119,4 +134,12 @@ apiContracts:
       initializedByCompensation: boolean
       syncExecuted: boolean
       warning: string?
+  - id: API-5
+    requirementIds: [Req-5]
+    method: MESSAGE
+    path: /webview/syncMainMonoRepo
+    request: {}
+    response:
+      success: boolean
+      message: string
 ```

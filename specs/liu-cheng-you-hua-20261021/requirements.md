@@ -20,7 +20,7 @@
 ### Req-3：Git 设置消息与存储契约统一为 Monorepo + mirrorRemotes
 **用户故事：** 作为配置维护者，我希望 Git 设置只承认 Monorepo 主仓库并支持镜像远端列表，减少多仓分歧与旧字段混用。
 #### 验收标准
-1. GIVEN Webview 提交 Git 配置，WHEN 发送 `saveGit` 消息，THEN 消息体必须支持 `mr` 字段（镜像远端），并兼容读取旧字段 `gmg`。
+1. GIVEN Webview 提交 Git 配置，WHEN 发送 `saveGit` 消息，THEN 消息体必须支持 `mr` 字段（镜像远端），并兼容读取旧字段 `gmg`，且控制器按 `mr ?? gmg` 归一化镜像远端输入。
 2. GIVEN 用户保存 Git 配置，WHEN 扩展落盘配置，THEN 必须以 `mirrorRemotes` 作为镜像远端主字段，不再持续写回 `githubMirrorGit`。
 3. GIVEN `monorepoGit` 为空，WHEN 执行 Git 初始化或提交相关流程，THEN 系统必须按“仅支持 Monorepo”规则返回失败提示。
 
@@ -30,6 +30,13 @@
 1. GIVEN 触发 CodeGraph 同步或启动补偿检查，WHEN 判定是否已初始化，THEN 系统必须通过 `isCodeGraphInitialized` 进行判定。
 2. GIVEN `.codegraph` 目录存在但缺失有效数据库状态，WHEN 执行初始化判定，THEN 系统不得判定为已初始化。
 3. GIVEN 判定为未初始化，WHEN 用户执行同步操作，THEN 系统必须先尝试初始化；初始化后仍未就绪则必须告警并终止同步。
+
+### Req-5：主面板必须支持一键更新本地 mono-main 基线
+**用户故事：** 作为开发者，我希望在主面板直接更新本地 mono-main，以便在创建/切换迭代前先拉齐基线代码。
+#### 验收标准
+1. GIVEN 用户在主面板点击“更新 mono-main”，WHEN Webview 发送消息，THEN 消息类型必须为 `syncMainMonoRepo` 并由控制器路由到同步动作。
+2. GIVEN 未配置 `monorepoGit`，WHEN 执行 mono-main 同步，THEN 系统必须按“仅支持 Monorepo”规则返回失败提示并终止同步。
+3. GIVEN `monorepoGit` 已配置，WHEN 执行 mono-main 同步，THEN 系统必须调用主仓库同步流程并返回“本地 mono-main 已更新”的成功结果。
 
 ## 机器可读区
 ```yaml
@@ -54,7 +61,7 @@ requirements:
     title: Git 设置消息与存储契约统一为 Monorepo + mirrorRemotes
     userStory: 作为配置维护者，我希望 Git 设置只承认 Monorepo 主仓库并支持镜像远端列表，减少多仓分歧与旧字段混用。
     acceptanceCriteria:
-      - GIVEN Webview 提交 Git 配置 WHEN 发送 saveGit 消息 THEN 消息体必须支持 mr 字段并兼容旧字段 gmg
+      - GIVEN Webview 提交 Git 配置 WHEN 发送 saveGit 消息 THEN 消息体必须支持 mr 字段并兼容旧字段 gmg 且按 mr??gmg 归一化镜像远端输入
       - GIVEN 用户保存 Git 配置 WHEN 扩展落盘配置 THEN 必须以 mirrorRemotes 作为镜像远端主字段并避免持续写回 githubMirrorGit
       - GIVEN monorepoGit 为空 WHEN 执行 Git 初始化或提交相关流程 THEN 系统必须按仅支持 Monorepo 规则返回失败提示
   - id: Req-4
@@ -64,4 +71,11 @@ requirements:
       - GIVEN 触发 CodeGraph 同步或启动补偿检查 WHEN 判定是否已初始化 THEN 系统必须通过 isCodeGraphInitialized 进行判定
       - GIVEN .codegraph 目录存在但缺失有效数据库状态 WHEN 执行初始化判定 THEN 系统不得判定为已初始化
       - GIVEN 判定为未初始化 WHEN 用户执行同步操作 THEN 系统必须先尝试初始化且失败时告警并终止同步
+  - id: Req-5
+    title: 主面板必须支持一键更新本地 mono-main 基线
+    userStory: 作为开发者，我希望在主面板直接更新本地 mono-main，以便在创建/切换迭代前先拉齐基线代码。
+    acceptanceCriteria:
+      - GIVEN 用户在主面板点击更新 mono-main WHEN Webview 发送消息 THEN 消息类型必须为 syncMainMonoRepo 且由控制器路由到同步动作
+      - GIVEN 未配置 monorepoGit WHEN 执行 mono-main 同步 THEN 系统必须按仅支持 Monorepo 规则返回失败提示并终止同步
+      - GIVEN monorepoGit 已配置 WHEN 执行 mono-main 同步 THEN 系统必须调用主仓库同步流程并返回本地 mono-main 已更新的成功结果
 ```
