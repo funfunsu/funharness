@@ -29,10 +29,11 @@
 - GIVEN 用户执行完成动作，WHEN `verifyDomainSedimentationReadOnly` 返回 `passed=false`，THEN 系统必须阻断完成且阶段保持 READY_FOR_REVIEW。
 - 自动化映射：`apps/test/harnessActionsFinalGate.test.js`
 
-### TC-LCYH-005 saveGit 消息优先读取 mr 并兼容 gmg
+### TC-LCYH-005 saveGit 消息优先读取 mr 并兼容 gmg（mg 可缺省）
 - requirementIds: Req-3
 - 前置条件：Webview 可发送 `saveGit` 消息。
 - GIVEN 消息同时或分别携带 `mr/gmg`，WHEN 控制器转发保存，THEN 系统必须按 `mr ?? gmg` 解析镜像远端。
+- GIVEN 消息未携带 `mg` 或 `mg` 为空，WHEN 扩展侧执行保存，THEN 系统必须进入 Monorepo 必填失败分支并阻断初始化。
 - 自动化映射：`apps/src/harnessMessageController.ts`（契约路径）
 
 ### TC-LCYH-006 无 Monorepo 地址时 descriptor 为空
@@ -47,6 +48,19 @@
 - GIVEN 仅存在占位目录无真实数据库，WHEN 判定初始化状态，THEN 不得视为已初始化。
 - GIVEN 存在 `.codegraph/codegraph.db`，WHEN 判定初始化状态，THEN 视为可用并避免重复初始化。
 - 自动化映射：`apps/test/harnessActionsDomainPreflight.test.js`
+
+### TC-LCYH-008 syncMainMonoRepo 消息路由到主仓同步动作
+- requirementIds: Req-5
+- 前置条件：主面板可触发“更新 mono-main”。
+- GIVEN 用户触发该按钮，WHEN Webview 发送消息，THEN 控制器必须接收 `syncMainMonoRepo` 并调用 `HarnessActionsService.syncMainMonoRepo`。
+- 自动化映射：`apps/src/harnessMessageController.ts`（契约路径）
+
+### TC-LCYH-009 mono-main 同步执行 Monorepo 必填校验
+- requirementIds: Req-5
+- 前置条件：调用 `GitService.syncMainMonoRepo`。
+- GIVEN 未配置 `monorepoGit`，WHEN 执行同步，THEN 返回失败并提示“仅支持 Monorepo”。
+- GIVEN 已配置 `monorepoGit` 且主仓可达，WHEN 执行同步，THEN 返回成功并包含“本地 mono-main 已更新”。
+- 自动化映射：`apps/src/services/gitService.ts`（行为路径）
 
 ## 机器可读区
 ```yaml
@@ -79,7 +93,7 @@ testCases:
     script: apps/test/harnessActionsFinalGate.test.js
   - id: TC-LCYH-005
     requirementIds: [Req-3]
-    title: saveGit 消息优先读取 mr 并兼容 gmg
+    title: saveGit 消息优先读取 mr 并兼容 gmg（mg 可缺省）
     type: contract
     automated: false
     script: apps/src/harnessMessageController.ts
@@ -95,4 +109,16 @@ testCases:
     type: unit
     automated: true
     script: apps/test/harnessActionsDomainPreflight.test.js
+  - id: TC-LCYH-008
+    requirementIds: [Req-5]
+    title: syncMainMonoRepo 消息路由到主仓同步动作
+    type: contract
+    automated: false
+    script: apps/src/harnessMessageController.ts
+  - id: TC-LCYH-009
+    requirementIds: [Req-5]
+    title: mono-main 同步执行 Monorepo 必填校验
+    type: contract
+    automated: false
+    script: apps/src/services/gitService.ts
 ```
