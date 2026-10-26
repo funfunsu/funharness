@@ -1,6 +1,6 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-10-26T08:10:51.911Z
+- generatedAt: 2026-10-26T08:17:53.665Z
 - taskId: task_1792555710201
 - taskName: 流程优化
 - gateLevel: standard
