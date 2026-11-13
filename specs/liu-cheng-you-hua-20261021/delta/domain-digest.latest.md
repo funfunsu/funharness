@@ -1,23 +1,23 @@
 # Spec Delta Domain Digest
 
-- generatedAt: 2026-10-26T08:17:53.665Z
+- generatedAt: 2026-11-13T09:42:06.982Z
 - taskId: task_1792555710201
 - taskName: 流程优化
 - gateLevel: standard
-- totalChanges: 8
-- blockedByGate: 3
+- totalChanges: 10
+- blockedByGate: 4
 
 ## Executive Summary
 
-- highRiskChanges: 3
+- highRiskChanges: 4
 - mediumRiskChanges: 0
-- lowRiskChanges: 5
+- lowRiskChanges: 6
 
 ## Domain Index
 
 | domain | total | high | medium | low | blocked |
 | --- | --- | --- | --- | --- | --- |
-| uncategorized | 8 | 3 | 0 | 5 | 3 |
+| uncategorized | 10 | 4 | 0 | 6 | 4 |
 
 ## Domain Sections
 
@@ -44,4 +44,9 @@
   - changedFiles=11
 - [2026-10-26T08:10:51.909Z] [dev] [low] Development drift gate passed
   - changedFiles=1
+- [2026-11-13T09:39:16.886Z] [dev] [high] Development drift gate blocked
+  - DEV-DRIFT-001: 开发验收阶段检测到代码变更，但 requirements/design/testcase/tasks 未同步更新
+  - changedFiles=2
+- [2026-11-13T09:42:06.980Z] [dev] [low] Development drift gate passed
+  - changedFiles=6
 

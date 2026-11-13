@@ -688,16 +688,47 @@ export class HarnessActionsService {
     private async runDomainSedimentationWritable(task: Feature): Promise<{ passed: boolean; summary: string }> {
         try {
             const workspaceRoot = this.deps.getMasterRoot();
-            const docsRepoRoot = this.resolveDomainBaselineRepoRoot(workspaceRoot);
-            this.ensureDomainRegistrySeed(workspaceRoot, docsRepoRoot);
-
             const iterDir = this.deps.getIterationDir(task);
+            // Domain gate MUST read the current iteration workspace, not mono-main.
+            const docsRepoRoot = this.resolveDomainBaselineRepoRoot(iterDir);
+            this.ensureDomainRegistrySeed(iterDir, docsRepoRoot);
             const iterationId = path.basename(path.resolve(iterDir));
+            const registryPath = this.getDomainRegistryService().resolveRegistryPath(docsRepoRoot);
+            const changeSetPath = path.join(docsRepoRoot, 'specs', iterationId, 'delta', 'domain-change-set.json');
+            appendHarnessLog(
+                iterDir,
+                'domain-gate',
+                `[${task.id}] writable gate paths: repoRoot=${docsRepoRoot}; registry=${registryPath}; changeSet=${changeSetPath}`,
+            );
 
             const capabilityDelta = this.getCapabilityDeltaService().generateForIteration(workspaceRoot, iterDir);
             const aggregateService = this.getDomainKnowledgeAggregateService();
-            const context = aggregateService.loadDomainKnowledgeContext(docsRepoRoot, iterationId);
-            const changeSet = context.draftChangeSet;
+            let context = aggregateService.loadDomainKnowledgeContext(docsRepoRoot, iterationId);
+            let changeSet = context.draftChangeSet;
+
+            // Auto-heal baseline drift: refresh and persist rebased draft before gate evaluation.
+            if ((changeSet.basedOnBaselineVersion || '').trim() !== (context.baselineVersion || '').trim()) {
+                const previousVersion = changeSet.basedOnBaselineVersion;
+                const refreshed = aggregateService.refreshBaselineAndReproject(
+                    docsRepoRoot,
+                    changeSet,
+                    context.baselineVersion,
+                    changeSet.sourceRevisionSet,
+                );
+                const rebasedDraft = {
+                    ...changeSet,
+                    basedOnBaselineVersion: refreshed.latestBaselineVersion,
+                    sourceRevisionSet: refreshed.latestRevisions,
+                };
+                aggregateService.saveDraftChangeSet(docsRepoRoot, iterationId, rebasedDraft);
+                context = aggregateService.loadDomainKnowledgeContext(docsRepoRoot, iterationId);
+                changeSet = context.draftChangeSet;
+                appendHarnessLog(
+                    iterDir,
+                    'domain-gate',
+                    `[${task.id}] writable gate auto-rebased baseline: ${previousVersion} -> ${context.baselineVersion}`,
+                );
+            }
 
             const projection = aggregateService.previewProjection(
                 changeSet,
@@ -762,15 +793,46 @@ export class HarnessActionsService {
 
     private async verifyDomainSedimentationReadOnly(task: Feature): Promise<{ passed: boolean; summary: string }> {
         try {
-            const workspaceRoot = this.deps.getMasterRoot();
-            const docsRepoRoot = this.resolveDomainBaselineRepoRoot(workspaceRoot);
-            this.ensureDomainRegistrySeed(workspaceRoot, docsRepoRoot);
-
             const iterDir = this.deps.getIterationDir(task);
+            // Domain gate MUST read the current iteration workspace, not mono-main.
+            const docsRepoRoot = this.resolveDomainBaselineRepoRoot(iterDir);
+            this.ensureDomainRegistrySeed(iterDir, docsRepoRoot);
             const iterationId = path.basename(path.resolve(iterDir));
+            const registryPath = this.getDomainRegistryService().resolveRegistryPath(docsRepoRoot);
+            const changeSetPath = path.join(docsRepoRoot, 'specs', iterationId, 'delta', 'domain-change-set.json');
+            appendHarnessLog(
+                iterDir,
+                'domain-gate',
+                `[${task.id}] read-only gate paths: repoRoot=${docsRepoRoot}; registry=${registryPath}; changeSet=${changeSetPath}`,
+            );
+
             const aggregateService = this.getDomainKnowledgeAggregateService();
-            const context = aggregateService.loadDomainKnowledgeContext(docsRepoRoot, iterationId);
-            const changeSet = context.draftChangeSet;
+            let context = aggregateService.loadDomainKnowledgeContext(docsRepoRoot, iterationId);
+            let changeSet = context.draftChangeSet;
+
+            // Auto-heal baseline drift: refresh and persist rebased draft before read-only verify.
+            if ((changeSet.basedOnBaselineVersion || '').trim() !== (context.baselineVersion || '').trim()) {
+                const previousVersion = changeSet.basedOnBaselineVersion;
+                const refreshed = aggregateService.refreshBaselineAndReproject(
+                    docsRepoRoot,
+                    changeSet,
+                    context.baselineVersion,
+                    changeSet.sourceRevisionSet,
+                );
+                const rebasedDraft = {
+                    ...changeSet,
+                    basedOnBaselineVersion: refreshed.latestBaselineVersion,
+                    sourceRevisionSet: refreshed.latestRevisions,
+                };
+                aggregateService.saveDraftChangeSet(docsRepoRoot, iterationId, rebasedDraft);
+                context = aggregateService.loadDomainKnowledgeContext(docsRepoRoot, iterationId);
+                changeSet = context.draftChangeSet;
+                appendHarnessLog(
+                    iterDir,
+                    'domain-gate',
+                    `[${task.id}] read-only gate auto-rebased baseline: ${previousVersion} -> ${context.baselineVersion}`,
+                );
+            }
 
             const projection = aggregateService.previewProjection(
                 changeSet,
