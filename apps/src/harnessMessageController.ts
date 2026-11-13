@@ -21,6 +21,7 @@ interface HarnessMessageControllerDeps {
     setPage: (page: string) => void;
     reloadFeatures: () => void;
     render: () => void;
+    syncMainMonoRepo: () => Promise<void>;
     generateCapabilityDelta: (featureId: string) => Promise<void>;
     // ── Domain Knowledge Workspace (Req-1..Req-8) ──────────────────
     /** API-1: Open the subpanel domain knowledge workspace. Binds Req-1. */
@@ -451,6 +452,9 @@ export class HarnessMessageController {
             case 'refresh':
                 this.deps.reloadFeatures();
                 this.deps.render();
+                return;
+            case 'syncMainMonoRepo':
+                await this.deps.syncMainMonoRepo();
                 return;
             case 'generateCapabilityDelta':
                 await this.deps.generateCapabilityDelta(msg.id);

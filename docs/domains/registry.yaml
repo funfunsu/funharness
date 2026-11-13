@@ -19,3 +19,7 @@ domains:
     displayName: CodeGraph
     aliases: []
     status: active
+  - canonical: auth
+    displayName: 认证鉴权
+    aliases: [用户登录接入, 前端接口登录, RiskCheckApi 免登录鉴权, login, authentication, token]
+    status: active

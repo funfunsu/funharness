@@ -62,6 +62,7 @@ export interface TodoMessageItem {
 export type HarnessMessage =
     | { type: 'page'; page: string }
     | { type: 'refresh' }
+    | { type: 'syncMainMonoRepo' }
     | { type: 'generateCapabilityDelta'; id: string }
     // ── Domain Knowledge Workspace (Req-1..Req-8) ──────────────────
     /** API-1: Open the subpanel domain knowledge workspace. Binds Req-1. */

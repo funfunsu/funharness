@@ -828,6 +828,59 @@ export class GitService {
         return { success: true, message: '✅ Git 配置已保存，代码初始化完成' };
     }
 
+    async syncMainMonoRepo(): Promise<{ success: boolean; message: string }> {
+        this.currentLogDir = '';
+        this.lastExecError = '';
+        this.clearOperationNotices();
+
+        const descriptors = this.resolveRepoDescriptors('');
+        if (descriptors.length === 0) {
+            return { success: false, message: '当前仅支持 Monorepo：请先在高级设置配置 Git 地址' };
+        }
+
+        const baseBranch = (this.config.baseBranch || 'main').trim();
+        const requireExactBaseBranch = Boolean(this.config.baseBranch?.trim());
+        const failures: string[] = [];
+        const resolvedBranches: string[] = [];
+
+        for (const repo of descriptors) {
+            const result = await this.ensureMainRepo(
+                repo.remote,
+                repo.mainDir,
+                baseBranch,
+                requireExactBaseBranch,
+            );
+            if (!result.success) {
+                failures.push(`[${repo.label}] ${this.withExecError(`更新本地主仓库失败：${repo.mainDir}`)}`);
+                continue;
+            }
+
+            if (repo.kind === 'mono') {
+                this.ensureMonorepoScaffold(repo.mainDir);
+            }
+
+            if (result.baseBranch) {
+                resolvedBranches.push(result.baseBranch);
+            }
+        }
+
+        if (failures.length > 0) {
+            return {
+                success: false,
+                message: failures.join('\n'),
+            };
+        }
+
+        const branchLabel = resolvedBranches.length > 0
+            ? Array.from(new Set(resolvedBranches)).join(' / ')
+            : baseBranch;
+
+        return {
+            success: true,
+            message: `✅ 本地 mono-main 已更新（基线：${branchLabel}）`,
+        };
+    }
+
     async createIterationBranches(task: Feature, iterationDir: string): Promise<{ success: boolean; message?: string; baseBranch?: string; iterationBranch?: string }> {
         this.currentLogDir = iterationDir;
         this.lastExecError = '';

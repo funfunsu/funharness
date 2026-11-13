@@ -279,6 +279,7 @@ class Harness {
                 setPage: (page) => { this.currentPage = page; },
                 reloadFeatures: () => { if (this.isWorktreeSubview()) { this.loadConfig(); } this.loadFeatures(); },
                 render: () => this.render(),
+                syncMainMonoRepo: async () => this.actionsService.syncMainMonoRepo(),
                 generateCapabilityDelta: async (featureId) => this.handleGenerateCapabilityDelta(featureId),
                 openDomainKnowledgeWorkspace: async (taskId, iterationPath) => this.handleOpenDomainKnowledgeWorkspace(taskId, iterationPath),
                 loadDomainKnowledgeContext: async (repoRoot, iterationId) => this.handleLoadDomainKnowledgeContext(repoRoot, iterationId),
